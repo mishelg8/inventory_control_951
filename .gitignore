@@ -1,0 +1,4 @@
+# macOS archive/resource-fork leftovers (created when zipping on a Mac)
+__MACOSX/
+.DS_Store
+._*
