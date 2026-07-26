@@ -5,4 +5,4 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "tzayad"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
