@@ -1,0 +1,15 @@
+{
+  "name": "tzayad",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Equipment sign-out system, end-to-end encrypted. Cloudflare Pages + Functions + D1.",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "db:init:local": "wrangler d1 execute tzayad --local --file=./schema.sql",
+    "db:init:remote": "wrangler d1 execute tzayad --remote --file=./schema.sql",
+    "deploy": "wrangler pages deploy public"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
