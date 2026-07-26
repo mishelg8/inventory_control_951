@@ -329,6 +329,14 @@ a.btn { text-decoration: none; }
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), var(--shadow-1);
 }
 .btn.wa:not(:disabled):hover { background: linear-gradient(180deg, #2A9269 0%, #1E7051 100%); }
+/* Secondary WhatsApp action (return receipt) — same family, less weight. */
+.btn.wa.ghost-wa {
+  background: var(--surface);
+  color: #196046;
+  border-color: rgba(25, 96, 70, 0.5);
+  box-shadow: var(--shadow-1);
+}
+.btn.wa.ghost-wa:not(:disabled):hover { background: #EAF3EE; border-color: #196046; }
 
 .btn.danger {
   background: var(--surface);
@@ -740,6 +748,24 @@ a.btn { text-decoration: none; }
   animation: rise 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 .callout.risk { border-inline-start-color: var(--rust); background: #FCF9F4; }
+/* Loud variant — the soldier must not miss that they already signed. */
+.callout.alert {
+  border: 2px solid var(--rust);
+  border-inline-start-width: 6px;
+  background: var(--rust-tint);
+  color: #5C1F0E;
+  box-shadow: 0 0 0 4px rgba(147, 51, 27, 0.09), var(--shadow-1);
+  animation: rise 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) both,
+             alertPulse 2.2s ease-in-out 0.5s 2;
+}
+.callout.alert .callout-title { color: var(--rust); font-size: 15.5px; }
+@keyframes alertPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(147, 51, 27, 0.09), var(--shadow-1); }
+  50%      { box-shadow: 0 0 0 9px rgba(147, 51, 27, 0.17), var(--shadow-1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .callout.alert { animation: rise 0.4s ease both; }
+}
 .callout-title { font-weight: 800; margin-bottom: 4px; }
 .callout.risk .callout-title { color: var(--rust); }
 .callout p { margin-bottom: 6px; }
@@ -763,8 +789,77 @@ a.btn { text-decoration: none; }
 .tbl tbody tr:nth-child(even) { background: rgba(22, 29, 23, 0.024); }
 .tbl tbody tr:last-child td { border-bottom: none; }
 .tbl td.num, .tbl th.num { text-align: center; }
-.tbl .warn { color: var(--rust); font-weight: 800; }
+.tbl .warn { color: var(--amber); font-weight: 800; }
 .tbl .ok { color: var(--pine-deep); font-weight: 800; }
+.tbl .bad { color: var(--rust); font-weight: 800; }
+.tbl-ico {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  vertical-align: -4px;
+  margin-inline-end: 6px;
+  color: var(--muted);
+}
+.tbl-ico svg { width: 100%; height: 100%; }
+.tbl td .input.mini { min-height: 40px; padding: 6px 10px; font-size: 15px; }
+.tbl td:has(.input.mini) { padding: 6px 8px; min-width: 88px; }
+
+/* ── Search & department grouping ──────────────────────────────────── */
+.search { position: relative; margin-bottom: 10px; }
+.search-in {
+  min-height: 48px;
+  padding-inline-end: 60px;
+  font-size: 15px;
+}
+.search-in::-webkit-search-cancel-button { display: none; }
+.search-clear {
+  position: absolute;
+  inset-inline-end: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+}
+.result-count {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 700;
+  margin: -4px 0 12px;
+}
+
+.grp { margin-bottom: 14px; }
+.grp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  min-height: 52px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--r-md);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--paper-hi) 100%);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  text-align: start;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.grp-head:hover { border-color: var(--muted); }
+.grp-head[aria-expanded="true"] { border-color: var(--pine); }
+.grp-caret { color: var(--brass); font-size: 13px; flex: none; }
+.grp-name { font-weight: 800; font-size: 15.5px; flex: 1; }
+.grp-meta { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.grp-body { padding-top: 10px; }
+
+.select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(0% + 18px) calc(50% + 2px), calc(0% + 23px) calc(50% + 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-inline-start: 38px;
+}
+.area { min-height: 110px; resize: vertical; line-height: 1.55; font-size: 15px; }
+.danger-link { color: var(--rust); font-weight: 800; }
 
 /* ── Toast ─────────────────────────────────────────────────────────── */
 .toast {

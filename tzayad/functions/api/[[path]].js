@@ -254,6 +254,32 @@ export async function onRequest(context) {
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
       }
 
+      // GET | PUT /api/admin/vault — the encrypted inventory blob
+      if (seg[1] === 'vault' && seg.length === 2) {
+        if (method === 'GET') {
+          const v = await db
+            .prepare('SELECT ek, iv, ct, updated_at FROM vault WHERE id = 1')
+            .first();
+          return json({ vault: v || null });
+        }
+        if (method === 'PUT') {
+          const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const { ek, iv, ct } = b;
+          if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 20000)) {
+            return err(400, 'בקשה לא תקינה');
+          }
+          await db
+            .prepare(
+              `INSERT INTO vault (id, ek, iv, ct, updated_at) VALUES (1, ?1, ?2, ?3, ?4)
+               ON CONFLICT(id) DO UPDATE SET ek = ?1, iv = ?2, ct = ?3, updated_at = ?4`
+            )
+            .bind(ek, iv, ct, now)
+            .run();
+          return json({ ok: true });
+        }
+      }
+
       // GET /api/admin/records
       if (seg[1] === 'records' && seg.length === 2 && method === 'GET') {
         const { results } = await db
@@ -393,6 +419,7 @@ export async function onRequest(context) {
       if (seg[1] === 'wipe' && seg.length === 2 && method === 'POST') {
         await db.batch([
           db.prepare('DELETE FROM records'),
+          db.prepare('DELETE FROM vault'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),
           db.prepare('DELETE FROM config'),

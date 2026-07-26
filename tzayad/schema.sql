@@ -21,6 +21,16 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS idx_records_status ON records(status);
 
+-- Single admin-owned encrypted blob (inventory: opening stock, extra items,
+-- free-text notes). Same envelope as records; readable only with the private key.
+CREATE TABLE IF NOT EXISTS vault (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  ek          TEXT NOT NULL,
+  iv          TEXT NOT NULL,
+  ct          TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token   TEXT PRIMARY KEY,        -- 64 hex chars
   expires INTEGER NOT NULL
