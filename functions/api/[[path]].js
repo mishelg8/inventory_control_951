@@ -264,6 +264,74 @@ export async function onRequest(context) {
         return json({ records: results });
       }
 
+      // POST /api/admin/notify
+      // Sends the approval message through the WhatsApp Cloud API. The phone
+      // number and item list pass through this Worker in plaintext — that is
+      // unavoidable for automatic delivery, since a messaging provider must be
+      // able to read what it sends. Nothing here is ever written to D1 or
+      // logged; the plaintext exists only for the duration of this request.
+      // Without WHATSAPP_TOKEN / WHATSAPP_PHONE_ID configured this returns
+      // {sent:false, reason:'not_configured'} and the client falls back to the
+      // manual send button.
+      if (seg[1] === 'notify' && seg.length === 2 && method === 'POST') {
+        const token = env.WHATSAPP_TOKEN;
+        const phoneId = env.WHATSAPP_PHONE_ID;
+        if (!token || !phoneId) return json({ sent: false, reason: 'not_configured' });
+
+        const b = await readBody(request);
+        if (!b) return err(400, 'בקשה לא תקינה');
+        const to = String(b.phone || '').replace(/\D/g, '');
+        const name = String(b.name || '').slice(0, 60);
+        const items = String(b.items || '').slice(0, 300);
+        if (to.length < 9 || to.length > 15 || !name || !items) {
+          return err(400, 'בקשה לא תקינה');
+        }
+
+        const payload = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: env.WHATSAPP_TEMPLATE || 'equipment_approved',
+            language: { code: env.WHATSAPP_LANG || 'he' },
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: name },
+                  { type: 'text', text: items },
+                ],
+              },
+            ],
+          },
+        };
+
+        let res;
+        try {
+          res = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          });
+        } catch {
+          return json({ sent: false, reason: 'network' });
+        }
+        if (!res.ok) {
+          let detail = '';
+          try {
+            const e = await res.json();
+            detail = (e && e.error && e.error.message) || '';
+          } catch {
+            // provider returned a non-JSON error body
+          }
+          return json({ sent: false, reason: 'api', status: res.status, detail });
+        }
+        return json({ sent: true });
+      }
+
       // PUT | DELETE /api/admin/records/:rid
       if (seg[1] === 'records' && seg.length === 3) {
         const rid = seg[2];

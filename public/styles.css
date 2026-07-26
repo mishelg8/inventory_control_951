@@ -321,6 +321,15 @@ a.btn { text-decoration: none; }
 }
 .btn.ghost:not(:disabled):hover { border-color: var(--muted); background: #fff; }
 
+/* WhatsApp action — desaturated to sit inside the palette, still clearly
+   distinct from the pine primary next to it */
+.btn.wa {
+  background: linear-gradient(180deg, #23805B 0%, #196046 100%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), var(--shadow-1);
+}
+.btn.wa:not(:disabled):hover { background: linear-gradient(180deg, #2A9269 0%, #1E7051 100%); }
+
 .btn.danger {
   background: var(--surface);
   border-color: rgba(147, 51, 27, 0.55);
@@ -631,6 +640,9 @@ a.btn { text-decoration: none; }
 }
 .rec-name { font-size: 17.5px; font-weight: 800; letter-spacing: -0.01em; }
 .rec-meta { font-size: 13px; color: var(--muted); }
+
+.sent { color: var(--pine-deep); font-weight: 700; }
+.unsent { color: var(--amber); font-weight: 700; }
 
 .rec-row {
   display: flex;

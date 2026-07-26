@@ -336,8 +336,8 @@ function renderSoldierStep3() {
       <h1 class="panel-title">${S.suppMode ? 'ההשלמה נשלחה' : 'הרישום נשלח'}</h1>
       <p class="panel-sub">${
         S.suppMode
-          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך ויישלח אליך SMS מעודכן.'
-          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל יישלח אליך SMS עם פירוט הציוד שהוחתם.'
+          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך ותקבל הודעת וואטסאפ מעודכנת.'
+          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל תקבל הודעת וואטסאפ עם פירוט הציוד שהוחתם.'
       }</p>
       <div class="tags center">${list}</div>
       <div class="fp num"><span aria-hidden="true">🔒</span><span class="fp-code">${esc(S.rid.slice(0, 16))}</span></div>
@@ -468,16 +468,47 @@ function phoneRow(rec) {
   </div>`;
 }
 
-// Prefilled SMS opened on the ADMIN's device — the server never sees the
-// phone number, so this is the only E2E-preserving way to notify a soldier.
-function smsLink(d, rid) {
-  const items = ITEMS.filter((i) => d.items[i.id])
+const itemsText = (d) =>
+  ITEMS.filter((i) => d.items[i.id])
     .map((i) => (i.qty ? `${i.name} ×${d.items[i.id].t}` : i.name))
     .join(', ');
+
+// Israeli local number → international digits, as wa.me requires.
+function waPhone(raw) {
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.startsWith('972')) return digits;
+  if (digits.startsWith('0')) return '972' + digits.slice(1);
+  return '972' + digits;
+}
+
+// Prefilled WhatsApp message opened on the ADMIN's device — the server never
+// sees the phone number, so this is the only E2E-preserving way to notify a
+// soldier. Opened in a new tab so the console keeps its in-memory key.
+// Automatic send via the Worker (WhatsApp Cloud API). Resolves to a reason
+// string when it could not send, so approval never fails because of delivery.
+async function notifySoldier(d) {
+  try {
+    const r = await api('/admin/notify', {
+      body: { phone: waPhone(d.phone), name: d.name, items: itemsText(d) },
+    });
+    return r && r.sent ? null : (r && r.reason) || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function waLink(d, rid) {
+  const lines = ITEMS.filter((i) => d.items[i.id])
+    .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
+    .join('\n');
   const msg =
-    `שלום ${d.name}, רישום הציוד שלך אושר והוחתמת על: ${items}. ` +
-    `מס' רישום: ${rid.slice(0, 8)}. נא לשמור הודעה זו לצורך החזרת הציוד.`;
-  return `sms:${d.phone}?&body=${encodeURIComponent(msg)}`;
+    '*אישור החתמת ציוד — מסייעת 951*\n\n' +
+    `שלום ${d.name},\n` +
+    'רישום הציוד שלך אושר והוחתמת על:\n\n' +
+    `${lines}\n\n` +
+    `מס' רישום: ${rid.slice(0, 8)}\n` +
+    'נא לשמור הודעה זו לצורך החזרת הציוד.';
+  return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
 }
 
 function damagedCard(rec) {
@@ -599,6 +630,11 @@ function renderTrackTab() {
             <div>
               <div class="rec-name">${esc(d.name)}</div>
               <div class="rec-meta">מ״א <span class="num">${esc(d.pn)}</span> · אושר ${esc(fmtDate(d.approvedAt))}</div>
+              <div class="rec-meta">${
+                d.notified
+                  ? '<span class="sent">✓ הודעה נשלחה</span>'
+                  : '<span class="unsent">הודעה טרם נשלחה</span>'
+              }</div>
             </div>
             ${out > 0
               ? `<span class="state live">ציוד בחוץ</span>`
@@ -610,7 +646,10 @@ function renderTrackTab() {
             ${out > 0
               ? `<button class="btn primary" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
               : ''}
-            <a class="btn ghost" href="${esc(smsLink(d, rec.rid))}">אישור ב־SMS</a>
+            <a class="btn wa" href="${esc(waLink(d, rec.rid))}"
+               target="_blank" rel="noopener noreferrer">${
+                 d.notified ? 'שליחה חוזרת' : 'שליחה בוואטסאפ'
+               }</a>
             <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
           </div>
           ${fpStrip(rec.rid)}
@@ -671,6 +710,10 @@ function renderSecurityTab() {
       <p class="callout-title">מה מוצפן</p>
       <p>שם, מספר אישי, טלפון ופירוט הציוד מוצפנים במכשיר לפני השליחה. השרת, קלאודפלייר, וכל מי שמשיג גישה לחשבון או למסד — רואים צופן בלבד.</p>
       <p class="mb0">מה השרת כן רואה: מספר הרשומות, סטטוס (ממתין/מאושר) וחותמות זמן. לא זהות ולא פירוט ציוד.</p>
+    </div>
+    <div class="callout risk">
+      <p class="callout-title">שליחה אוטומטית בוואטסאפ</p>
+      <p class="mb0">אם הופעלה שליחה אוטומטית, ברגע האישור עוברים שם החייל, הטלפון ופירוט הציוד דרך השרת אל Meta. הם אינם נשמרים במסד הנתונים, אך Meta מקבלת עותק. בשליחה הידנית שום דבר מזה לא קורה.</p>
     </div>
     <div class="callout risk">
       <p class="callout-title">אין שחזור סיסמה</p>
@@ -948,11 +991,21 @@ const adminApprove = (rid) =>
         parent.data.name = rec.data.name;
         parent.data.phone = rec.data.phone;
         parent.data.log.push({ a: 'supplement', t: now });
+        const suppFailed = await notifySoldier(parent.data);
+        if (!suppFailed) {
+          parent.data.notified = now;
+          parent.data.log.push({ a: 'notify', t: now });
+        }
         await saveRec(parent);
         await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
         S.recs = S.recs.filter((r) => r.rid !== rec.rid);
         renderConsole();
-        toast(`ההשלמה מוזגה לרישום של ${parent.data.name}`);
+        toast(
+          suppFailed
+            ? `ההשלמה מוזגה לרישום של ${parent.data.name} — ההודעה לא נשלחה אוטומטית`
+            : `ההשלמה מוזגה ונשלחה הודעה ל${parent.data.name}`,
+          !!suppFailed
+        );
         return;
       }
       // main record was deleted meanwhile — approve as a standalone record
@@ -961,9 +1014,19 @@ const adminApprove = (rid) =>
     rec.data.approvedAt = now;
     rec.data.log.push({ a: 'approve', t: now });
     rec.status = 'approved';
+    const failed = await notifySoldier(rec.data);
+    if (!failed) {
+      rec.data.notified = now;
+      rec.data.log.push({ a: 'notify', t: now });
+    }
     await saveRec(rec);
     renderConsole();
-    toast(`אושר: ${rec.data.name} — כפתור "אישור ב־SMS" זמין במעקב ציוד`);
+    toast(
+      failed
+        ? `אושר: ${rec.data.name} — ההודעה לא נשלחה אוטומטית, שלחו ידנית במעקב ציוד`
+        : `אושר: ${rec.data.name} — הודעת וואטסאפ נשלחה`,
+      !!failed
+    );
   });
 
 const adminCredit = (rid, itemId, delta) =>
