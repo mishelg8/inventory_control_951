@@ -13,12 +13,31 @@ const td = new TextDecoder();
 
 /* ── Equipment catalog ─────────────────────────────────────────────── */
 
+const SVG_OPEN =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
+
 const ITEMS = [
-  { id: 'helmet', name: 'קסדה', qty: false },
-  { id: 'vest', name: 'ווסט', qty: false },
-  { id: 'mitznefet', name: 'מצנפת', qty: false },
-  { id: 'knee', name: 'ברכיות', qty: false },
-  { id: 'mags', name: 'מחסניות', qty: true, min: 1, max: 20 },
+  {
+    id: 'helmet', name: 'קסדה', qty: false,
+    icon: `${SVG_OPEN}<path d="M4 14a8 8 0 0 1 16 0v3H4z"/><path d="M2 17h20"/></svg>`,
+  },
+  {
+    id: 'vest', name: 'ווסט', qty: false,
+    icon: `${SVG_OPEN}<path d="M8 3c1 1.8 7 1.8 8 0l4 4-2.5 3v10h-11V10L4 7z"/><path d="M6.5 14h11"/></svg>`,
+  },
+  {
+    id: 'mitznefet', name: 'מצנפת', qty: false,
+    icon: `${SVG_OPEN}<path d="M5 15c0-6 3-10 7-10s7 4 7 10c-2.5-1.5-4.5 1.5-7 .5s-4.5 1-7-.5z"/><path d="M9 19h6"/></svg>`,
+  },
+  {
+    id: 'knee', name: 'ברכיות', qty: false,
+    icon: `${SVG_OPEN}<rect x="6.5" y="3.5" width="11" height="17" rx="5.5"/><path d="M6.5 12h11"/></svg>`,
+  },
+  {
+    id: 'mags', name: 'מחסניות', qty: true, min: 1, max: 20,
+    icon: `${SVG_OPEN}<path d="M9 3h7c-.5 6-1.5 11-3.5 17H7C7.5 14 8.5 9 9 3z"/><path d="M9.5 7h6"/></svg>`,
+  },
 ];
 const itemById = (id) => ITEMS.find((i) => i.id === id);
 
@@ -141,6 +160,7 @@ const S = {
   sStep: 1,
   ident: null,                  // { pn, name, phone }
   rid: null,
+  suppMode: false,              // main record approved → this is a supplement
   existingPending: false,
   sel: {},                      // itemId -> quantity
 
@@ -189,6 +209,7 @@ function resetSoldier() {
   S.sStep = 1;
   S.ident = null;
   S.rid = null;
+  S.suppMode = false;
   S.existingPending = false;
   S.sel = {};
 }
@@ -205,9 +226,16 @@ function renderRoute() {
 /* ── Soldier views (PLAN §7.1) ─────────────────────────────────────── */
 
 function stepsBar(n) {
-  return `<div class="steps" aria-hidden="true">${[1, 2, 3]
-    .map((i) => `<span${i <= n ? ' class="on"' : ''}></span>`)
-    .join('')}</div>`;
+  const labels = ['פרטים', 'ציוד', 'סיום'];
+  return `<ol class="steps" aria-hidden="true">${labels
+    .map((lbl, i) => {
+      const idx = i + 1;
+      const cls = ['stp', idx <= n ? 'on' : '', idx === n ? 'now' : '']
+        .filter(Boolean)
+        .join(' ');
+      return `<li class="${cls}"><span class="stp-dot num">${idx}</span><span class="stp-lbl">${lbl}</span></li>`;
+    })
+    .join('')}</ol>`;
 }
 
 function renderSoldier() {
@@ -228,9 +256,10 @@ function renderSoldierStep1() {
   const v = S.ident || { pn: '', name: '', phone: '' };
   render(`
     ${stepsBar(1)}
-    <section class="panel">
-      <h1 class="panel-title">רישום ציוד אישי</h1>
-      <p class="panel-sub">מלאו פרטים, בחרו את הציוד שקיבלתם ושלחו לאישור. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
+    <section class="panel center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">רישום ציוד אישי</h1>
+      <p class="panel-sub center">מלאו פרטים, בחרו את הציוד שקיבלתם ושלחו לאישור. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
       <form data-form="ident" novalidate>
         <label class="field">
           <span class="field-label">מספר אישי</span>
@@ -269,19 +298,23 @@ function renderSoldierStep2() {
       <li class="opt" role="checkbox" aria-checked="${on}" tabindex="0"
           data-act="s-toggle" data-item="${item.id}">
         <span class="opt-box" aria-hidden="true"></span>
+        <span class="opt-ico" aria-hidden="true">${item.icon}</span>
         <span class="opt-name">${esc(item.name)}</span>
         ${stepper}
       </li>`;
   }).join('');
 
+  const suppNote = S.suppMode
+    ? `<div class="callout"><p class="mb0">הרישום הקודם שלך כבר מאושר — סמנו <strong>רק את הציוד הנוסף</strong> שקיבלתם עכשיו. הוא יתווסף לרישום הקיים לאחר אישור המנהל.${S.existingPending ? ' השלמה קודמת שממתינה תוחלף, לכן כללו את כל הציוד הנוסף.' : ''}</p></div>`
+    : S.existingPending
+      ? `<div class="callout"><p class="mb0">קיימת כבר הגשה ממתינה למספר אישי זה — שליחה חדשה תחליף אותה.</p></div>`
+      : '';
   render(`
     ${stepsBar(2)}
     <section class="panel">
-      <h1 class="panel-title">איזה ציוד קיבלת?</h1>
+      <h1 class="panel-title">${S.suppMode ? 'איזה ציוד נוסף קיבלת?' : 'איזה ציוד קיבלת?'}</h1>
       <p class="panel-sub">שלום ${esc(S.ident.name)} — סמנו את כל הפריטים שקיבלתם.</p>
-      ${S.existingPending
-        ? `<div class="callout"><p class="mb0">קיימת כבר הגשה ממתינה למספר אישי זה — שליחה חדשה תחליף אותה.</p></div>`
-        : ''}
+      ${suppNote}
       <ul>${rows}</ul>
       <p class="form-err" data-err></p>
       <button class="btn primary wide" data-act="s-submit">שליחה לאישור</button>
@@ -300,11 +333,16 @@ function renderSoldierStep3() {
     ${stepsBar(3)}
     <section class="panel center">
       <div class="big-ok" aria-hidden="true"></div>
-      <h1 class="panel-title">הרישום נשלח</h1>
-      <p class="panel-sub">הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — מנהל הציוד יאשר אותה בהמשך.</p>
+      <h1 class="panel-title">${S.suppMode ? 'ההשלמה נשלחה' : 'הרישום נשלח'}</h1>
+      <p class="panel-sub">${
+        S.suppMode
+          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך ויישלח אליך SMS מעודכן.'
+          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל יישלח אליך SMS עם פירוט הציוד שהוחתם.'
+      }</p>
       <div class="tags center">${list}</div>
       <div class="fp num"><span aria-hidden="true">🔒</span><span class="fp-code">${esc(S.rid.slice(0, 16))}</span></div>
-      <button class="btn primary wide mt" data-act="s-reset">סיום — לחייל הבא</button>
+      <p class="muted-txt mt">סיימנו — אפשר לסגור את הדף.</p>
+      <button class="btn ghost wide mt" data-act="s-reset">תיקון ורישום מחדש</button>
     </section>`);
 }
 
@@ -430,9 +468,21 @@ function phoneRow(rec) {
   </div>`;
 }
 
+// Prefilled SMS opened on the ADMIN's device — the server never sees the
+// phone number, so this is the only E2E-preserving way to notify a soldier.
+function smsLink(d, rid) {
+  const items = ITEMS.filter((i) => d.items[i.id])
+    .map((i) => (i.qty ? `${i.name} ×${d.items[i.id].t}` : i.name))
+    .join(', ');
+  const msg =
+    `שלום ${d.name}, רישום הציוד שלך אושר והוחתמת על: ${items}. ` +
+    `מס' רישום: ${rid.slice(0, 8)}. נא לשמור הודעה זו לצורך החזרת הציוד.`;
+  return `sms:${d.phone}?&body=${encodeURIComponent(msg)}`;
+}
+
 function damagedCard(rec) {
   return `
-    <article class="rec">
+    <article class="rec broken">
       <header class="rec-head">
         <div class="rec-name">רשומה פגומה</div>
         <span class="state live">שגיאה</span>
@@ -465,20 +515,26 @@ function renderPendingTab() {
                </span>`
             : `<span class="step-val num">${t}</span>`;
           return `<li class="rec-row">
-              <span class="rec-row-name">${esc(item.name)}</span>
+              <span class="rec-row-main">
+                <span class="row-ico" aria-hidden="true">${item.icon}</span>
+                <span class="rec-row-name">${esc(item.name)}</span>
+              </span>
               <span class="rec-row-tools">${tools}</span>
             </li>`;
         })
         .join('');
       return `
-        <article class="rec">
+        <article class="rec wait">
           <header class="rec-head">
             <div>
               <div class="rec-name">${esc(d.name)}</div>
               <div class="rec-meta">מ״א <span class="num">${esc(d.pn)}</span> · נשלח ${esc(fmtDate(d.createdAt))}</div>
             </div>
-            <span class="state wait">ממתין</span>
+            <span class="state wait">${d.supp ? 'השלמה' : 'ממתין'}</span>
           </header>
+          ${d.supp
+            ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
+            : ''}
           ${phoneRow(rec)}
           <ul>${rows}</ul>
           <div class="rec-actions">
@@ -521,9 +577,12 @@ function renderTrackTab() {
           const r = it.r || 0;
           const returned = r >= it.t;
           return `<li class="rec-row">
-              <span>
-                <span class="tagi${returned ? ' done' : ''}">${esc(item.name)}</span>
-                <span class="rec-row-sub">הוחזרו <span class="num">${r}</span> מתוך <span class="num">${it.t}</span></span>
+              <span class="rec-row-main">
+                <span class="row-ico" aria-hidden="true">${item.icon}</span>
+                <span>
+                  <span class="tagi${returned ? ' done' : ''}">${esc(item.name)}</span>
+                  <span class="rec-row-sub">הוחזרו <span class="num">${r}</span> מתוך <span class="num">${it.t}</span></span>
+                </span>
               </span>
               <span class="rec-row-tools step">
                 <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
@@ -535,7 +594,7 @@ function renderTrackTab() {
         })
         .join('');
       return `
-        <article class="rec">
+        <article class="rec ${out > 0 ? 'live' : 'done'}">
           <header class="rec-head">
             <div>
               <div class="rec-name">${esc(d.name)}</div>
@@ -551,6 +610,7 @@ function renderTrackTab() {
             ${out > 0
               ? `<button class="btn primary" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
               : ''}
+            <a class="btn ghost" href="${esc(smsLink(d, rec.rid))}">אישור ב־SMS</a>
             <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
           </div>
           ${fpStrip(rec.rid)}
@@ -699,15 +759,20 @@ async function soldierIdentSubmit(form) {
   await withBusy(async () => {
     const rid = await deriveRid(pn, S.config.idSalt);
     const st = await api(`/status/${rid}`);
-    if (st.exists && st.status === 'approved') {
-      setFormErr(form, 'הרשומה שלך כבר אושרה. לעדכון או תיקון — פנו למנהל הציוד.');
-      btn.disabled = false;
-      btn.textContent = 'המשך';
-      return;
-    }
     S.ident = { pn, name, phone };
-    S.rid = rid;
-    S.existingPending = !!st.exists;
+    if (st.exists && st.status === 'approved') {
+      // main record already approved → supplement mode: the soldier registers
+      // only the additional gear, and the admin merges it on approval
+      const suppRid = await deriveRid(`${pn}:supp`, S.config.idSalt);
+      const suppSt = await api(`/status/${suppRid}`);
+      S.suppMode = true;
+      S.rid = suppRid;
+      S.existingPending = !!suppSt.exists;
+    } else {
+      S.suppMode = false;
+      S.rid = rid;
+      S.existingPending = !!st.exists;
+    }
     if (!Object.keys(S.sel).length) S.sel = {};
     S.sStep = 2;
     renderSoldier();
@@ -750,6 +815,7 @@ async function soldierSubmit() {
       createdAt: now,
       log: [{ a: 'submit', t: now }],
     };
+    if (S.suppMode) payload.supp = true;
     const pubKey = await importPubKey(S.config.pub);
     const sealed = await seal(pubKey, payload);
     await api('/records', { body: { rid: S.rid, ...sealed } });
@@ -869,12 +935,35 @@ const adminApprove = (rid) =>
     const rec = findRec(rid);
     if (!rec || rec.damaged) return;
     const now = Date.now();
+    if (rec.data.supp) {
+      // supplement: merge into the soldier's main record (matched by pn)
+      const parent = S.recs.find(
+        (r) => r !== rec && !r.damaged && r.data && !r.data.supp && r.data.pn === rec.data.pn
+      );
+      if (parent) {
+        for (const [id, it] of Object.entries(rec.data.items)) {
+          if (parent.data.items[id]) parent.data.items[id].t += it.t;
+          else parent.data.items[id] = { t: it.t, r: 0 };
+        }
+        parent.data.name = rec.data.name;
+        parent.data.phone = rec.data.phone;
+        parent.data.log.push({ a: 'supplement', t: now });
+        await saveRec(parent);
+        await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
+        S.recs = S.recs.filter((r) => r.rid !== rec.rid);
+        renderConsole();
+        toast(`ההשלמה מוזגה לרישום של ${parent.data.name}`);
+        return;
+      }
+      // main record was deleted meanwhile — approve as a standalone record
+      delete rec.data.supp;
+    }
     rec.data.approvedAt = now;
     rec.data.log.push({ a: 'approve', t: now });
     rec.status = 'approved';
     await saveRec(rec);
     renderConsole();
-    toast(`אושר: ${rec.data.name}`);
+    toast(`אושר: ${rec.data.name} — כפתור "אישור ב־SMS" זמין במעקב ציוד`);
   });
 
 const adminCredit = (rid, itemId, delta) =>
