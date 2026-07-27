@@ -216,6 +216,31 @@ export async function onRequest(context) {
       return json({ ok: true });
     }
 
+    // ── POST /api/reports ────────────────────────────────────────────
+    // A soldier's free-text shortage report. Unrelated to sign-out, and a
+    // soldier may file more than one, so the id comes from the client at random.
+    if (seg[0] === 'reports' && seg.length === 1 && method === 'POST') {
+      if (!(await allow(db, `sub:${ip}`, SUB_LIMIT, SUB_WINDOW_MS, now))) {
+        return err(429, 'יותר מדי דיווחים, נסו שוב מאוחר יותר');
+      }
+      const b = await readBody(request);
+      if (!b) return err(400, 'בקשה לא תקינה');
+      const { id, ek, iv, ct } = b;
+      if (!isHex(id, HEX32) || !isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 12000)) {
+        return err(400, 'בקשה לא תקינה');
+      }
+      const clash = await db.prepare('SELECT id FROM reports WHERE id = ?1').bind(id).first();
+      if (clash) return err(409, 'מזהה כפול — נסו שוב');
+      await db
+        .prepare(
+          'INSERT INTO reports (id, ek, iv, ct, status, created_at, updated_at) ' +
+            "VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?5)"
+        )
+        .bind(id, ek, iv, ct, now)
+        .run();
+      return json({ ok: true });
+    }
+
     // ── POST /api/docs ───────────────────────────────────────────────
     // An encrypted licence photo. Stored apart from the record so listing
     // soldiers never pulls image data. Same write rules as records: a photo
@@ -293,6 +318,41 @@ export async function onRequest(context) {
       if (seg[1] === 'logout' && seg.length === 2 && method === 'POST') {
         await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session).run();
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
+      }
+
+      // GET /api/admin/reports — every shortage report
+      if (seg[1] === 'reports' && seg.length === 2 && method === 'GET') {
+        const { results } = await db
+          .prepare(
+            'SELECT id, ek, iv, ct, status, created_at, updated_at FROM reports ORDER BY created_at DESC'
+          )
+          .all();
+        return json({ reports: results });
+      }
+
+      // PUT | DELETE /api/admin/reports/:id — flip the handled flag, or drop it
+      if (seg[1] === 'reports' && seg.length === 3) {
+        const id = seg[2];
+        if (!isHex(id, HEX32)) return err(400, 'בקשה לא תקינה');
+
+        if (method === 'PUT') {
+          const b = await readBody(request);
+          if (!b || (b.status !== 'open' && b.status !== 'done')) {
+            return err(400, 'בקשה לא תקינה');
+          }
+          const r = await db
+            .prepare('UPDATE reports SET status = ?1, updated_at = ?2 WHERE id = ?3')
+            .bind(b.status, now, id)
+            .run();
+          if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+          return json({ ok: true });
+        }
+
+        if (method === 'DELETE') {
+          const r = await db.prepare('DELETE FROM reports WHERE id = ?1').bind(id).run();
+          if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+          return json({ ok: true });
+        }
       }
 
       // GET /api/admin/docs/:rid — licence photos for one soldier, on demand
@@ -475,6 +535,7 @@ export async function onRequest(context) {
         await db.batch([
           db.prepare('DELETE FROM records'),
           db.prepare('DELETE FROM docs'),
+          db.prepare('DELETE FROM reports'),
           db.prepare('DELETE FROM vault'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),

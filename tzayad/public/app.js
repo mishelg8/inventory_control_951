@@ -222,9 +222,16 @@ async function compressImage(file) {
 
 /* ── State ─────────────────────────────────────────────────────────── */
 
+const routeFromHash = () =>
+  location.hash === '#admin' ? 'admin' : location.hash === '#report' ? 'report' : 'soldier';
+
 const S = {
   config: null,                 // { ready, pub?, idSalt? }
-  route: location.hash === '#admin' ? 'admin' : 'soldier',
+  route: routeFromHash(),
+
+  // shortage reporting (soldier-facing, separate flow)
+  rep: null,                    // draft { pn, name, phone, dept, text }
+  repSent: false,
 
   // soldier flow
   sStep: 1,
@@ -244,7 +251,9 @@ const S = {
   recs: [],                     // { rid, status, created_at, updated_at, data|null, damaged }
   inv: null,                    // { open:{}, extra:[], notes } — decrypted inventory
   docs: {},                     // "rid:kind" -> data URL, fetched on demand
-  tab: 'pending',
+  reports: [],                  // { id, status, created_at, data|null, damaged }
+  repFilter: 'open',            // 'open' | 'done' | 'all'
+  tab: 'over',
   filter: 'out',
   q: '',                        // free-text search over name / pn / phone
   dept: 'all',                  // department filter
@@ -274,6 +283,7 @@ function lock() {
   S.pubKey = null;
   S.recs = [];
   S.inv = null;
+  S.reports = [];
   S.docs = {};                  // decrypted licence images must not outlive the session
   S.q = '';
   S.revealed.clear();
@@ -298,11 +308,91 @@ function resetSoldier() {
 
 /* ── Rendering ─────────────────────────────────────────────────────── */
 
-const render = (html) => { $app.innerHTML = html; };
+const render = (html) => {
+  $app.innerHTML = html;
+  // Setting .style via script is CSSOM, not an inline style attribute, so it
+  // is allowed under style-src 'self'.
+  for (const el of $app.querySelectorAll('.brk-fill[data-w]')) {
+    el.style.width = `${el.dataset.w}%`;
+  }
+};
 
 function renderRoute() {
+  // the console needs a wide column for tables; soldier pages stay narrow
+  $app.classList.toggle('wide', S.route === 'admin' && !!S.priv);
   if (S.route === 'admin') renderAdmin();
+  else if (S.route === 'report') renderReport();
   else renderSoldier();
+}
+
+/* ── Shortage reporting (soldier-facing, separate from sign-out) ────── */
+
+function renderReport() {
+  if (!S.config || !S.config.ready) {
+    render(`
+      <section class="panel center">
+        <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
+        <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר לדווח.</p>
+      </section>`);
+    return;
+  }
+  if (S.repSent) {
+    render(`
+      <section class="panel center">
+        <div class="big-ok" aria-hidden="true"></div>
+        <h1 class="panel-title">הדיווח נשלח</h1>
+        <p class="panel-sub">מנהל הציוד יראה את הדיווח ויסמן אותו כשטופל. אין צורך לשלוח שוב.</p>
+        <button class="btn ghost wide mt" data-act="rep-again">דיווח נוסף</button>
+        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה להחתמת ציוד</a></p>
+      </section>`);
+    return;
+  }
+  const v = S.rep || { name: '', text: '' };
+  render(`
+    <section class="panel center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">בקשת ציוד / דיווח חוסר</h1>
+      <p class="panel-sub center">חסר לכם ציוד או שאתם צריכים השלמה? כתבו כאן ומנהל הציוד יטפל. אין צורך במספר אישי — רק שם ומה שחסר.</p>
+      <form data-form="report" novalidate>
+        <label class="field">
+          <span class="field-label">שם מלא</span>
+          <input class="input" name="name" autocomplete="off" maxlength="60"
+                 value="${esc(v.name)}" required>
+        </label>
+        <label class="field">
+          <span class="field-label">מה חסר לכם או מה אתם צריכים?</span>
+          <textarea class="input area" name="text" rows="7" maxlength="1500"
+                    placeholder="לדוגמה: חסרות לי 2 מחסניות, והווסט שקיבלתי עם רצועה קרועה — צריך להחליף." required>${esc(v.text)}</textarea>
+          <span class="field-hint">כתבו בחופשיות — כמה שיותר פרטים, כך קל יותר לטפל.</span>
+        </label>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחת הבקשה</button>
+      </form>
+      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה להחתמת ציוד</a></p>
+    </section>`);
+}
+
+async function reportSubmit(form) {
+  const name = form.name.value.trim();
+  const text = form.text.value.trim();
+  if (name.length < 2) return setFormErr(form, 'נא למלא שם מלא');
+  if (text.length < 5) return setFormErr(form, 'נא לפרט מה חסר');
+  setFormErr(form, '');
+  S.rep = { name, text };
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const sealed = await seal(await importPubKey(S.config.pub), { name, text, createdAt: Date.now() });
+    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    S.repSent = true;
+    S.rep = null;
+    renderReport();
+  });
+  if (!S.repSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת הבקשה';
+  }
 }
 
 /* ── Soldier views (PLAN §7.1) ─────────────────────────────────────── */
@@ -510,6 +600,7 @@ function renderAdmin() {
 }
 
 function renderSetup() {
+  $app.classList.remove('wide');
   render(`
     <section class="panel">
       <h1 class="panel-title">הקמת המערכת</h1>
@@ -543,6 +634,7 @@ function renderSetup() {
 }
 
 function renderLogin() {
+  $app.classList.remove('wide');
   render(`
     <section class="panel">
       <h1 class="panel-title">כניסת מנהל</h1>
@@ -571,42 +663,56 @@ function counts() {
 }
 
 function renderConsole() {
+  $app.classList.add('wide');
   const c = counts();
-  const tabs = [
+  const openReps = openReports();
+  const SECTIONS = [
+    ['over',    'סקירה',        null],
     ['pending', 'ממתין לאישור', c.pending],
-    ['track', 'מעקב ציוד', c.approved],
-    ['inv', 'מלאי', null],
-    ['sum', 'סיכום', null],
-    ['sec', 'אבטחה', null],
-  ]
-    .map(
-      ([id, label, count]) => `
-      <button class="tab" role="tab" aria-selected="${S.tab === id}" data-act="tab" data-tab="${id}">
-        ${label}${count !== null ? ` <span class="tab-count num">${count}</span>` : ''}
+    ['track',   'מעקב ציוד',    c.approved],
+    ['reports', 'בקשות חוסר',   openReps, openReps > 0],
+    ['inv',     'מלאי',         null],
+    ['sum',     'דוחות',        null],
+    ['sec',     'אבטחה',        null],
+  ];
+
+  const nav = SECTIONS.map(
+    ([id, label, count, hot]) => `
+      <button class="nav-item" role="tab" aria-selected="${S.tab === id}"
+              data-act="tab" data-tab="${id}">
+        <span>${label}</span>
+        ${count !== null ? `<span class="nav-count num${hot ? ' hot' : ''}">${count}</span>` : ''}
       </button>`
-    )
-    .join('');
+  ).join('');
+
+  const title = (SECTIONS.find((x) => x[0] === S.tab) || ['', 'ניהול ציוד'])[1];
 
   let body = '';
-  if (S.tab === 'pending') body = renderPendingTab();
+  if (S.tab === 'over') body = renderOverviewTab();
+  else if (S.tab === 'pending') body = renderPendingTab();
   else if (S.tab === 'track') body = renderTrackTab();
+  else if (S.tab === 'reports') body = renderReportsTab();
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'sum') body = renderSummaryTab();
   else body = renderSecurityTab();
 
   render(`
     <div class="conbar">
-      <span class="conbar-title">ניהול ציוד</span>
+      <span class="conbar-title">${esc(title)}</span>
       <div class="conbar-actions">
         <button class="btn ghost small" data-act="refresh">רענון</button>
         <button class="btn ghost small" data-act="lock">נעילה</button>
       </div>
     </div>
     ${c.damaged
-      ? `<div class="callout risk"><p class="mb0"><strong class="num">${c.damaged}</strong> רשומות פגומות — הפענוח נכשל (חשד לשיבוש נתונים בשרת). ראו בלשוניות לפי סטטוס.</p></div>`
+      ? `<div class="callout risk"><p class="mb0"><strong class="num">${c.damaged}</strong> רשומות פגומות — הפענוח נכשל (חשד לשיבוש נתונים בשרת).</p></div>`
       : ''}
-    <div class="tabs" role="tablist">${tabs}</div>
-    ${body}`);
+    <div class="console">
+      <aside class="side">
+        <div class="navlist" role="tablist">${nav}</div>
+      </aside>
+      <div class="cmain">${body}</div>
+    </div>`);
 }
 
 function fpStrip(rid) {
@@ -1022,7 +1128,77 @@ function renderSummaryTab() {
       <button class="btn ghost wide mt" data-act="export">ייצוא CSV</button>
     </section>
 
+    ${weaponsPanel(approved)}
     ${ledgerPanel(approved)}`;
+}
+
+// Weapon register: serial → holder. The one table a logistics NCO reaches for
+// when a serial turns up and they need to know whose it is.
+function weaponsPanel(approved) {
+  const visible = applyFilters(approved);
+  const armed = visible.filter((r) => r.data.weapon);
+  const unarmed = visible.filter((r) => !r.data.weapon);
+
+  const rows = armed
+    .slice()
+    .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }))
+    .map((rec) => {
+      const d = rec.data;
+      const shown = S.revealed.has(rec.rid);
+      return `<tr>
+          <td class="num wpn">${esc(d.weapon)}</td>
+          <td>${esc(d.name)}</td>
+          <td class="num">${esc(d.pn)}</td>
+          <td>${esc(deptName(d.dept))}</td>
+          <td class="num">
+            ${esc(shown ? d.phone : maskPhone(d.phone))}
+            <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>
+          </td>
+        </tr>`;
+    })
+    .join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">רשימת נשקים</h2>
+      <p class="panel-sub">מספר סידורי מול מחזיק הנשק, ממוין לפי מספר. מכבד את החיפוש והסינון.</p>
+      <div class="stat-row">
+        <div class="stat"><span class="stat-n num">${armed.length}</span><span class="stat-l">נשקים משויכים</span></div>
+        <div class="stat"><span class="stat-n num">${unarmed.length}</span><span class="stat-l">ללא נשק רשום</span></div>
+      </div>
+      ${armed.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr><th class="num">מס׳ סידורי</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           <button class="btn ghost wide mt" data-act="export-weapons">ייצוא רשימת נשקים ל-CSV</button>`
+        : '<p class="empty">אף חייל לא רשם מספר נשק עדיין.</p>'}
+    </section>`;
+}
+
+function exportWeaponsCsv() {
+  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = [['מספר סידורי', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'].map(q).join(',')];
+  for (const rec of S.recs) {
+    if (rec.damaged || !rec.data || rec.status !== 'approved' || !rec.data.weapon) continue;
+    const d = rec.data;
+    lines.push([d.weapon, d.name, d.pn, deptName(d.dept), d.phone].map(q).join(','));
+  }
+  downloadCsv(lines, 'tzayad-weapons.csv');
+}
+
+function downloadCsv(lines, filename) {
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 // The quartermaster's ledger: one row per soldier, one column per item, so
@@ -1174,6 +1350,228 @@ function renderInvTab() {
     </section>`;
 }
 
+/* ── Overview dashboard ────────────────────────────────────────────── */
+
+const pct = (n, d) => (d > 0 ? Math.round((n / d) * 100) : 0);
+
+// A KPI tile. `tone` drives a colour edge, but the label and number always
+// carry the meaning on their own — colour is never the sole signal.
+function kpi(n, label, tone, sub) {
+  return `
+    <div class="kpi${tone ? ` is-${tone}` : ''}">
+      <span class="kpi-n num">${n}</span>
+      <span class="kpi-l">${label}</span>
+      ${sub ? `<span class="kpi-sub">${sub}</span>` : ''}
+    </div>`;
+}
+
+// Horizontal magnitude bar. Single hue for comparison, warning/critical tones
+// reserved for actual state. Every bar is directly labelled.
+function brkBar(name, valLabel, segs, title) {
+  // Widths ride on a data attribute and are applied through the CSSOM after
+  // render — the strict CSP forbids inline style attributes.
+  const fills = segs
+    .filter((s) => s.w > 0)
+    .map((s) => `<span class="brk-fill${s.cls ? ` ${s.cls}` : ''}" data-w="${s.w.toFixed(2)}"></span>`)
+    .join('');
+  return `
+    <div class="brk"${title ? ` title="${esc(title)}"` : ''}>
+      <div class="brk-head">
+        <span class="brk-name">${esc(name)}</span>
+        <span class="brk-val">${valLabel}</span>
+      </div>
+      <div class="brk-track">${fills}</div>
+    </div>`;
+}
+
+function renderOverviewTab() {
+  const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged);
+  const c = counts();
+  const inv = S.inv || emptyInv();
+  const iss = issuedTotals();
+
+  let issued = 0, returned = 0;
+  for (const i of ITEMS) { issued += iss[i.id].t; returned += iss[i.id].r; }
+  const held = issued - returned;
+
+  const shortItems = ITEMS.filter((i) => {
+    const open = Number(inv.open[i.id]) || 0;
+    return open > 0 && open - (iss[i.id].t - iss[i.id].r) < 0;
+  });
+  const armed = approved.filter((r) => r.data.weapon).length;
+  const licAny = approved.filter((r) => r.data.lic && Object.values(r.data.lic).some((l) => l.has)).length;
+  const openReps = openReports();
+
+  const tiles = [
+    kpi(approved.length, 'חיילים מאושרים', null, `${c.pending} ממתינים לאישור`),
+    kpi(held, 'פריטים בחוץ', held > 0 ? 'warn' : 'ok', `מתוך ${issued} שהוחתמו`),
+    kpi(`${pct(returned, issued)}%`, 'אחוז החזרה', pct(returned, issued) === 100 ? 'ok' : null, `${returned} הוחזרו`),
+    kpi(shortItems.length, 'פריטים בחוסר', shortItems.length ? 'bad' : 'ok',
+        shortItems.length ? shortItems.map((i) => i.name).join(', ') : 'המלאי מכסה'),
+    kpi(openReps, 'דיווחי חוסר פתוחים', openReps ? 'warn' : 'ok'),
+    kpi(armed, 'נשקים משויכים', null, `${licAny} עם רישיון נהיגה`),
+  ].join('');
+
+  // per-department: how many soldiers, and how much of their gear is still out
+  const deptRows = DEPTS.map((dp) => {
+    const recs = approved.filter((r) => r.data.dept === dp.id);
+    let t = 0, r = 0;
+    for (const rec of recs) {
+      for (const i of ITEMS) {
+        const it = rec.data.items[i.id];
+        if (it) { t += it.t; r += it.r || 0; }
+      }
+    }
+    return { ...dp, n: recs.length, t, r, out: t - r };
+  }).filter((d) => d.n);
+
+  const maxOut = Math.max(1, ...deptRows.map((d) => d.t));
+  const deptBars = deptRows
+    .map((d) =>
+      brkBar(
+        `${d.name} · ${d.n} חיילים`,
+        `<span class="num">${d.out}</span> בחוץ מתוך <span class="num">${d.t}</span>`,
+        [
+          { w: (d.r / maxOut) * 100, cls: '' },
+          { w: (d.out / maxOut) * 100, cls: 'out' },
+        ],
+        `${d.name}: ${d.r} הוחזרו, ${d.out} בחוץ`
+      )
+    )
+    .join('');
+
+  // per-item utilisation against opening stock
+  const itemBars = ITEMS.map((i) => {
+    const open = Number(inv.open[i.id]) || 0;
+    const out = iss[i.id].t - iss[i.id].r;
+    const shelf = open - out;
+    const short = open > 0 && shelf < 0;
+    const denom = Math.max(open, out, 1);
+    return brkBar(
+      i.name,
+      open
+        ? `<span class="num">${out}</span> בחוץ · <span class="num">${shelf}</span> במחסן${short ? ' ⚠ חוסר' : ''}`
+        : `<span class="num">${out}</span> בחוץ · מלאי פתיחה לא הוזן`,
+      [{ w: (out / denom) * 100, cls: short ? 'bad' : 'out' }],
+      `${i.name}: פתיחה ${open || '—'}, בחוץ ${out}`
+    );
+  }).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">סקירה כללית</h2>
+      <p class="panel-sub">תמונת מצב מלאה. הנתונים מחושבים מרשומות מאושרות בלבד.</p>
+      <div class="kpis">${tiles}</div>
+      ${shortItems.length
+        ? `<div class="callout alert">
+             <p class="callout-title">⚠ חוסרים פעילים</p>
+             <p class="mb0">${shortItems
+               .map((i) => {
+                 const open = Number(inv.open[i.id]) || 0;
+                 const out = iss[i.id].t - iss[i.id].r;
+                 return `<strong>${esc(i.name)}</strong> — חסרים <span class="num">${out - open}</span>`;
+               })
+               .join(' · ')}</p>
+           </div>`
+        : ''}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">פילוח לפי מחלקה</h2>
+      <p class="panel-sub">כמה ציוד יצא לכל מחלקה וכמה ממנו כבר חזר.</p>
+      <div class="brk-legend">
+        <span class="lgnd">הוחזר</span>
+        <span class="lgnd out">בחוץ</span>
+      </div>
+      ${deptBars || '<p class="empty">אין רשומות מאושרות.</p>'}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">ניצולת מלאי לפי פריט</h2>
+      <p class="panel-sub">כמה מכל פריט נמצא כרגע אצל החיילים.</p>
+      <div class="brk-legend">
+        <span class="lgnd out">בחוץ</span>
+        <span class="lgnd bad">חוסר — הוחתם מעבר למלאי</span>
+      </div>
+      ${itemBars}
+    </section>`;
+}
+
+/* ── Shortage reports (admin) ──────────────────────────────────────── */
+
+const openReports = () => S.reports.filter((r) => r.status === 'open' && !r.damaged).length;
+
+function renderReportsTab() {
+  const filters = [
+    ['open', 'פתוחים'],
+    ['done', 'טופלו'],
+    ['all', 'הכל'],
+  ]
+    .map(
+      ([id, label]) =>
+        `<button class="filter" aria-pressed="${S.repFilter === id}" data-act="rep-filter" data-f="${id}">${label}</button>`
+    )
+    .join('');
+
+  const visible = S.reports.filter((r) => {
+    if (r.damaged) return true;
+    if (S.repFilter === 'all') return true;
+    return r.status === S.repFilter;
+  });
+
+  const cards = visible
+    .map((rec) => {
+      if (rec.damaged) {
+        return `<article class="rec broken">
+            <header class="rec-head"><div class="rec-name">דיווח פגום</div><span class="state live">שגיאה</span></header>
+            <p class="muted-txt">לא ניתן לפענח את הדיווח.</p>
+            <div class="rec-actions"><button class="btn danger" data-act="rep-del" data-id="${esc(rec.id)}">מחיקה</button></div>
+          </article>`;
+      }
+      const d = rec.data;
+      const done = rec.status === 'done';
+      return `
+        <article class="rec ${done ? 'done' : 'wait'}">
+          <header class="rec-head">
+            <div>
+              <div class="rec-name">${esc(d.name)}</div>
+              <div class="rec-meta">דווח ${esc(fmtDate(d.createdAt))}</div>
+              ${/* older reports carried identity fields; newer ones are name + text only */ ''}
+              ${d.pn || d.dept
+                ? `<div class="rec-meta">${d.pn ? `מ״א <span class="num">${esc(d.pn)}</span>` : ''}${d.pn && d.dept ? ' · ' : ''}${d.dept ? esc(deptName(d.dept)) : ''}</div>`
+                : ''}
+            </div>
+            <span class="state ${done ? 'done' : 'wait'}">${done ? '✓ טופל' : 'פתוח'}</span>
+          </header>
+          ${d.phone
+            ? `<div class="rec-meta">טלפון:
+                 <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
+                 <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button>
+               </div>`
+            : ''}
+          <blockquote class="rep-text">${esc(d.text)}</blockquote>
+          <div class="rec-actions">
+            <button class="btn ${done ? 'ghost' : 'primary'}" data-act="rep-toggle" data-id="${esc(rec.id)}">
+              ${done ? 'החזרה לפתוח' : '✓ סימון כטופל'}
+            </button>
+            ${d.phone
+              ? `<a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>`
+              : ''}
+            <button class="btn danger" data-act="rep-del" data-id="${esc(rec.id)}">מחיקה</button>
+          </div>
+        </article>`;
+    })
+    .join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">בקשות ודיווחי חוסר</h2>
+      <p class="panel-sub">בקשות שחיילים שלחו בעצמם דרך <span class="code-inline">#report</span>. לא קשור למאגר ההחתמות. סמנו ✓ אחרי הטיפול.</p>
+      <div class="filters">${filters}</div>
+      ${cards || '<p class="empty">אין דיווחים בסינון הזה.</p>'}
+    </section>`;
+}
+
 function renderSecurityTab() {
   return `
     <div class="callout">
@@ -1235,6 +1633,39 @@ async function saveRec(rec) {
   const sealed = await seal(S.pubKey, rec.data);
   await api(`/admin/records/${rec.rid}`, { method: 'PUT', body: { ...sealed, status: rec.status } });
 }
+
+async function loadReports() {
+  const { reports } = await api('/admin/reports');
+  const out = [];
+  for (const row of reports) {
+    try {
+      out.push({ ...row, data: await openRecord(S.priv, row), damaged: false });
+    } catch {
+      out.push({ ...row, data: null, damaged: true });
+    }
+  }
+  S.reports = out;
+}
+
+const repToggle = (id) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec) return;
+    const next = rec.status === 'done' ? 'open' : 'done';
+    await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: next } });
+    rec.status = next;
+    renderConsole();
+    toast(next === 'done' ? 'סומן כטופל' : 'הוחזר לפתוח');
+  });
+
+const repDelete = (id) =>
+  withBusy(async () => {
+    if (!window.confirm('למחוק את הדיווח? הפעולה אינה הפיכה.')) return;
+    await api(`/admin/reports/${id}`, { method: 'DELETE' });
+    S.reports = S.reports.filter((r) => r.id !== id);
+    renderConsole();
+    toast('הדיווח נמחק');
+  });
 
 // The inventory blob rides the same envelope as records.
 async function loadInv() {
@@ -1475,7 +1906,8 @@ async function setupSubmit(form) {
     S.pubKey = await importPubKey(S.config.pub);
     await loadRecords();
     await loadInv();
-    S.tab = 'pending';
+    await loadReports();
+    S.tab = 'over';
     armIdle();
     renderConsole();
     toast('המערכת הוקמה — שמרו את הסיסמה במקום בטוח');
@@ -1508,7 +1940,8 @@ async function loginSubmit(form) {
       S.pubKey = await importPubKey(S.config.pub);
       await loadRecords();
       await loadInv();
-      S.tab = 'pending';
+      await loadReports();
+      S.tab = 'over';
       armIdle();
       renderConsole();
     } catch (e) {
@@ -1636,6 +2069,7 @@ const adminRefresh = () =>
   withBusy(async () => {
     await loadRecords();
     await loadInv();
+    await loadReports();
     renderConsole();
     toast('עודכן');
   });
@@ -1706,6 +2140,7 @@ const adminWipe = () =>
     S.pubKey = null;
     S.recs = [];
     S.inv = null;
+    S.reports = [];
     S.q = '';
     S.dept = 'all';
     S.collapsed.clear();
@@ -1832,6 +2267,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'setup') setupSubmit(form);
   else if (kind === 'login') loginSubmit(form);
   else if (kind === 'rotate') rotateSubmit(form);
+  else if (kind === 'report') reportSubmit(form);
 });
 
 function dispatch(act, el) {
@@ -1863,6 +2299,7 @@ function dispatch(act, el) {
     case 'creditall': adminCreditAll(rid); break;
     case 'del': adminDelete(rid); break;
     case 'export': exportCsv(); break;
+    case 'export-weapons': exportWeaponsCsv(); break;
     case 'wipe': adminWipe(); break;
     // search & grouping
     case 'dept': S.dept = el.dataset.dept; renderConsole(); break;
@@ -1886,6 +2323,18 @@ function dispatch(act, el) {
       break;
     case 'inv-save': invSave(); break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
+    // shortage reports
+    case 'rep-filter': S.repFilter = el.dataset.f; renderConsole(); break;
+    case 'rep-toggle': repToggle(el.dataset.id); break;
+    case 'rep-del': repDelete(el.dataset.id); break;
+    case 'rep-reveal': {
+      const id = el.dataset.id;
+      if (S.revealed.has(id)) S.revealed.delete(id);
+      else S.revealed.add(id);
+      renderConsole();
+      break;
+    }
+    case 'rep-again': S.repSent = false; S.rep = null; renderReport(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;
     case 'wa-ret': markSent(rid, 'returnNotified'); break;
@@ -1913,7 +2362,7 @@ function focusLast(sel) {
 /* ── Routing & boot ────────────────────────────────────────────────── */
 
 window.addEventListener('hashchange', () => {
-  const route = location.hash === '#admin' ? 'admin' : 'soldier';
+  const route = routeFromHash();
   if (route === S.route) return;
   if (S.route === 'admin' && S.priv) lock();
   S.route = route;

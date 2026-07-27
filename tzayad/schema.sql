@@ -21,6 +21,22 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS idx_records_status ON records(status);
 
+-- Shortage reports: free-text "what I'm missing" notes from soldiers. Separate
+-- from equipment sign-out entirely — a soldier may file several over time, so
+-- the id is random per report rather than derived from the personal number.
+-- Body is encrypted like everything else; only the handled flag is in clear.
+CREATE TABLE IF NOT EXISTS reports (
+  id          TEXT PRIMARY KEY,        -- 32 random hex chars
+  ek          TEXT NOT NULL,
+  iv          TEXT NOT NULL,
+  ct          TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'done'
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+
 -- Licence photos, one row per (soldier, kind). Kept out of the records table
 -- so the admin console never downloads megabytes of images just to list
 -- soldiers — they are fetched only when a specific licence is opened.
