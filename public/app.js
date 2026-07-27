@@ -162,6 +162,64 @@ async function openRecord(privKey, rec) {
   return JSON.parse(td.decode(pt));
 }
 
+// Seals raw bytes rather than JSON — used for licence photos.
+async function sealBytes(pubKey, bytes) {
+  const cek = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
+  const ek = await crypto.subtle.encrypt(
+    { name: 'RSA-OAEP' }, pubKey, await crypto.subtle.exportKey('raw', cek)
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cek, bytes);
+  return { ek: b64(ek), iv: b64(iv), ct: b64(ct) };
+}
+
+async function openBytes(privKey, rec) {
+  const rawCek = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privKey, ub64(rec.ek));
+  const cek = await crypto.subtle.importKey('raw', rawCek, 'AES-GCM', false, ['decrypt']);
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(rec.iv) }, cek, ub64(rec.ct));
+}
+
+/* ── Licence photos ────────────────────────────────────────────────── */
+
+const LIC_KINDS = [
+  { id: 'civil', label: 'רישיון נהיגה אזרחי בתוקף', short: 'רישיון אזרחי' },
+  { id: 'military', label: 'רישיון נהיגה צבאי בתוקף', short: 'רישיון צבאי' },
+];
+
+const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
+
+// Downscale and re-encode a camera photo until it fits, keeping the licence
+// text legible. Runs entirely on the soldier's device — the original file is
+// never uploaded, only the compressed result, and only after encryption.
+async function compressImage(file) {
+  const dataUrl = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('קריאת הקובץ נכשלה'));
+    fr.readAsDataURL(file);
+  });
+  const img = await new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error('הקובץ אינו תמונה תקינה'));
+    im.src = dataUrl;
+  });
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  for (const [maxDim, quality] of [[1600, 0.8], [1400, 0.72], [1200, 0.65], [1000, 0.55], [800, 0.45]]) {
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
+    if (blob && blob.size <= DOC_MAX_BYTES) {
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), size: blob.size };
+    }
+  }
+  throw new Error('התמונה גדולה מדי — נסו לצלם שוב מקרוב יותר');
+}
+
 /* ── State ─────────────────────────────────────────────────────────── */
 
 const S = {
@@ -170,11 +228,13 @@ const S = {
 
   // soldier flow
   sStep: 1,
-  ident: null,                  // { pn, name, phone, dept }
+  ident: null,                  // { pn, name, phone, dept, weapon }
   rid: null,
   suppMode: false,              // main record approved → this is a supplement
   existingPending: false,
   sel: {},                      // itemId -> quantity
+  lic: { civil: false, military: false },   // "I hold a valid licence" ticks
+  licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
 
   // admin
   adminView: 'login',           // 'setup' | 'login' | 'console'
@@ -183,6 +243,7 @@ const S = {
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
   recs: [],                     // { rid, status, created_at, updated_at, data|null, damaged }
   inv: null,                    // { open:{}, extra:[], notes } — decrypted inventory
+  docs: {},                     // "rid:kind" -> data URL, fetched on demand
   tab: 'pending',
   filter: 'out',
   q: '',                        // free-text search over name / pn / phone
@@ -213,6 +274,7 @@ function lock() {
   S.pubKey = null;
   S.recs = [];
   S.inv = null;
+  S.docs = {};                  // decrypted licence images must not outlive the session
   S.q = '';
   S.revealed.clear();
   clearTimeout(idleTimer);
@@ -230,6 +292,8 @@ function resetSoldier() {
   S.suppMode = false;
   S.existingPending = false;
   S.sel = {};
+  S.lic = { civil: false, military: false };
+  S.licPhoto = {};
 }
 
 /* ── Rendering ─────────────────────────────────────────────────────── */
@@ -270,8 +334,49 @@ function renderSoldier() {
   else renderSoldierStep3();
 }
 
+// Checkbox + (once ticked) a camera capture control for that licence.
+function licBlock(kind) {
+  const on = !!S.lic[kind.id];
+  const shot = S.licPhoto[kind.id];
+  const capture = !on
+    ? ''
+    : `<div class="lic-body">
+         ${shot
+           ? `<div class="lic-shot">
+                <img class="lic-thumb" src="${shot.preview}" alt="תצוגה מקדימה של ${esc(kind.short)}">
+                <div class="lic-shot-side">
+                  <span class="lic-ok">✓ צולם</span>
+                  <span class="lic-size num">${Math.round(shot.size / 1024)} KB</span>
+                  <button type="button" class="linkbtn danger-link" data-act="lic-clear" data-kind="${kind.id}">הסרה</button>
+                </div>
+              </div>`
+           : ''}
+         <div class="lic-actions">
+           <label class="btn ghost lic-pick">
+             <span>📷 ${shot ? 'צילום מחדש' : 'צילום'}</span>
+             <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                    data-act="lic-file" data-kind="${kind.id}">
+           </label>
+           <label class="btn ghost lic-pick">
+             <span>🖼 מהגלריה</span>
+             <input class="vis-hidden" type="file" accept="image/*"
+                    data-act="lic-file" data-kind="${kind.id}">
+           </label>
+         </div>
+         ${shot ? '' : '<p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>'}
+       </div>`;
+  return `
+    <div class="lic ${on ? 'on' : ''}">
+      <label class="check lic-head">
+        <input type="checkbox" data-act="lic-toggle" data-kind="${kind.id}" ${on ? 'checked' : ''}>
+        <span>${esc(kind.label)}</span>
+      </label>
+      ${capture}
+    </div>`;
+}
+
 function renderSoldierStep1() {
-  const v = S.ident || { pn: '', name: '', phone: '', dept: '' };
+  const v = S.ident || { pn: '', name: '', phone: '', dept: '', weapon: '' };
   const deptOpts = DEPTS.map(
     (d) => `<option value="${d.id}"${v.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`
   ).join('');
@@ -304,6 +409,18 @@ function renderSoldierStep1() {
             ${deptOpts}
           </select>
         </label>
+        <label class="field">
+          <span class="field-label">מספר סידורי של הנשק</span>
+          <input class="input num" name="weapon" autocomplete="off" maxlength="20"
+                 value="${esc(v.weapon || '')}" placeholder="1234567">
+          <span class="field-hint">אם לא קיבלתם נשק — אפשר להשאיר ריק.</span>
+        </label>
+
+        <fieldset class="lic-set">
+          <legend class="field-label">רישיונות נהיגה</legend>
+          ${LIC_KINDS.map(licBlock).join('')}
+        </fieldset>
+
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">המשך</button>
       </form>
@@ -494,6 +611,34 @@ function renderConsole() {
 
 function fpStrip(rid) {
   return `<footer class="fp"><span aria-hidden="true">🔒</span><span class="fp-code num">${esc(rid.slice(0, 16))}</span></footer>`;
+}
+
+// Weapon serial + licence chips, with an on-demand viewer for the photos.
+// Images are fetched and decrypted only when the admin asks for one.
+function extrasRow(rec) {
+  const d = rec.data;
+  const bits = [];
+  if (d.weapon) {
+    bits.push(`<div class="rec-meta">נשק מס׳ <span class="num">${esc(d.weapon)}</span></div>`);
+  }
+  const lic = d.lic || {};
+  const chips = LIC_KINDS.filter((k) => lic[k.id] && lic[k.id].has).map((k) => {
+    const key = `${rec.rid}:${k.id}`;
+    const shown = S.docs[key];
+    const hasDoc = lic[k.id].doc;
+    return `
+      <div class="licv">
+        <span class="tagi lic-chip">✓ ${esc(k.short)}</span>
+        ${hasDoc
+          ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">${
+              shown ? 'הסתרה' : 'הצגת צילום'
+            }</button>`
+          : '<span class="muted-txt">ללא צילום</span>'}
+        ${shown ? `<img class="doc-img" src="${shown}" alt="צילום ${esc(k.short)}">` : ''}
+      </div>`;
+  });
+  if (chips.length) bits.push(`<div class="licv-wrap">${chips.join('')}</div>`);
+  return bits.join('');
 }
 
 function phoneRow(rec) {
@@ -698,6 +843,7 @@ function pendingCard(rec) {
         ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
         : ''}
       ${phoneRow(rec)}
+          ${extrasRow(rec)}
       <ul>${rows}</ul>
       <div class="rec-actions">
         <button class="btn primary" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
@@ -781,6 +927,7 @@ function renderTrackTab() {
               : `<span class="state done">הוחזר במלואו</span>`}
           </header>
           ${phoneRow(rec)}
+          ${extrasRow(rec)}
           <ul>${rows}</ul>
           <div class="rec-actions">
             ${out > 0
@@ -819,27 +966,51 @@ function renderSummaryTab() {
       const it = rec.data.items[item.id];
       if (it) { t += it.t; r += it.r || 0; }
     }
-    return { name: item.name, t, r, out: t - r };
+    return { id: item.id, name: item.name, icon: item.icon, t, r, out: t - r };
   });
+  const inv = S.inv || emptyInv();
   const rows = totals
-    .map(
-      (x) => `<tr>
-        <td>${esc(x.name)}</td>
+    .map((x) => {
+      const open = Number(inv.open[x.id]) || 0;
+      const shelf = open - x.out;
+      const short = open > 0 && shelf < 0;
+      return `<tr${short ? ' class="row-short"' : ''}>
+        <td><span class="tbl-ico" aria-hidden="true">${x.icon}</span>${esc(x.name)}</td>
+        <td class="num">${open || '—'}</td>
         <td class="num">${x.t}</td>
         <td class="num">${x.r}</td>
         <td class="num ${x.out > 0 ? 'warn' : 'ok'}">${x.out}</td>
-      </tr>`
-    )
+        <td class="num ${!open ? '' : short ? 'bad' : shelf === 0 ? 'warn' : 'ok'}">${open ? shelf : '—'}</td>
+      </tr>`;
+    })
     .join('');
   const soldiersOut = approved.filter((rec) => outstanding(rec.data) > 0).length;
+  const shortages = totals.filter((x) => {
+    const open = Number(inv.open[x.id]) || 0;
+    return open > 0 && open - x.out < 0;
+  });
 
   return `
     <section class="panel">
       <h2 class="panel-title">סיכום מלאי</h2>
       <p class="panel-sub">רשומות מאושרות בלבד. <span class="num">${c.pending}</span> ממתינות לאישור.</p>
+      ${shortages.length
+        ? `<div class="callout alert">
+             <p class="callout-title">⚠ חוסרים במלאי</p>
+             <p class="mb0">${shortages
+               .map((x) => {
+                 const open = Number(inv.open[x.id]) || 0;
+                 return `<strong>${esc(x.name)}</strong> — חסרים <span class="num">${x.out - open}</span>`;
+               })
+               .join(' · ')}</p>
+           </div>`
+        : ''}
       <div class="tbl-scroll">
         <table class="tbl">
-          <thead><tr><th>פריט</th><th class="num">הונפק</th><th class="num">הוחזר</th><th class="num">בחוץ</th></tr></thead>
+          <thead><tr>
+            <th>פריט</th><th class="num">מלאי פתיחה</th><th class="num">הונפק</th>
+            <th class="num">הוחזר</th><th class="num">בחוץ</th><th class="num">במחסן</th>
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -849,6 +1020,56 @@ function renderSummaryTab() {
         ${c.damaged ? ` · <span class="num">${c.damaged}</span> רשומות פגומות` : ''}
       </p>
       <button class="btn ghost wide mt" data-act="export">ייצוא CSV</button>
+    </section>
+
+    ${ledgerPanel(approved)}`;
+}
+
+// The quartermaster's ledger: one row per soldier, one column per item, so
+// "who is signed for what" is answerable at a glance. Respects the active
+// search and department filter.
+function ledgerPanel(approved) {
+  const visible = applyFilters(approved);
+  const heads = ITEMS.map(
+    (i) => `<th class="num lg-col" title="${esc(i.name)}"><span class="tbl-ico" aria-hidden="true">${i.icon}</span><span class="lg-h">${esc(i.name)}</span></th>`
+  ).join('');
+
+  const body = visible
+    .map((rec) => {
+      const d = rec.data;
+      const out = outstanding(d);
+      const cells = ITEMS.map((i) => {
+        const it = d.items[i.id];
+        if (!it) return '<td class="num dim">·</td>';
+        const held = it.t - (it.r || 0);
+        return `<td class="num ${held > 0 ? 'held' : 'back'}">${held > 0 ? held : '✓'}<span class="lg-of">/${it.t}</span></td>`;
+      }).join('');
+      return `<tr>
+        <td class="lg-name">
+          <span class="lg-nm">${esc(d.name)}</span>
+          <span class="lg-sub num">${esc(d.pn)}</span>
+          <span class="lg-sub">${esc(deptName(d.dept))}</span>
+          ${d.weapon ? `<span class="lg-sub">נשק <span class="num">${esc(d.weapon)}</span></span>` : ''}
+        </td>
+        ${cells}
+        <td class="num ${out > 0 ? 'warn' : 'ok'}">${out}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">מי חתום על מה</h2>
+      <p class="panel-sub">כל שורה היא חייל, כל עמודה פריט. המספר הוא מה שעדיין אצלו, מתוך מה שהוחתם. ✓ = הוחזר במלואו.</p>
+      ${searchBar(approved.length, visible.length)}
+      ${visible.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl lg">
+               <thead><tr><th class="lg-name">חייל</th>${heads}<th class="num">בחוץ</th></tr></thead>
+               <tbody>${body}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">אין חיילים שתואמים את החיפוש.</p>'}
     </section>`;
 }
 
@@ -957,7 +1178,7 @@ function renderSecurityTab() {
   return `
     <div class="callout">
       <p class="callout-title">מה מוצפן</p>
-      <p>שם, מספר אישי, טלפון ופירוט הציוד מוצפנים במכשיר לפני השליחה. השרת, קלאודפלייר, וכל מי שמשיג גישה לחשבון או למסד — רואים צופן בלבד.</p>
+      <p>שם, מספר אישי, טלפון, מספר נשק, פירוט הציוד <strong>וצילומי הרישיונות</strong> מוצפנים במכשיר לפני השליחה. השרת, קלאודפלייר, וכל מי שמשיג גישה לחשבון או למסד — רואים צופן בלבד.</p>
       <p class="mb0">מה השרת כן רואה: מספר הרשומות, סטטוס (ממתין/מאושר) וחותמות זמן. לא זהות ולא פירוט ציוד.</p>
     </div>
     <div class="callout risk">
@@ -1061,10 +1282,14 @@ async function soldierIdentSubmit(form) {
   const name = form.name.value.trim();
   const phone = form.phone.value.trim();
   const dept = form.dept.value;
+  const weapon = form.weapon.value.trim();
   if (!/^\d{5,9}$/.test(pn)) return setFormErr(form, 'מספר אישי: 5–9 ספרות');
   if (name.length < 2) return setFormErr(form, 'נא למלא שם מלא');
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
   if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  if (weapon && !/^[A-Za-z0-9\-/]{3,20}$/.test(weapon)) {
+    return setFormErr(form, 'מספר סידורי: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  }
   setFormErr(form, '');
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
@@ -1072,7 +1297,7 @@ async function soldierIdentSubmit(form) {
   await withBusy(async () => {
     const rid = await deriveRid(pn, S.config.idSalt);
     const st = await api(`/status/${rid}`);
-    S.ident = { pn, name, phone, dept };
+    S.ident = { pn, name, phone, dept, weapon };
     if (st.exists && st.status === 'approved') {
       // main record already approved → supplement mode: the soldier registers
       // only the additional gear, and the admin merges it on approval
@@ -1093,6 +1318,57 @@ async function soldierIdentSubmit(form) {
   if (S.sStep === 1) {
     btn.disabled = false;
     btn.textContent = 'המשך';
+  }
+}
+
+/* — licence capture (step 1) — */
+
+// Ticking a box or attaching a photo re-renders step 1, so whatever the
+// soldier has already typed must be preserved first.
+function captureIdentForm() {
+  const f = $app.querySelector('form[data-form="ident"]');
+  if (!f) return;
+  S.ident = {
+    ...(S.ident || {}),
+    pn: f.pn.value.trim(),
+    name: f.name.value.trim(),
+    phone: f.phone.value.trim(),
+    dept: f.dept.value,
+    weapon: f.weapon.value.trim(),
+  };
+}
+
+function licToggle(kind) {
+  captureIdentForm();
+  S.lic[kind] = !S.lic[kind];
+  if (!S.lic[kind]) delete S.licPhoto[kind];   // unticking discards the photo
+  renderSoldier();
+}
+
+function licClear(kind) {
+  captureIdentForm();
+  delete S.licPhoto[kind];
+  renderSoldier();
+}
+
+async function licFile(kind, input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  captureIdentForm();
+  if (!/^image\//.test(file.type)) {
+    toast('יש לבחור קובץ תמונה', true);
+    return;
+  }
+  toast('מעבד את התמונה…');
+  try {
+    const { bytes, size } = await compressImage(file);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    S.licPhoto[kind] = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
+    renderSoldier();
+    toast('התמונה נקלטה');
+  } catch (e) {
+    toast(e.message || 'עיבוד התמונה נכשל', true);
   }
 }
 
@@ -1129,10 +1405,26 @@ async function soldierSubmit() {
       createdAt: now,
       log: [{ a: 'submit', t: now }],
     };
+    if (S.ident.weapon) payload.weapon = S.ident.weapon;
+    // which licences were declared, and which of them have a photo attached
+    const lic = {};
+    for (const k of LIC_KINDS) {
+      if (S.lic[k.id]) lic[k.id] = { has: true, doc: !!S.licPhoto[k.id] };
+    }
+    if (Object.keys(lic).length) payload.lic = lic;
     if (S.suppMode) payload.supp = true;
+
     const pubKey = await importPubKey(S.config.pub);
     const sealed = await seal(pubKey, payload);
     await api('/records', { body: { rid: S.rid, ...sealed } });
+
+    // Photos ride separately so listing soldiers never pulls image data.
+    for (const k of LIC_KINDS) {
+      const shot = S.licPhoto[k.id];
+      if (!S.lic[k.id] || !shot) continue;
+      const sealedDoc = await sealBytes(pubKey, shot.bytes);
+      await api('/docs', { body: { rid: S.rid, kind: k.id, ...sealedDoc } });
+    }
     S.sStep = 3;
     renderSoldier();
   });
@@ -1355,6 +1647,33 @@ const invSave = () =>
     toast('המלאי נשמר');
   });
 
+// Fetches and decrypts one licence photo the first time it is asked for;
+// afterwards the toggle just hides the copy already held in memory.
+const toggleDoc = (rid, kind) =>
+  withBusy(async () => {
+    const key = `${rid}:${kind}`;
+    if (S.docs[key]) {
+      delete S.docs[key];
+      renderConsole();
+      return;
+    }
+    const { docs } = await api(`/admin/docs/${rid}`);
+    const row = (docs || []).find((x) => x.kind === kind);
+    if (!row) {
+      toast('הצילום לא נמצא', true);
+      return;
+    }
+    try {
+      const bytes = new Uint8Array(await openBytes(S.priv, row));
+      let bin = '';
+      for (const b of bytes) bin += String.fromCharCode(b);
+      S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
+      renderConsole();
+    } catch {
+      toast('פענוח הצילום נכשל — ייתכן שהנתונים שובשו', true);
+    }
+  });
+
 async function rotateSubmit(form) {
   const pw = form.pw.value;
   const pw2 = form.pw2.value;
@@ -1404,21 +1723,28 @@ function exportCsv() {
   if (!window.confirm('שימו לב: קובץ הייצוא אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
   const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const head = [
-    'מספר אישי', 'שם', 'טלפון', 'מחלקה',
+    'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק',
     ...ITEMS.flatMap((i) => [`${i.name} נלקח`, `${i.name} הוחזר`]),
+    'רישיון אזרחי', 'רישיון צבאי',
     'סטטוס', 'נשלח', 'אושר',
   ];
+  const licCell = (d, kind) => {
+    const l = (d.lic || {})[kind];
+    if (!l || !l.has) return '';
+    return l.doc ? 'כן (עם צילום)' : 'כן';
+  };
   const lines = [head.map(q).join(',')];
   for (const rec of S.recs) {
     if (rec.damaged) continue;
     const d = rec.data;
     lines.push(
       [
-        d.pn, d.name, d.phone, deptName(d.dept),
+        d.pn, d.name, d.phone, deptName(d.dept), d.weapon || '',
         ...ITEMS.flatMap((i) => {
           const it = d.items[i.id];
           return it ? [it.t, it.r || 0] : ['', ''];
         }),
+        licCell(d, 'civil'), licCell(d, 'military'),
         rec.status === 'approved' ? 'מאושר' : 'ממתין',
         fmtDate(d.createdAt),
         d.approvedAt ? fmtDate(d.approvedAt) : '',
@@ -1489,6 +1815,14 @@ $app.addEventListener('input', (e) => {
   }
 });
 
+// Checkboxes and file pickers report via 'change', not 'input'.
+$app.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el || !$app.contains(el)) return;
+  if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
+  else if (el.dataset.act === 'lic-file') licFile(el.dataset.kind, el);
+});
+
 $app.addEventListener('submit', (e) => {
   const form = e.target.closest('form[data-form]');
   if (!form) return;
@@ -1512,6 +1846,7 @@ function dispatch(act, el) {
     case 's-submit': soldierSubmit(); break;
     case 's-back': S.sStep = 1; renderSoldier(); break;
     case 's-reset': resetSoldier(); renderSoldier(); break;
+    case 'lic-clear': licClear(el.dataset.kind); break;
     // admin console
     case 'tab': S.tab = el.dataset.tab; renderConsole(); break;
     case 'filter': S.filter = el.dataset.filter; renderConsole(); break;
@@ -1550,6 +1885,7 @@ function dispatch(act, el) {
       renderConsole();
       break;
     case 'inv-save': invSave(); break;
+    case 'doc': toggleDoc(rid, el.dataset.kind); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;
     case 'wa-ret': markSent(rid, 'returnNotified'); break;
