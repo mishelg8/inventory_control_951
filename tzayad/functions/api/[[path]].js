@@ -8,6 +8,10 @@ const LOGIN_WINDOW_MS = 10 * 60 * 1000;   // ...per 10-minute lockout window
 const SUB_LIMIT = 40;                     // submissions per IP...
 const SUB_WINDOW_MS = 60 * 60 * 1000;     // ...per hour
 
+// ~400 KB of base64 ≈ 300 KB of JPEG. The client compresses well below this;
+// the cap is a backstop so a single row can never bloat the database.
+const DOC_MAX_B64 = 400000;
+
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const B64RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -212,6 +216,43 @@ export async function onRequest(context) {
       return json({ ok: true });
     }
 
+    // ── POST /api/docs ───────────────────────────────────────────────
+    // An encrypted licence photo. Stored apart from the record so listing
+    // soldiers never pulls image data. Same write rules as records: a photo
+    // can be replaced while pending, but not once the record is approved.
+    if (seg[0] === 'docs' && seg.length === 1 && method === 'POST') {
+      if (!(await allow(db, `sub:${ip}`, SUB_LIMIT, SUB_WINDOW_MS, now))) {
+        return err(429, 'יותר מדי הגשות, נסו שוב מאוחר יותר');
+      }
+      const b = await readBody(request);
+      if (!b) return err(400, 'בקשה לא תקינה');
+      const { rid, kind, ek, iv, ct } = b;
+      if (
+        !isHex(rid, HEX32) ||
+        (kind !== 'civil' && kind !== 'military') ||
+        !isB64(ek, 1000) ||
+        !isB64(iv, 64) ||
+        !isB64(ct, DOC_MAX_B64)
+      ) {
+        return err(400, 'בקשה לא תקינה');
+      }
+      const owner = await db
+        .prepare('SELECT status FROM records WHERE rid = ?1')
+        .bind(rid)
+        .first();
+      if (owner && owner.status === 'approved') {
+        return err(409, 'הרשומה כבר אושרה — פנו למנהל הציוד');
+      }
+      await db
+        .prepare(
+          `INSERT INTO docs (rid, kind, ek, iv, ct, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+           ON CONFLICT(rid, kind) DO UPDATE SET ek = ?3, iv = ?4, ct = ?5, created_at = ?6`
+        )
+        .bind(rid, kind, ek, iv, ct, now)
+        .run();
+      return json({ ok: true });
+    }
+
     // ── /api/admin/* ─────────────────────────────────────────────────
     if (seg[0] === 'admin') {
       // GET /api/admin/challenge
@@ -252,6 +293,16 @@ export async function onRequest(context) {
       if (seg[1] === 'logout' && seg.length === 2 && method === 'POST') {
         await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session).run();
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
+      }
+
+      // GET /api/admin/docs/:rid — licence photos for one soldier, on demand
+      if (seg[1] === 'docs' && seg.length === 3 && method === 'GET') {
+        if (!isHex(seg[2], HEX32)) return err(400, 'בקשה לא תקינה');
+        const { results } = await db
+          .prepare('SELECT kind, ek, iv, ct FROM docs WHERE rid = ?1')
+          .bind(seg[2])
+          .all();
+        return json({ docs: results });
       }
 
       // GET | PUT /api/admin/vault — the encrypted inventory blob
@@ -386,7 +437,11 @@ export async function onRequest(context) {
         }
 
         if (method === 'DELETE') {
-          const r = await db.prepare('DELETE FROM records WHERE rid = ?1').bind(rid).run();
+          // licence photos belong to the record — they go with it
+          const [r] = await db.batch([
+            db.prepare('DELETE FROM records WHERE rid = ?1').bind(rid),
+            db.prepare('DELETE FROM docs WHERE rid = ?1').bind(rid),
+          ]);
           if (!r.meta.changes) return err(404, 'הרשומה לא נמצאה');
           return json({ ok: true });
         }
@@ -419,6 +474,7 @@ export async function onRequest(context) {
       if (seg[1] === 'wipe' && seg.length === 2 && method === 'POST') {
         await db.batch([
           db.prepare('DELETE FROM records'),
+          db.prepare('DELETE FROM docs'),
           db.prepare('DELETE FROM vault'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),

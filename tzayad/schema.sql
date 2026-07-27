@@ -21,6 +21,20 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS idx_records_status ON records(status);
 
+-- Licence photos, one row per (soldier, kind). Kept out of the records table
+-- so the admin console never downloads megabytes of images just to list
+-- soldiers — they are fetched only when a specific licence is opened.
+-- Same encryption envelope as records: the server sees ciphertext only.
+CREATE TABLE IF NOT EXISTS docs (
+  rid         TEXT NOT NULL,           -- same rid as the owning record
+  kind        TEXT NOT NULL,           -- 'civil' | 'military'
+  ek          TEXT NOT NULL,
+  iv          TEXT NOT NULL,
+  ct          TEXT NOT NULL,           -- encrypted JPEG, capped at ~400 KB b64
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (rid, kind)
+);
+
 -- Single admin-owned encrypted blob (inventory: opening stock, extra items,
 -- free-text notes). Same envelope as records; readable only with the private key.
 CREATE TABLE IF NOT EXISTS vault (
