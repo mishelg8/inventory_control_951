@@ -181,10 +181,31 @@ async function openBytes(privKey, rec) {
 
 /* ── Licence photos ────────────────────────────────────────────────── */
 
+// Civilian licence is captured as typed fields (number + expiry) so the admin
+// can actually sort and chase expiry dates; the military one stays a photo.
 const LIC_KINDS = [
-  { id: 'civil', label: 'רישיון נהיגה אזרחי בתוקף', short: 'רישיון אזרחי' },
-  { id: 'military', label: 'רישיון נהיגה צבאי בתוקף', short: 'רישיון צבאי' },
+  { id: 'civil', label: 'רישיון נהיגה אזרחי בתוקף', short: 'רישיון אזרחי', mode: 'fields' },
+  { id: 'military', label: 'רישיון נהיגה צבאי בתוקף', short: 'רישיון צבאי', mode: 'photo' },
 ];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const EXPIRING_SOON_DAYS = 60;
+
+// 'valid' | 'soon' | 'expired' | 'nodate' — drives the red/amber/green states.
+function licState(expiry) {
+  if (!expiry) return 'nodate';
+  const t = Date.parse(`${expiry}T23:59:59`);
+  if (Number.isNaN(t)) return 'nodate';
+  const days = Math.floor((t - Date.now()) / DAY_MS);
+  if (days < 0) return 'expired';
+  return days <= EXPIRING_SOON_DAYS ? 'soon' : 'valid';
+}
+
+const fmtDay = (iso) => {
+  if (!iso) return '';
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('he-IL');
+};
 
 const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
 
@@ -222,8 +243,13 @@ async function compressImage(file) {
 
 /* ── State ─────────────────────────────────────────────────────────── */
 
-const routeFromHash = () =>
-  location.hash === '#admin' ? 'admin' : location.hash === '#report' ? 'report' : 'soldier';
+function routeFromHash() {
+  const h = location.hash;
+  if (h === '#admin') return 'admin';
+  if (h === '#report') return 'report';
+  if (h === '#sign') return 'soldier';
+  return 'home';   // the link a soldier is given lands on the chooser
+}
 
 const S = {
   config: null,                 // { ready, pub?, idSalt? }
@@ -241,6 +267,8 @@ const S = {
   existingPending: false,
   sel: {},                      // itemId -> quantity
   lic: { civil: false, military: false },   // "I hold a valid licence" ticks
+  licNo: '',                    // civilian licence number (typed, not OCR'd)
+  licExp: '',                   // civilian licence expiry, ISO yyyy-mm-dd
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
 
   // admin
@@ -303,6 +331,8 @@ function resetSoldier() {
   S.existingPending = false;
   S.sel = {};
   S.lic = { civil: false, military: false };
+  S.licNo = '';
+  S.licExp = '';
   S.licPhoto = {};
 }
 
@@ -322,7 +352,56 @@ function renderRoute() {
   $app.classList.toggle('wide', S.route === 'admin' && !!S.priv);
   if (S.route === 'admin') renderAdmin();
   else if (S.route === 'report') renderReport();
+  else if (S.route === 'home') renderHome();
   else renderSoldier();
+}
+
+/* ── Landing: what does the soldier want to do? ────────────────────── */
+
+function renderHome() {
+  render(`
+    <section class="panel center-head hero">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">מסייעת 951</h1>
+      <p class="panel-sub center mb0">בחרו מה תרצו לעשות.</p>
+    </section>
+    <div class="choices">
+      <a class="choice" href="#sign">
+        <span class="choice-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/>
+            <rect x="9" y="2.5" width="6" height="3.4" rx="1"/>
+            <path d="M8.5 12.5l2.4 2.4 4.6-5"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">החתמת ציוד</span>
+          <span class="choice-s">רישום הציוד האישי שקיבלתם — קסדה, ווסט, מחסניות ועוד.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#report">
+        <span class="choice-ico alt" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 21V4.5"/>
+            <path d="M5 5c4-2 8 2 12 0v8c-4 2-8-2-12 0z"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">בקשת ציוד / דיווח חוסר</span>
+          <span class="choice-s">חסר לכם משהו או צריך השלמה? כתבו ומנהל הציוד יטפל.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+    </div>`);
 }
 
 /* ── Shortage reporting (soldier-facing, separate from sign-out) ────── */
@@ -343,7 +422,7 @@ function renderReport() {
         <h1 class="panel-title">הדיווח נשלח</h1>
         <p class="panel-sub">מנהל הציוד יראה את הדיווח ויסמן אותו כשטופל. אין צורך לשלוח שוב.</p>
         <button class="btn ghost wide mt" data-act="rep-again">דיווח נוסף</button>
-        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה להחתמת ציוד</a></p>
+        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
       </section>`);
     return;
   }
@@ -368,7 +447,7 @@ function renderReport() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת הבקשה</button>
       </form>
-      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה להחתמת ציוד</a></p>
+      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
     </section>`);
 }
 
@@ -424,10 +503,41 @@ function renderSoldier() {
   else renderSoldierStep3();
 }
 
-// Checkbox + (once ticked) a camera capture control for that licence.
+// Checkbox, then either typed fields (civilian) or a photo capture (military).
 function licBlock(kind) {
   const on = !!S.lic[kind.id];
   const shot = S.licPhoto[kind.id];
+
+  if (kind.mode === 'fields') {
+    const st = licState(S.licExp);
+    const body = !on
+      ? ''
+      : `<div class="lic-body">
+           <label class="field">
+             <span class="field-label">מספר רישיון</span>
+             <input class="input num" data-act="lic-no" inputmode="numeric" autocomplete="off"
+                    maxlength="20" value="${esc(S.licNo)}" placeholder="12345678">
+           </label>
+           <label class="field mb0">
+             <span class="field-label">בתוקף עד</span>
+             <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}">
+             ${S.licExp && st === 'expired'
+               ? '<span class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</span>'
+               : S.licExp && st === 'soon'
+                 ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
+                 : ''}
+           </label>
+         </div>`;
+    return `
+      <div class="lic ${on ? 'on' : ''}">
+        <label class="check lic-head">
+          <input type="checkbox" data-act="lic-toggle" data-kind="${kind.id}" ${on ? 'checked' : ''}>
+          <span>${esc(kind.label)}</span>
+        </label>
+        ${body}
+      </div>`;
+  }
+
   const capture = !on
     ? ''
     : `<div class="lic-body">
@@ -1128,8 +1238,108 @@ function renderSummaryTab() {
       <button class="btn ghost wide mt" data-act="export">ייצוא CSV</button>
     </section>
 
+    ${licencePanel(approved)}
     ${weaponsPanel(approved)}
     ${ledgerPanel(approved)}`;
+}
+
+// Driving-licence register. Anyone without a licence in force is flagged red —
+// the state is spelled out in words as well as coloured, and the same wording
+// goes into the CSV.
+const LIC_LABEL = {
+  valid:   'בתוקף',
+  soon:    'פג בקרוב',
+  expired: 'פג תוקף',
+  nodate:  'ללא תאריך',
+  none:    'אין רישיון',
+};
+
+function licenceRows(approved) {
+  return applyFilters(approved).map((rec) => {
+    const d = rec.data;
+    const civ = (d.lic || {}).civil;
+    const st = civ && civ.has ? licState(civ.exp) : 'none';
+    return {
+      name: d.name,
+      pn: d.pn,
+      dept: deptName(d.dept),
+      no: (civ && civ.no) || '',
+      exp: (civ && civ.exp) || '',
+      st,
+      mil: !!((d.lic || {}).military && d.lic.military.has),
+    };
+  });
+}
+
+const LIC_RANK = { expired: 0, none: 1, nodate: 2, soon: 3, valid: 4 };
+
+function licencePanel(approved) {
+  const rows = licenceRows(approved);
+  const bad = rows.filter((r) => r.st === 'none' || r.st === 'expired' || r.st === 'nodate');
+  const soon = rows.filter((r) => r.st === 'soon');
+  const ok = rows.filter((r) => r.st === 'valid');
+
+  const body = rows
+    .slice()
+    .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'))
+    .map((r) => {
+      const alarm = r.st === 'expired' || r.st === 'none' || r.st === 'nodate';
+      return `<tr${alarm ? ' class="row-short"' : ''}>
+          <td>${esc(r.name)}</td>
+          <td class="num">${esc(r.pn)}</td>
+          <td>${esc(r.dept)}</td>
+          <td class="num">${r.no ? esc(r.no) : '—'}</td>
+          <td class="num">${r.exp ? esc(fmtDay(r.exp)) : '—'}</td>
+          <td class="${alarm ? 'bad' : r.st === 'soon' ? 'warn' : 'ok'}">${
+            alarm ? '⚠ ' : r.st === 'valid' ? '✓ ' : ''
+          }${LIC_LABEL[r.st]}</td>
+          <td>${r.mil ? '✓' : '—'}</td>
+        </tr>`;
+    })
+    .join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">רישיונות נהיגה</h2>
+      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. מכבד את החיפוש והסינון.</p>
+      <div class="stat-row">
+        <div class="stat"><span class="stat-n num">${ok.length}</span><span class="stat-l">✓ בתוקף</span></div>
+        <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
+        <div class="stat"><span class="stat-n num">${bad.length}</span><span class="stat-l">⚠ לא בתוקף</span></div>
+      </div>
+      ${bad.length
+        ? `<div class="callout alert"><p class="mb0"><strong class="num">${bad.length}</strong> חיילים ללא רישיון אזרחי בתוקף — ראו את השורות האדומות.</p></div>`
+        : ''}
+      ${rows.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr>
+                 <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
+                 <th class="num">מס׳ רישיון</th><th class="num">בתוקף עד</th>
+                 <th>סטטוס</th><th>צבאי</th>
+               </tr></thead>
+               <tbody>${body}</tbody>
+             </table>
+           </div>
+           <button class="btn ghost wide mt" data-act="export-lic">ייצוא רישיונות ל-CSV</button>`
+        : '<p class="empty">אין רשומות מאושרות.</p>'}
+    </section>`;
+}
+
+function exportLicCsv() {
+  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged);
+  const rows = licenceRows(approved)
+    .slice()
+    .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
+  const lines = [
+    ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי'],
+    ...rows.map((r) => [
+      r.name, r.pn, r.dept, r.no, r.exp ? fmtDay(r.exp) : '',
+      LIC_LABEL[r.st], r.mil ? 'כן' : 'לא',
+    ]),
+  ];
+  downloadCsv(lines.map((l) => l.map(csvCell).join(',')), 'tzayad-licences.csv');
 }
 
 // Weapon register: serial → holder. The one table a logistics NCO reaches for
@@ -1180,18 +1390,46 @@ function weaponsPanel(approved) {
 
 function exportWeaponsCsv() {
   if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const lines = [['מספר סידורי', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'].map(q).join(',')];
-  for (const rec of S.recs) {
-    if (rec.damaged || !rec.data || rec.status !== 'approved' || !rec.data.weapon) continue;
+  const lines = [['מספר סידורי', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'].map(csvCell).join(',')];
+  const armed = S.recs
+    .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
+    .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
+  for (const rec of armed) {
     const d = rec.data;
-    lines.push([d.weapon, d.name, d.pn, deptName(d.dept), d.phone].map(q).join(','));
+    lines.push([d.weapon, d.name, d.pn, deptName(d.dept), d.phone].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-weapons.csv');
 }
 
+// The ledger, flattened: one row per soldier, two columns per item.
+function exportLedgerCsv() {
+  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  const head = [
+    'שם', 'מספר אישי', 'מחלקה', 'מספר נשק',
+    ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
+    'סה״כ בחוץ',
+  ];
+  const lines = [head.map(csvCell).join(',')];
+  for (const rec of S.recs) {
+    if (rec.status !== 'approved' || rec.damaged || !rec.data) continue;
+    const d = rec.data;
+    lines.push([
+      d.name, d.pn, deptName(d.dept), d.weapon || '',
+      ...ITEMS.flatMap((i) => {
+        const it = d.items[i.id];
+        return it ? [it.t, it.t - (it.r || 0)] : ['', ''];
+      }),
+      outstanding(d),
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-ledger.csv');
+}
+
+// Excel-safe CSV cell: always quoted, embedded quotes doubled.
+const csvCell = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+
 function downloadCsv(lines, filename) {
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -1244,7 +1482,8 @@ function ledgerPanel(approved) {
                <thead><tr><th class="lg-name">חייל</th>${heads}<th class="num">בחוץ</th></tr></thead>
                <tbody>${body}</tbody>
              </table>
-           </div>`
+           </div>
+           <button class="btn ghost wide mt" data-act="export-ledger">ייצוא הטבלה ל-CSV</button>`
         : '<p class="empty">אין חיילים שתואמים את החיפוש.</p>'}
     </section>`;
 }
@@ -1767,12 +2006,19 @@ function captureIdentForm() {
     dept: f.dept.value,
     weapon: f.weapon.value.trim(),
   };
+  const no = $app.querySelector('[data-act="lic-no"]');
+  const exp = $app.querySelector('[data-act="lic-exp"]');
+  if (no) S.licNo = no.value.trim();
+  if (exp) S.licExp = exp.value;
 }
 
 function licToggle(kind) {
   captureIdentForm();
   S.lic[kind] = !S.lic[kind];
-  if (!S.lic[kind]) delete S.licPhoto[kind];   // unticking discards the photo
+  if (!S.lic[kind]) {
+    delete S.licPhoto[kind];                   // unticking discards the photo
+    if (kind === 'civil') { S.licNo = ''; S.licExp = ''; }
+  }
   renderSoldier();
 }
 
@@ -1840,7 +2086,12 @@ async function soldierSubmit() {
     // which licences were declared, and which of them have a photo attached
     const lic = {};
     for (const k of LIC_KINDS) {
-      if (S.lic[k.id]) lic[k.id] = { has: true, doc: !!S.licPhoto[k.id] };
+      if (!S.lic[k.id]) continue;
+      lic[k.id] = { has: true, doc: !!S.licPhoto[k.id] };
+      if (k.id === 'civil') {
+        if (S.licNo) lic.civil.no = S.licNo;
+        if (S.licExp) lic.civil.exp = S.licExp;
+      }
     }
     if (Object.keys(lic).length) payload.lic = lic;
     if (S.suppMode) payload.supp = true;
@@ -2156,7 +2407,7 @@ const adminWipe = () =>
 
 function exportCsv() {
   if (!window.confirm('שימו לב: קובץ הייצוא אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const q = csvCell;
   const head = [
     'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק',
     ...ITEMS.flatMap((i) => [`${i.name} נלקח`, `${i.name} הוחזר`]),
@@ -2186,14 +2437,7 @@ function exportCsv() {
       ].map(q).join(',')
     );
   }
-  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'tzayad-export.csv';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  downloadCsv(lines, 'tzayad-export.csv');
 }
 
 /* ── Event delegation ──────────────────────────────────────────────── */
@@ -2247,6 +2491,8 @@ $app.addEventListener('input', (e) => {
     // name and notes don't affect any computed figure — no re-render needed
     case 'inv-xname': S.inv.extra[i].name = el.value; break;
     case 'inv-notes': S.inv.notes = el.value; break;
+    case 'lic-no': S.licNo = el.value.trim(); break;
+    case 'lic-exp': S.licExp = el.value; break;   // re-render happens on 'change'
   }
 });
 
@@ -2256,6 +2502,8 @@ $app.addEventListener('change', (e) => {
   if (!el || !$app.contains(el)) return;
   if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
   else if (el.dataset.act === 'lic-file') licFile(el.dataset.kind, el);
+  // committed date → re-render so the validity hint updates
+  else if (el.dataset.act === 'lic-exp') { S.licExp = el.value; captureIdentForm(); renderSoldier(); }
 });
 
 $app.addEventListener('submit', (e) => {
@@ -2300,6 +2548,8 @@ function dispatch(act, el) {
     case 'del': adminDelete(rid); break;
     case 'export': exportCsv(); break;
     case 'export-weapons': exportWeaponsCsv(); break;
+    case 'export-lic': exportLicCsv(); break;
+    case 'export-ledger': exportLedgerCsv(); break;
     case 'wipe': adminWipe(); break;
     // search & grouping
     case 'dept': S.dept = el.dataset.dept; renderConsole(); break;
