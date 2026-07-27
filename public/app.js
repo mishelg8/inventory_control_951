@@ -503,75 +503,73 @@ function renderSoldier() {
   else renderSoldierStep3();
 }
 
-// Checkbox, then either typed fields (civilian) or a photo capture (military).
+// The camera / gallery pair, shared by both licence kinds.
+function licCapture(kind) {
+  const shot = S.licPhoto[kind.id];
+  return `
+    ${shot
+      ? `<div class="lic-shot">
+           <img class="lic-thumb" src="${shot.preview}" alt="תצוגה מקדימה של ${esc(kind.short)}">
+           <div class="lic-shot-side">
+             <span class="lic-ok">✓ צולם</span>
+             <span class="lic-size num">${Math.round(shot.size / 1024)} KB</span>
+             <button type="button" class="linkbtn danger-link" data-act="lic-clear" data-kind="${kind.id}">הסרה</button>
+           </div>
+         </div>`
+      : ''}
+    <div class="lic-actions">
+      <label class="btn ghost lic-pick">
+        <span>📷 ${shot ? 'צילום מחדש' : 'צילום'}</span>
+        <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+               data-act="lic-file" data-kind="${kind.id}">
+      </label>
+      <label class="btn ghost lic-pick">
+        <span>🖼 מהגלריה</span>
+        <input class="vis-hidden" type="file" accept="image/*"
+               data-act="lic-file" data-kind="${kind.id}">
+      </label>
+    </div>
+    ${shot ? '' : '<p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>'}`;
+}
+
+// Checkbox, then the fields that licence needs. The civilian one also takes
+// typed number + expiry, so the admin can chase renewals without opening a photo.
 function licBlock(kind) {
   const on = !!S.lic[kind.id];
-  const shot = S.licPhoto[kind.id];
+  let body = '';
 
-  if (kind.mode === 'fields') {
+  if (on && kind.mode === 'fields') {
     const st = licState(S.licExp);
-    const body = !on
-      ? ''
-      : `<div class="lic-body">
-           <label class="field">
-             <span class="field-label">מספר רישיון</span>
-             <input class="input num" data-act="lic-no" inputmode="numeric" autocomplete="off"
-                    maxlength="20" value="${esc(S.licNo)}" placeholder="12345678">
-           </label>
-           <label class="field mb0">
-             <span class="field-label">בתוקף עד</span>
-             <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}">
-             ${S.licExp && st === 'expired'
-               ? '<span class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</span>'
-               : S.licExp && st === 'soon'
-                 ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
-                 : ''}
-           </label>
-         </div>`;
-    return `
-      <div class="lic ${on ? 'on' : ''}">
-        <label class="check lic-head">
-          <input type="checkbox" data-act="lic-toggle" data-kind="${kind.id}" ${on ? 'checked' : ''}>
-          <span>${esc(kind.label)}</span>
+    body = `
+      <div class="lic-body">
+        <label class="field">
+          <span class="field-label">מספר רישיון</span>
+          <input class="input num" data-act="lic-no" inputmode="numeric" autocomplete="off"
+                 maxlength="20" value="${esc(S.licNo)}" placeholder="12345678">
         </label>
-        ${body}
+        <label class="field">
+          <span class="field-label">בתוקף עד</span>
+          <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}">
+          ${S.licExp && st === 'expired'
+            ? '<span class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</span>'
+            : S.licExp && st === 'soon'
+              ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
+              : ''}
+        </label>
+        <span class="field-label">צילום הרישיון</span>
+        ${licCapture(kind)}
       </div>`;
+  } else if (on) {
+    body = `<div class="lic-body">${licCapture(kind)}</div>`;
   }
 
-  const capture = !on
-    ? ''
-    : `<div class="lic-body">
-         ${shot
-           ? `<div class="lic-shot">
-                <img class="lic-thumb" src="${shot.preview}" alt="תצוגה מקדימה של ${esc(kind.short)}">
-                <div class="lic-shot-side">
-                  <span class="lic-ok">✓ צולם</span>
-                  <span class="lic-size num">${Math.round(shot.size / 1024)} KB</span>
-                  <button type="button" class="linkbtn danger-link" data-act="lic-clear" data-kind="${kind.id}">הסרה</button>
-                </div>
-              </div>`
-           : ''}
-         <div class="lic-actions">
-           <label class="btn ghost lic-pick">
-             <span>📷 ${shot ? 'צילום מחדש' : 'צילום'}</span>
-             <input class="vis-hidden" type="file" accept="image/*" capture="environment"
-                    data-act="lic-file" data-kind="${kind.id}">
-           </label>
-           <label class="btn ghost lic-pick">
-             <span>🖼 מהגלריה</span>
-             <input class="vis-hidden" type="file" accept="image/*"
-                    data-act="lic-file" data-kind="${kind.id}">
-           </label>
-         </div>
-         ${shot ? '' : '<p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>'}
-       </div>`;
   return `
     <div class="lic ${on ? 'on' : ''}">
       <label class="check lic-head">
         <input type="checkbox" data-act="lic-toggle" data-kind="${kind.id}" ${on ? 'checked' : ''}>
         <span>${esc(kind.label)}</span>
       </label>
-      ${capture}
+      ${body}
     </div>`;
 }
 
@@ -1260,12 +1258,14 @@ function licenceRows(approved) {
     const civ = (d.lic || {}).civil;
     const st = civ && civ.has ? licState(civ.exp) : 'none';
     return {
+      rid: rec.rid,
       name: d.name,
       pn: d.pn,
       dept: deptName(d.dept),
       no: (civ && civ.no) || '',
       exp: (civ && civ.exp) || '',
       st,
+      doc: !!(civ && civ.doc),
       mil: !!((d.lic || {}).military && d.lic.military.has),
     };
   });
@@ -1294,7 +1294,15 @@ function licencePanel(approved) {
             alarm ? '⚠ ' : r.st === 'valid' ? '✓ ' : ''
           }${LIC_LABEL[r.st]}</td>
           <td>${r.mil ? '✓' : '—'}</td>
-        </tr>`;
+          <td>${r.doc
+            ? `<button class="linkbtn" data-act="doc" data-rid="${esc(r.rid)}" data-kind="civil">${
+                S.docs[`${r.rid}:civil`] ? 'הסתרה' : 'צפייה'
+              }</button>`
+            : '—'}</td>
+        </tr>
+        ${S.docs[`${r.rid}:civil`]
+          ? `<tr><td colspan="8"><img class="doc-img" src="${S.docs[`${r.rid}:civil`]}" alt="צילום רישיון של ${esc(r.name)}"></td></tr>`
+          : ''}`;
     })
     .join('');
 
@@ -1316,7 +1324,7 @@ function licencePanel(approved) {
                <thead><tr>
                  <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
                  <th class="num">מס׳ רישיון</th><th class="num">בתוקף עד</th>
-                 <th>סטטוס</th><th>צבאי</th>
+                 <th>סטטוס</th><th>צבאי</th><th>צילום</th>
                </tr></thead>
                <tbody>${body}</tbody>
              </table>
@@ -1333,10 +1341,10 @@ function exportLicCsv() {
     .slice()
     .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
   const lines = [
-    ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי'],
+    ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי', 'צילום מצורף'],
     ...rows.map((r) => [
       r.name, r.pn, r.dept, r.no, r.exp ? fmtDay(r.exp) : '',
-      LIC_LABEL[r.st], r.mil ? 'כן' : 'לא',
+      LIC_LABEL[r.st], r.mil ? 'כן' : 'לא', r.doc ? 'כן' : 'לא',
     ]),
   ];
   downloadCsv(lines.map((l) => l.map(csvCell).join(',')), 'tzayad-licences.csv');
@@ -1638,8 +1646,13 @@ function renderOverviewTab() {
     return open > 0 && open - (iss[i.id].t - iss[i.id].r) < 0;
   });
   const armed = approved.filter((r) => r.data.weapon).length;
-  const licAny = approved.filter((r) => r.data.lic && Object.values(r.data.lic).some((l) => l.has)).length;
   const openReps = openReports();
+
+  // licences are their own subject — kept apart from the weapon count
+  const licRows = licenceRows(approved);
+  const licOk = licRows.filter((r) => r.st === 'valid').length;
+  const licBad = licRows.filter((r) => r.st !== 'valid' && r.st !== 'soon').length;
+  const licSoon = licRows.filter((r) => r.st === 'soon').length;
 
   const tiles = [
     kpi(approved.length, 'חיילים מאושרים', null, `${c.pending} ממתינים לאישור`),
@@ -1647,8 +1660,10 @@ function renderOverviewTab() {
     kpi(`${pct(returned, issued)}%`, 'אחוז החזרה', pct(returned, issued) === 100 ? 'ok' : null, `${returned} הוחזרו`),
     kpi(shortItems.length, 'פריטים בחוסר', shortItems.length ? 'bad' : 'ok',
         shortItems.length ? shortItems.map((i) => i.name).join(', ') : 'המלאי מכסה'),
-    kpi(openReps, 'דיווחי חוסר פתוחים', openReps ? 'warn' : 'ok'),
-    kpi(armed, 'נשקים משויכים', null, `${licAny} עם רישיון נהיגה`),
+    kpi(openReps, 'בקשות חוסר פתוחות', openReps ? 'warn' : 'ok'),
+    kpi(armed, 'נשקים משויכים', null, `${approved.length - armed} ללא נשק רשום`),
+    kpi(licBad, 'רישיונות לא בתוקף', licBad ? 'bad' : 'ok',
+        `${licOk} בתוקף${licSoon ? ` · ${licSoon} פגים בקרוב` : ''}`),
   ].join('');
 
   // per-department: how many soldiers, and how much of their gear is still out
