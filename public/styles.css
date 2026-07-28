@@ -983,6 +983,154 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* ── Pager ─────────────────────────────────────────────────────────── */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.pg-nums { display: flex; gap: 4px; }
+.pg-btn {
+  min-height: 38px;
+  min-width: 38px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+.pg-btn:not(:disabled):hover { border-color: var(--muted-2); background: var(--surface-2); }
+.pg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pg-btn.on {
+  background: var(--pine);
+  border-color: var(--pine-deep);
+  color: #fff;
+  font-weight: 700;
+}
+.pg-info { margin-inline-start: auto; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+
+/* ── Sign-out confirmation summary ─────────────────────────────────── */
+.confirm-list { margin: 4px 0 14px; }
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  margin-bottom: 7px;
+}
+.confirm-ico { width: 22px; height: 22px; color: var(--muted); flex: none; }
+.confirm-ico svg { width: 100%; height: 100%; }
+.confirm-name { flex: 1; font-weight: 600; font-size: 15px; }
+.confirm-qty {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--pine-deep);
+  background: var(--pine-tint);
+  border: 1px solid var(--pine);
+  border-radius: var(--r-sm);
+  padding: 2px 10px;
+}
+.confirm-who {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  margin-bottom: 14px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.confirm-who dt { display: inline; color: var(--muted); font-size: 13px; }
+.confirm-who dd { display: inline; margin: 0 0 0 4px; font-weight: 600; }
+.confirm-who div { margin-bottom: 2px; }
+
+/* three-state handling picker on a request card */
+.rep-states {
+  border: 0;
+  padding: 0;
+  margin: 12px 0 4px;
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.rep-states legend { padding: 0; margin-bottom: 7px; }
+.rep-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  min-height: 42px;
+  border: 1px solid var(--line-hard);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+.rep-state:hover { border-color: var(--muted-2); }
+.rep-state input { position: absolute; opacity: 0; width: 0; height: 0; }
+.rep-tick {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line-hard);
+  border-radius: var(--r-xs);
+  display: grid;
+  place-items: center;
+  flex: none;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.rep-state.on { border-color: var(--pine); background: var(--pine-tint); color: var(--pine-deep); }
+.rep-state.on .rep-tick { background: var(--pine); border-color: var(--pine); }
+.rep-state.on .rep-tick::after {
+  content: "✓";
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+.rep-state input:focus-visible + .rep-tick { outline: 2px solid var(--pine); outline-offset: 2px; }
+
+/* inline proportion bar inside a table cell */
+.minibar {
+  display: inline-block;
+  vertical-align: middle;
+  width: 74px;
+  height: 8px;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  overflow: hidden;
+  margin-inline-end: 7px;
+}
+.minibar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-xs);
+  background: var(--ok-fill);
+  transition: width 0.35s var(--ease);
+}
+.minibar-lbl { font-size: 12px; font-weight: 700; color: var(--muted); }
+
+.opt-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px 6px;
+  margin-inline-start: 5px;
+}
+
 .code-inline {
   font-family: var(--mono);
   font-size: 12.5px;

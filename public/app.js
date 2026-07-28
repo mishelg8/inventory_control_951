@@ -154,12 +154,100 @@ async function seal(pubKey, payload) {
   return { ek: b64(ek), iv: b64(iv), ct: b64(ct) };
 }
 
+/* ── Trust boundary ────────────────────────────────────────────────────
+   The RSA public key is public by design — that is what lets any soldier
+   submit without an account. The consequence is that ANYONE can encrypt an
+   arbitrary payload and POST it, so a decrypted record is untrusted input,
+   not our own data. Everything below coerces a payload to the shape the UI
+   expects: strings are capped, numbers are real finite numbers, ids are
+   whitelisted. Without this, a crafted quantity like "<img …>" flows into
+   innerHTML in the admin console — where the private key lives.
+   ──────────────────────────────────────────────────────────────────── */
+
+const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+// Non-negative integer, or 0. Rejects strings, NaN, Infinity, negatives.
+const asCount = (v, max = 9999) => {
+  const n = typeof v === 'number' ? v : NaN;
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(max, Math.max(0, Math.floor(n)));
+};
+
+const asTime = (v) => (Number.isFinite(v) && v > 0 ? v : null);
+
+function cleanRecord(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
+  const items = {};
+  const rawItems = raw.items && typeof raw.items === 'object' ? raw.items : {};
+  for (const item of ITEMS) {                       // whitelist: unknown ids dropped
+    const it = rawItems[item.id];
+    if (!it || typeof it !== 'object') continue;
+    const t = asCount(it.t, item.max || 9999);
+    if (t <= 0) continue;
+    items[item.id] = { t, r: Math.min(t, asCount(it.r)) };   // returned never exceeds taken
+  }
+
+  const lic = {};
+  for (const k of LIC_KINDS) {
+    const l = raw.lic && typeof raw.lic === 'object' ? raw.lic[k.id] : null;
+    if (!l || typeof l !== 'object' || !l.has) continue;
+    lic[k.id] = { has: true, doc: !!l.doc };
+    if (k.id === 'civil') {
+      lic.civil.no = asText(l.no, 20);
+      // only an ISO date is ever accepted; anything else is dropped
+      lic.civil.exp = /^\d{4}-\d{2}-\d{2}$/.test(l.exp) ? l.exp : '';
+    }
+  }
+
+  return {
+    pn: asText(raw.pn, 9),
+    name: asText(raw.name, 60),
+    phone: asText(raw.phone, 15),
+    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    weapon: asText(raw.weapon, 20),
+    items,
+    ...(Object.keys(lic).length ? { lic } : {}),
+    createdAt: asTime(raw.createdAt) || Date.now(),
+    approvedAt: asTime(raw.approvedAt),
+    notified: asTime(raw.notified),
+    returnNotified: asTime(raw.returnNotified),
+    supp: !!raw.supp,
+    log: Array.isArray(raw.log) ? raw.log.slice(-50) : [],
+  };
+}
+
+function cleanReport(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
+  return {
+    name: asText(raw.name, 60),
+    text: asText(raw.text, 1500),
+    // legacy reports carried identity fields; keep them if present
+    pn: asText(raw.pn, 9),
+    phone: asText(raw.phone, 15),
+    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    createdAt: asTime(raw.createdAt) || Date.now(),
+  };
+}
+
+function cleanInv(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const open = {};
+  for (const item of ITEMS) open[item.id] = asCount(src.open && src.open[item.id]);
+  const extra = (Array.isArray(src.extra) ? src.extra : []).slice(0, 200).map((x) => ({
+    name: asText(x && x.name, 40),
+    open: asCount(x && x.open),
+    out: asCount(x && x.out),
+  }));
+  return { open, extra, notes: asText(src.notes, 4000), updatedAt: asTime(src.updatedAt) };
+}
+
 // Open: admin only (§4.5). Throws on tampered ciphertext — caller counts it.
-async function openRecord(privKey, rec) {
+// `clean` is the schema guard above; never skip it for attacker-writable data.
+async function openRecord(privKey, rec, clean = cleanRecord) {
   const rawCek = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privKey, ub64(rec.ek));
   const cek = await crypto.subtle.importKey('raw', rawCek, 'AES-GCM', false, ['decrypt']);
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(rec.iv) }, cek, ub64(rec.ct));
-  return JSON.parse(td.decode(pt));
+  return clean(JSON.parse(td.decode(pt)));
 }
 
 // Seals raw bytes rather than JSON — used for licence photos.
@@ -288,6 +376,7 @@ const S = {
   q: '',                        // free-text search over name / pn / phone
   dept: 'all',                  // department filter
   collapsed: new Set(),         // department ids folded shut
+  page: {},                     // list key -> current page index (0-based)
   revealed: new Set(),          // rids with phone shown
   busy: false,
 };
@@ -342,11 +431,20 @@ function resetSoldier() {
 
 /* ── Rendering ─────────────────────────────────────────────────────── */
 
-const render = (html) => {
+let lastRenderKey = '';
+
+const render = (html, focusKey) => {
   $app.innerHTML = html;
+  // On a genuine view change, put focus on the new heading. Re-renders of the
+  // same view (typing in search, stepping a quantity) must NOT steal focus.
+  if (focusKey && focusKey !== lastRenderKey) {
+    lastRenderKey = focusKey;
+    const h = $app.querySelector('h1, h2');
+    if (h) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); }
+  }
   // Setting .style via script is CSSOM, not an inline style attribute, so it
   // is allowed under style-src 'self'.
-  for (const el of $app.querySelectorAll('.brk-fill[data-w]')) {
+  for (const el of $app.querySelectorAll('.brk-fill[data-w], .minibar-fill[data-w]')) {
     el.style.width = `${el.dataset.w}%`;
   }
 };
@@ -405,7 +503,7 @@ function renderHome() {
                stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
         </span>
       </a>
-    </div>`);
+    </div>`, 'home');
 }
 
 /* ── Shortage reporting (soldier-facing, separate from sign-out) ────── */
@@ -430,7 +528,7 @@ function renderReport() {
       </section>`);
     return;
   }
-  const v = S.rep || { name: '', text: '' };
+  const v = S.rep || { name: '', phone: '', text: '' };
   render(`
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
@@ -441,6 +539,12 @@ function renderReport() {
           <span class="field-label">שם מלא</span>
           <input class="input" name="name" autocomplete="off" maxlength="60"
                  value="${esc(v.name)}" required>
+        </label>
+        <label class="field">
+          <span class="field-label">טלפון נייד <span class="opt-tag">רשות</span></span>
+          <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                 maxlength="10" value="${esc(v.phone)}" placeholder="0501234567">
+          <span class="field-hint">רק כדי שנוכל לעדכן אתכם כשהבקשה מטופלת. אפשר להשאיר ריק.</span>
         </label>
         <label class="field">
           <span class="field-label">מה חסר לכם או מה אתם צריכים?</span>
@@ -457,16 +561,20 @@ function renderReport() {
 
 async function reportSubmit(form) {
   const name = form.name.value.trim();
+  const phone = form.phone.value.trim();
   const text = form.text.value.trim();
   if (name.length < 2) return setFormErr(form, 'נא למלא שם מלא');
+  if (phone && !/^\d{9,10}$/.test(phone)) {
+    return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים (או להשאיר ריק)');
+  }
   if (text.length < 5) return setFormErr(form, 'נא לפרט מה חסר');
   setFormErr(form, '');
-  S.rep = { name, text };
+  S.rep = { name, phone, text };
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'שולח…';
   await withBusy(async () => {
-    const sealed = await seal(await importPubKey(S.config.pub), { name, text, createdAt: Date.now() });
+    const sealed = await seal(await importPubKey(S.config.pub), { name, phone, text, createdAt: Date.now() });
     await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
     S.repSent = true;
     S.rep = null;
@@ -481,7 +589,7 @@ async function reportSubmit(form) {
 /* ── Soldier views (PLAN §7.1) ─────────────────────────────────────── */
 
 function stepsBar(n) {
-  const labels = ['פרטים', 'ציוד', 'סיום'];
+  const labels = ['פרטים', 'ציוד', 'אישור', 'סיום'];
   return `<ol class="steps" aria-hidden="true">${labels
     .map((lbl, i) => {
       const idx = i + 1;
@@ -504,7 +612,8 @@ function renderSoldier() {
   }
   if (S.sStep === 1) renderSoldierStep1();
   else if (S.sStep === 2) renderSoldierStep2();
-  else renderSoldierStep3();
+  else if (S.sStep === 3) renderSoldierConfirm();
+  else renderSoldierDone();
 }
 
 // The camera / gallery pair, shared by both licence kinds.
@@ -626,7 +735,7 @@ function renderSoldierStep1() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">המשך</button>
       </form>
-    </section>`);
+    </section>`, 'sign-1');
 }
 
 function renderSoldierStep2() {
@@ -670,12 +779,68 @@ function renderSoldierStep2() {
       ${suppNote}
       <ul>${rows}</ul>
       <p class="form-err" data-err></p>
-      <button class="btn primary wide" data-act="s-submit">שליחה לאישור</button>
+      <button class="btn primary wide" data-act="s-review">המשך לסיכום</button>
       <button class="btn ghost wide mt" data-act="s-back">חזרה לפרטים</button>
-    </section>`);
+    </section>`, 'sign-2');
 }
 
-function renderSoldierStep3() {
+// Last chance to check the list before it becomes a signature. Every row is
+// editable from here without losing the rest of the form.
+function renderSoldierConfirm() {
+  const v = S.ident || {};
+  const rows = ITEMS.filter((i) => i.id in S.sel)
+    .map(
+      (item) => `
+      <div class="confirm-row">
+        <span class="confirm-ico" aria-hidden="true">${item.icon}</span>
+        <span class="confirm-name">${esc(item.name)}</span>
+        <span class="step">
+          <button type="button" class="step-btn" data-act="s-dec" data-item="${item.id}"
+                  aria-label="פחות ${esc(item.name)}" ${S.sel[item.id] <= item.min ? 'disabled' : ''}>−</button>
+          <span class="confirm-qty num">${S.sel[item.id]}</span>
+          <button type="button" class="step-btn" data-act="s-inc" data-item="${item.id}"
+                  aria-label="עוד ${esc(item.name)}" ${S.sel[item.id] >= item.max ? 'disabled' : ''}>+</button>
+        </span>
+        <button type="button" class="linkbtn danger-link" data-act="s-remove" data-item="${item.id}"
+                aria-label="הסרת ${esc(item.name)}">הסרה</button>
+      </div>`
+    )
+    .join('');
+
+  const licLine = LIC_KINDS.filter((k) => S.lic[k.id])
+    .map((k) => {
+      const extra = k.id === 'civil'
+        ? [S.licNo && `מס׳ ${S.licNo}`, S.licExp && `בתוקף עד ${fmtDay(S.licExp)}`].filter(Boolean).join(' · ')
+        : '';
+      const shot = S.licPhoto[k.id] ? ' · צילום מצורף' : '';
+      return `<div><dt>${esc(k.short)}:</dt><dd>${esc(extra || 'סומן')}${shot}</dd></div>`;
+    })
+    .join('');
+
+  render(`
+    ${stepsBar(3)}
+    <section class="panel">
+      <h1 class="panel-title">אישור לפני שליחה</h1>
+      <p class="panel-sub">בדקו שהכול נכון. אחרי השליחה לא ניתן לשנות — רק מנהל הציוד יוכל לתקן.</p>
+
+      <dl class="confirm-who">
+        <div><dt>שם:</dt><dd>${esc(v.name || '')}</dd></div>
+        <div><dt>מספר אישי:</dt><dd><span class="num">${esc(v.pn || '')}</span></dd></div>
+        <div><dt>טלפון:</dt><dd><span class="num">${esc(v.phone || '')}</span></dd></div>
+        <div><dt>מחלקה:</dt><dd>${esc(deptName(v.dept))}</dd></div>
+        ${v.weapon ? `<div><dt>נשק:</dt><dd><span class="num">${esc(v.weapon)}</span></dd></div>` : ''}
+        ${licLine}
+      </dl>
+
+      <h2 class="field-label">הציוד שאתם חותמים עליו</h2>
+      <div class="confirm-list">${rows}</div>
+      <p class="form-err" data-err></p>
+      <button class="btn primary wide" data-act="s-submit">אישור ושליחה</button>
+      <button class="btn ghost wide mt" data-act="s-edit">חזרה לעריכת הציוד</button>
+    </section>`, 'sign-3');
+}
+
+function renderSoldierDone() {
   const list = Object.entries(S.sel)
     .map(([id, q]) => {
       const item = itemById(id);
@@ -683,7 +848,7 @@ function renderSoldierStep3() {
     })
     .join('');
   render(`
-    ${stepsBar(3)}
+    ${stepsBar(4)}
     <section class="panel center">
       <div class="big-ok" aria-hidden="true"></div>
       <h1 class="panel-title">${S.suppMode ? 'ההשלמה נשלחה' : 'הרישום נשלח'}</h1>
@@ -696,7 +861,7 @@ function renderSoldierStep3() {
       <div class="fp num"><span aria-hidden="true">🔒</span><span class="fp-code">${esc(S.rid.slice(0, 16))}</span></div>
       <p class="muted-txt mt">סיימנו — אפשר לסגור את הדף.</p>
       <button class="btn ghost wide mt" data-act="s-reset">תיקון ורישום מחדש</button>
-    </section>`);
+    </section>`, 'sign-4');
 }
 
 /* ── Admin views (PLAN §7.2) ───────────────────────────────────────── */
@@ -940,6 +1105,41 @@ function searchBar(total, shown) {
       : ''}`;
 }
 
+const PAGE_SIZE = 25;
+
+// Slices a list to the current page and renders a pager beneath it. Paging is
+// client-side by necessity: the server stores ciphertext, so it cannot filter
+// or order by name — every record must be decrypted here before it can be
+// searched at all. Paging the DOM is what keeps a 1000-soldier roster fast.
+function paged(key, rows) {
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const cur = Math.min(S.page[key] || 0, pages - 1);
+  return { slice: rows.slice(cur * PAGE_SIZE, (cur + 1) * PAGE_SIZE), cur, pages, total: rows.length };
+}
+
+function pager(key, p) {
+  if (p.pages <= 1) return '';
+  const from = p.cur * PAGE_SIZE + 1;
+  const to = Math.min(p.total, (p.cur + 1) * PAGE_SIZE);
+  const btn = (page, label, disabled) =>
+    `<button class="pg-btn" data-act="page" data-key="${key}" data-page="${page}"
+             ${disabled ? 'disabled' : ''} aria-label="${esc(label)}">${label}</button>`;
+  // a window of page numbers, so 40 pages don't produce 40 buttons
+  const win = [];
+  for (let i = Math.max(0, p.cur - 2); i < Math.min(p.pages, p.cur + 3); i++) win.push(i);
+  return `
+    <nav class="pager" aria-label="ניווט בין עמודים">
+      ${btn(p.cur - 1, '‹ הקודם', p.cur === 0)}
+      <span class="pg-nums">
+        ${win.map((i) => `<button class="pg-btn num${i === p.cur ? ' on' : ''}"
+             data-act="page" data-key="${key}" data-page="${i}"
+             aria-current="${i === p.cur}">${i + 1}</button>`).join('')}
+      </span>
+      ${btn(p.cur + 1, 'הבא ›', p.cur >= p.pages - 1)}
+      <span class="pg-info"><span class="num">${from}–${to}</span> מתוך <span class="num">${p.total}</span></span>
+    </nav>`;
+}
+
 // Renders grouped, collapsible department sections around a card renderer.
 function deptSections(recs, cardFn, emptyMsg) {
   const groups = groupByDept(recs);
@@ -1089,10 +1289,12 @@ function renderPendingTab() {
   if (!all.length) return '<p class="empty">אין הגשות ממתינות. לחצו רענון כדי לבדוק שוב.</p>';
   const broken = all.filter((r) => r.damaged).map(damagedCard).join('');
   const visible = applyFilters(all);
+  const p = paged('pending', visible);
   return `
     ${searchBar(all.length, visible.length)}
     ${broken}
-    ${deptSections(visible, pendingCard, 'אין הגשות שתואמות את החיפוש.')}`;
+    ${deptSections(p.slice, pendingCard, 'אין הגשות שתואמות את החיפוש.')}
+    ${pager('pending', p)}`;
 }
 
 function renderTrackTab() {
@@ -1181,11 +1383,13 @@ function renderTrackTab() {
   };
 
   const broken = approved.filter((r) => r.damaged).map(damagedCard).join('');
+  const p = paged('track', visible);
   return `
     ${searchBar(approved.length, visible.length)}
     <div class="filters">${filters}</div>
     ${broken}
-    ${deptSections(visible, card, 'אין רשומות שתואמות את החיפוש והסינון.')}`;
+    ${deptSections(p.slice, card, 'אין רשומות שתואמות את החיפוש והסינון.')}
+    ${pager('track', p)}`;
 }
 
 function renderSummaryTab() {
@@ -1480,7 +1684,8 @@ function ledgerPanel(approved) {
     (i) => `<th class="num lg-col" title="${esc(i.name)}"><span class="tbl-ico" aria-hidden="true">${i.icon}</span><span class="lg-h">${esc(i.name)}</span></th>`
   ).join('');
 
-  const body = visible
+  const pgLg = paged('ledger', visible);
+  const body = pgLg.slice
     .map((rec) => {
       const d = rec.data;
       const out = outstanding(d);
@@ -1514,6 +1719,7 @@ function ledgerPanel(approved) {
                <tbody>${body}</tbody>
              </table>
            </div>
+           ${pager('ledger', pgLg)}
            <button class="btn ghost wide mt" data-act="export-ledger">ייצוא הטבלה ל-CSV</button>`
         : '<p class="empty">אין חיילים שתואמים את החיפוש.</p>'}
     </section>`;
@@ -1700,7 +1906,9 @@ function renderOverviewTab() {
         `${licOk} בתוקף${licSoon ? ` · ${licSoon} פגים בקרוב` : ''}`),
   ].join('');
 
-  // per-department: how many soldiers, and how much of their gear is still out
+  // Per-department table. This used to be a stacked bar whose length compared
+  // departments while its label read as a ratio — two different meanings in one
+  // mark, which nobody could parse. Explicit columns say exactly what they say.
   const deptRows = DEPTS.map((dp) => {
     const recs = approved.filter((r) => r.data.dept === dp.id);
     let t = 0, r = 0;
@@ -1710,21 +1918,24 @@ function renderOverviewTab() {
         if (it) { t += it.t; r += it.r || 0; }
       }
     }
-    return { ...dp, n: recs.length, t, r, out: t - r };
+    return { ...dp, n: recs.length, t, r, out: t - r, pct: pct(r, t) };
   }).filter((d) => d.n);
 
-  const maxOut = Math.max(1, ...deptRows.map((d) => d.t));
-  const deptBars = deptRows
-    .map((d) =>
-      brkBar(
-        `${d.name} · ${d.n} חיילים`,
-        `<span class="num">${d.out}</span> בחוץ מתוך <span class="num">${d.t}</span>`,
-        [
-          { w: (d.r / maxOut) * 100, cls: '' },
-          { w: (d.out / maxOut) * 100, cls: 'out' },
-        ],
-        `${d.name}: ${d.r} הוחזרו, ${d.out} בחוץ`
-      )
+  const deptTable = deptRows
+    .map(
+      (d) => `<tr>
+        <td>${esc(d.name)}</td>
+        <td class="num">${d.n}</td>
+        <td class="num">${d.t}</td>
+        <td class="num">${d.r}</td>
+        <td class="num ${d.out > 0 ? 'warn' : 'ok'}">${d.out}</td>
+        <td>
+          <div class="minibar" title="${d.pct}% הוחזר">
+            <span class="minibar-fill" data-w="${d.pct}"></span>
+          </div>
+          <span class="minibar-lbl num">${d.pct}%</span>
+        </td>
+      </tr>`
     )
     .join('');
 
@@ -1766,12 +1977,18 @@ function renderOverviewTab() {
 
     <section class="panel">
       <h2 class="panel-title">פילוח לפי מחלקה</h2>
-      <p class="panel-sub">כמה ציוד יצא לכל מחלקה וכמה ממנו כבר חזר.</p>
-      <div class="brk-legend">
-        <span class="lgnd">הוחזר</span>
-        <span class="lgnd out">בחוץ</span>
-      </div>
-      ${deptBars || '<p class="empty">אין רשומות מאושרות.</p>'}
+      <p class="panel-sub">כמה פריטים הוחתמו בכל מחלקה, כמה מהם כבר הוחזרו, וכמה עדיין בחוץ.</p>
+      ${deptRows.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr>
+                 <th>מחלקה</th><th class="num">חיילים</th><th class="num">הוחתם</th>
+                 <th class="num">הוחזר</th><th class="num">בחוץ</th><th>% הוחזר</th>
+               </tr></thead>
+               <tbody>${deptTable}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">אין רשומות מאושרות.</p>'}
     </section>
 
     <section class="panel">
@@ -1787,11 +2004,29 @@ function renderOverviewTab() {
 
 /* ── Shortage reports (admin) ──────────────────────────────────────── */
 
-const openReports = () => S.reports.filter((r) => r.status === 'open' && !r.damaged).length;
+// 'open' and 'partial' both still need the admin's attention.
+const openReports = () => S.reports.filter((r) => r.status !== 'done' && !r.damaged).length;
+
+const REP_LABEL = { open: 'טרם טופל', partial: 'טופל חלקית', done: '✓ טופל' };
+
+// Reply to a soldier whose request was handled. Sent from the admin's device,
+// like every other message here — the server never learns the phone number.
+function repWaLink(d, st) {
+  const msg =
+    '*עדכון בקשת ציוד — מסייעת 951*\n\n' +
+    `שלום ${d.name},\n` +
+    (st === 'done'
+      ? 'הבקשה שלך טופלה במלואה.\n\n'
+      : 'הבקשה שלך טופלה חלקית — יתרת הפריטים תושלם בהמשך.\n\n') +
+    `*הבקשה שהגשת:*\n${d.text}\n\n` +
+    'לפרטים נוספים פנו למנהל הציוד.';
+  return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
+}
 
 function renderReportsTab() {
   const filters = [
-    ['open', 'פתוחים'],
+    ['open', 'דורש טיפול'],
+    ['partial', 'טופל חלקית'],
     ['done', 'טופלו'],
     ['all', 'הכל'],
   ]
@@ -1801,9 +2036,11 @@ function renderReportsTab() {
     )
     .join('');
 
-  const byStatus = S.reports.filter(
-    (r) => r.damaged || S.repFilter === 'all' || r.status === S.repFilter
-  );
+  const byStatus = S.reports.filter((r) => {
+    if (r.damaged || S.repFilter === 'all') return true;
+    if (S.repFilter === 'open') return r.status !== 'done';   // open + partial
+    return r.status === S.repFilter;
+  });
   const needle = S.repQ.trim().toLowerCase();
   const visible = byStatus.filter((r) => {
     if (!needle) return true;
@@ -1814,7 +2051,8 @@ function renderReportsTab() {
     );
   });
 
-  const cards = visible
+  const pgReports = paged('reports', visible);
+  const cards = pgReports.slice
     .map((rec) => {
       if (rec.damaged) {
         return `<article class="rec broken">
@@ -1824,32 +2062,47 @@ function renderReportsTab() {
           </article>`;
       }
       const d = rec.data;
-      const done = rec.status === 'done';
+      const st = rec.status === 'done' ? 'done' : rec.status === 'partial' ? 'partial' : 'open';
+      const canMsg = !!d.phone;
       return `
-        <article class="rec ${done ? 'done' : 'wait'}">
+        <article class="rec ${st === 'done' ? 'done' : st === 'partial' ? 'live' : 'wait'}">
           <header class="rec-head">
             <div>
               <div class="rec-name">${esc(d.name)}</div>
               <div class="rec-meta">דווח ${esc(fmtDate(d.createdAt))}</div>
-              ${/* older reports carried identity fields; newer ones are name + text only */ ''}
               ${d.pn || d.dept
                 ? `<div class="rec-meta">${d.pn ? `מ״א <span class="num">${esc(d.pn)}</span>` : ''}${d.pn && d.dept ? ' · ' : ''}${d.dept ? esc(deptName(d.dept)) : ''}</div>`
                 : ''}
             </div>
-            <span class="state ${done ? 'done' : 'wait'}">${done ? '✓ טופל' : 'פתוח'}</span>
+            <span class="state ${st === 'done' ? 'done' : st === 'partial' ? 'live' : 'wait'}">${REP_LABEL[st]}</span>
           </header>
           ${d.phone
             ? `<div class="rec-meta">טלפון:
                  <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
                  <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button>
                </div>`
-            : ''}
+            : '<div class="rec-meta muted-txt">לא הושאר טלפון — אי אפשר לעדכן את החייל</div>'}
           <blockquote class="rep-text">${esc(d.text)}</blockquote>
+
+          <fieldset class="rep-states">
+            <legend class="field-label">סטטוס טיפול</legend>
+            ${['open', 'partial', 'done'].map((v) => `
+              <label class="rep-state ${st === v ? 'on' : ''}">
+                <input type="radio" name="st-${esc(rec.id)}" data-act="rep-state"
+                       data-id="${esc(rec.id)}" data-st="${v}" ${st === v ? 'checked' : ''}>
+                <span class="rep-tick" aria-hidden="true"></span>
+                <span>${REP_LABEL[v]}</span>
+              </label>`).join('')}
+          </fieldset>
+
           <div class="rec-actions">
-            <button class="btn ${done ? 'ghost' : 'primary'}" data-act="rep-toggle" data-id="${esc(rec.id)}">
-              ${done ? 'החזרה לפתוח' : '✓ סימון כטופל'}
-            </button>
-            ${d.phone
+            ${canMsg && st !== 'open'
+              ? `<a class="btn wa" href="${esc(repWaLink(d, st))}" data-act="rep-sent"
+                    data-id="${esc(rec.id)}" target="_blank" rel="noopener noreferrer">${
+                      d.replied ? 'שליחה חוזרת' : 'עדכון החייל בוואטסאפ'
+                    }</a>`
+              : ''}
+            ${canMsg && st === 'open'
               ? `<a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>`
               : ''}
             <button class="btn danger" data-act="rep-del" data-id="${esc(rec.id)}">מחיקה</button>
@@ -1865,6 +2118,7 @@ function renderReportsTab() {
       ${plainSearch('rep-search', 'rep-qclear', S.repQ, 'חיפוש לפי שם או תוכן הבקשה', byStatus.length, visible.length)}
       <div class="filters">${filters}</div>
       ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
+      ${pager('reports', pgReports)}
     </section>`;
 }
 
@@ -1935,7 +2189,7 @@ async function loadReports() {
   const out = [];
   for (const row of reports) {
     try {
-      out.push({ ...row, data: await openRecord(S.priv, row), damaged: false });
+      out.push({ ...row, data: await openRecord(S.priv, row, cleanReport), damaged: false });
     } catch {
       out.push({ ...row, data: null, damaged: true });
     }
@@ -1943,16 +2197,36 @@ async function loadReports() {
   S.reports = out;
 }
 
-const repToggle = (id) =>
+const repSetState = (id, next) =>
   withBusy(async () => {
     const rec = S.reports.find((r) => r.id === id);
-    if (!rec) return;
-    const next = rec.status === 'done' ? 'open' : 'done';
-    await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: next } });
-    rec.status = next;
+    if (!rec || rec.status === next) return;
+    const prev = rec.status;
+    rec.status = next;                       // optimistic, rolled back on failure
     renderConsole();
-    toast(next === 'done' ? 'סומן כטופל' : 'הוחזר לפתוח');
+    try {
+      await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: next } });
+    } catch (e) {
+      rec.status = prev;
+      renderConsole();
+      throw e;
+    }
+    toast(
+      next === 'done'
+        ? (rec.data && rec.data.phone ? 'סומן כטופל — אפשר לעדכן את החייל' : 'סומן כטופל')
+        : next === 'partial'
+          ? (rec.data && rec.data.phone ? 'סומן כטופל חלקית — אפשר לעדכן את החייל' : 'סומן כטופל חלקית')
+          : 'הוחזר לטיפול'
+    );
   });
+
+// Records that the admin actually opened the reply link.
+function repMarkSent(id) {
+  const rec = S.reports.find((r) => r.id === id);
+  if (!rec || !rec.data || rec.data.replied) return;
+  rec.data.replied = Date.now();
+  renderConsole();
+}
 
 const repDelete = (id) =>
   withBusy(async () => {
@@ -1968,8 +2242,7 @@ async function loadInv() {
   try {
     const { vault } = await api('/admin/vault');
     if (!vault) { S.inv = emptyInv(); return; }
-    const data = await openRecord(S.priv, vault);
-    S.inv = { ...emptyInv(), ...data };
+    S.inv = await openRecord(S.priv, vault, cleanInv);
   } catch {
     S.inv = emptyInv();
     toast('לא ניתן לפענח את נתוני המלאי', true);
@@ -1984,9 +2257,14 @@ async function saveInv() {
 
 /* ── Action handlers ───────────────────────────────────────────────── */
 
-// Serialises mutations: one at a time, errors surface as toasts.
+// Serialises mutations: one at a time, errors surface as toasts. A click that
+// lands mid-save used to vanish silently, leaving the admin unsure whether it
+// registered — now it says so.
 async function withBusy(fn) {
-  if (S.busy) return;
+  if (S.busy) {
+    toast('פעולה קודמת עדיין מתבצעת — נסו שוב בעוד רגע', true);
+    return;
+  }
   S.busy = true;
   try {
     await fn();
@@ -2164,7 +2442,7 @@ async function soldierSubmit() {
       const sealedDoc = await sealBytes(pubKey, shot.bytes);
       await api('/docs', { body: { rid: S.rid, kind: k.id, ...sealedDoc } });
     }
-    S.sStep = 3;
+    S.sStep = 4;
     renderSoldier();
   });
 }
@@ -2543,8 +2821,8 @@ $app.addEventListener('input', (e) => {
   const i = parseInt(el.dataset.i, 10);
   const num = () => Math.max(0, Math.min(9999, parseInt(el.value, 10) || 0));
   switch (act) {
-    case 'search': S.q = el.value; rerenderKeepFocus(el); break;
-    case 'rep-search': S.repQ = el.value; rerenderKeepFocus(el); break;
+    case 'search': S.q = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    case 'rep-search': S.repQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'inv-search': S.invQ = el.value; rerenderKeepFocus(el); break;
     case 'inv-open': S.inv.open[el.dataset.item] = num(); rerenderKeepFocus(el); break;
     case 'inv-xopen': S.inv.extra[i].open = num(); rerenderKeepFocus(el); break;
@@ -2561,6 +2839,7 @@ $app.addEventListener('input', (e) => {
 $app.addEventListener('change', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !$app.contains(el)) return;
+  if (el.dataset.act === 'rep-state') { repSetState(el.dataset.id, el.dataset.st); return; }
   if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
   else if (el.dataset.act === 'lic-file') licFile(el.dataset.kind, el);
   // committed date → re-render so the validity hint updates
@@ -2590,11 +2869,26 @@ function dispatch(act, el) {
     case 's-dec': soldierStep(item, -1); break;
     case 's-submit': soldierSubmit(); break;
     case 's-back': S.sStep = 1; renderSoldier(); break;
+    case 's-edit': S.sStep = 2; renderSoldier(); break;
+    case 's-review':
+      if (!Object.keys(S.sel).length) {
+        const e = $app.querySelector('[data-err]');
+        if (e) e.textContent = 'יש לסמן פריט אחד לפחות';
+        return;
+      }
+      S.sStep = 3;
+      renderSoldier();
+      break;
+    case 's-remove':
+      delete S.sel[el.dataset.item];
+      if (!Object.keys(S.sel).length) S.sStep = 2;
+      renderSoldier();
+      break;
     case 's-reset': resetSoldier(); renderSoldier(); break;
     case 'lic-clear': licClear(el.dataset.kind); break;
     // admin console
     case 'tab': S.tab = el.dataset.tab; renderConsole(); break;
-    case 'filter': S.filter = el.dataset.filter; renderConsole(); break;
+    case 'filter': S.filter = el.dataset.filter; S.page = {}; renderConsole(); break;
     case 'refresh': adminRefresh(); break;
     case 'lock': lock(); break;
     case 'reveal':
@@ -2613,9 +2907,9 @@ function dispatch(act, el) {
     case 'export-ledger': exportLedgerCsv(); break;
     case 'wipe': adminWipe(); break;
     // search & grouping
-    case 'dept': S.dept = el.dataset.dept; renderConsole(); break;
-    case 'qclear': S.q = ''; renderConsole(); break;
-    case 'rep-qclear': S.repQ = ''; renderConsole(); break;
+    case 'dept': S.dept = el.dataset.dept; S.page = {}; renderConsole(); break;
+    case 'qclear': S.q = ''; S.page = {}; renderConsole(); break;
+    case 'rep-qclear': S.repQ = ''; S.page = {}; renderConsole(); break;
     case 'inv-qclear': S.invQ = ''; renderConsole(); break;
     case 'fold': {
       const id = el.dataset.dept;
@@ -2635,10 +2929,15 @@ function dispatch(act, el) {
       renderConsole();
       break;
     case 'inv-save': invSave(); break;
+    case 'page':
+      S.page = { ...S.page, [el.dataset.key]: parseInt(el.dataset.page, 10) };
+      renderConsole();
+      $app.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
     // shortage reports
-    case 'rep-filter': S.repFilter = el.dataset.f; renderConsole(); break;
-    case 'rep-toggle': repToggle(el.dataset.id); break;
+    case 'rep-filter': S.repFilter = el.dataset.f; S.page = {}; renderConsole(); break;
+    case 'rep-sent': repMarkSent(el.dataset.id); break;
     case 'rep-del': repDelete(el.dataset.id); break;
     case 'rep-reveal': {
       const id = el.dataset.id;
@@ -2659,11 +2958,19 @@ function markSent(rid, field) {
   const rec = findRec(rid);
   if (!rec || rec.damaged || rec.data[field]) return;
   const now = Date.now();
+  const entry = { a: field === 'notified' ? 'notify-manual' : 'return-notify', t: now };
   rec.data[field] = now;
-  rec.data.log.push({ a: field === 'notified' ? 'notify-manual' : 'return-notify', t: now });
+  rec.data.log.push(entry);
   saveRec(rec)
     .then(() => renderConsole())
-    .catch(() => { rec.data[field] = null; toast('שמירת סימון השליחה נכשלה', true); });
+    .catch(() => {
+      // roll the whole optimistic update back, log entry included
+      rec.data[field] = null;
+      const i = rec.data.log.lastIndexOf(entry);
+      if (i >= 0) rec.data.log.splice(i, 1);
+      renderConsole();
+      toast('שמירת סימון השליחה נכשלה', true);
+    });
 }
 
 // After a re-render, put the cursor in the newly added row.

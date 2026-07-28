@@ -5,8 +5,13 @@
 const SESSION_MS = 60 * 60 * 1000;        // 1 hour, refreshed on each authed request
 const LOGIN_LIMIT = 8;                    // login attempts per IP...
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;   // ...per 10-minute lockout window
-const SUB_LIMIT = 40;                     // submissions per IP...
+// A whole unit signing out is typically behind ONE base-WiFi NAT address, so
+// this budget is shared by ~90 soldiers submitting within minutes of each
+// other. 40/hour silently locked most of them out; 400 leaves ample headroom
+// while still stopping a scripted flood.
+const SUB_LIMIT = 400;                    // submissions per IP...
 const SUB_WINDOW_MS = 60 * 60 * 1000;     // ...per hour
+const DOC_LIMIT = 120;                    // licence photos per IP per hour (heavier rows)
 
 // ~400 KB of base64 ≈ 300 KB of JPEG. The client compresses well below this;
 // the cap is a backstop so a single row can never bloat the database.
@@ -58,20 +63,28 @@ async function readBody(request) {
 // Fixed-window rate limit backed by the throttle table. Returns false when the
 // caller has exhausted its budget for the current window.
 async function allow(db, key, limit, windowMs, now) {
-  const row = await db.prepare('SELECT hits, until FROM throttle WHERE k = ?1').bind(key).first();
-  if (!row || row.until <= now) {
-    await db
-      .prepare(
-        'INSERT INTO throttle (k, hits, until) VALUES (?1, 1, ?2) ' +
-          'ON CONFLICT(k) DO UPDATE SET hits = 1, until = ?2'
-      )
-      .bind(key, now + windowMs)
-      .run();
-    return true;
+  // Single statement: start a fresh window if the old one lapsed, otherwise
+  // increment. RETURNING gives us the post-increment count, so two concurrent
+  // callers can never both see the same remaining budget.
+  const row = await db
+    .prepare(
+      `INSERT INTO throttle (k, hits, until) VALUES (?1, 1, ?2)
+       ON CONFLICT(k) DO UPDATE SET
+         hits  = CASE WHEN throttle.until <= ?3 THEN 1 ELSE throttle.hits + 1 END,
+         until = CASE WHEN throttle.until <= ?3 THEN ?2 ELSE throttle.until END
+       RETURNING hits`
+    )
+    .bind(key, now + windowMs, now)
+    .first();
+  return !row || row.hits <= limit;
+}
+
+// The throttle table is write-heavy and nothing ever removed lapsed rows.
+// Swept opportunistically so it cannot grow without bound.
+async function sweepThrottle(db, now) {
+  if (Math.random() < 0.02) {
+    await db.prepare('DELETE FROM throttle WHERE until <= ?1').bind(now - 86400000).run();
   }
-  if (row.hits >= limit) return false;
-  await db.prepare('UPDATE throttle SET hits = hits + 1 WHERE k = ?1').bind(key).run();
-  return true;
 }
 
 const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first();
@@ -125,6 +138,8 @@ export async function onRequest(context) {
   }
 
   try {
+    await sweepThrottle(db, now);
+
     // ── GET /api/config ──────────────────────────────────────────────
     if (seg[0] === 'config' && seg.length === 1 && method === 'GET') {
       const cfg = await getConfig(db);
@@ -160,13 +175,18 @@ export async function onRequest(context) {
       ) {
         return err(400, 'בקשה לא תקינה');
       }
-      await db
-        .prepare(
-          'INSERT INTO config (id, pub, salt, id_salt, verifier, key_iv, wrapped_key, created_at) ' +
-            'VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)'
-        )
-        .bind(pub, salt, idSalt, verifier, keyIv, wrappedKey, now)
-        .run();
+      try {
+        await db
+          .prepare(
+            'INSERT INTO config (id, pub, salt, id_salt, verifier, key_iv, wrapped_key, created_at) ' +
+              'VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+          )
+          .bind(pub, salt, idSalt, verifier, keyIv, wrappedKey, now)
+          .run();
+      } catch {
+        // lost the race against a concurrent setup — the other one owns it
+        return err(409, 'המערכת כבר הוגדרה');
+      }
       return json({ ok: true });
     }
 
@@ -246,8 +266,8 @@ export async function onRequest(context) {
     // soldiers never pulls image data. Same write rules as records: a photo
     // can be replaced while pending, but not once the record is approved.
     if (seg[0] === 'docs' && seg.length === 1 && method === 'POST') {
-      if (!(await allow(db, `sub:${ip}`, SUB_LIMIT, SUB_WINDOW_MS, now))) {
-        return err(429, 'יותר מדי הגשות, נסו שוב מאוחר יותר');
+      if (!(await allow(db, `doc:${ip}`, DOC_LIMIT, SUB_WINDOW_MS, now))) {
+        return err(429, 'יותר מדי העלאות, נסו שוב מאוחר יותר');
       }
       const b = await readBody(request);
       if (!b) return err(400, 'בקשה לא תקינה');
@@ -265,7 +285,8 @@ export async function onRequest(context) {
         .prepare('SELECT status FROM records WHERE rid = ?1')
         .bind(rid)
         .first();
-      if (owner && owner.status === 'approved') {
+      if (!owner) return err(409, 'אין רשומה לצרף אליה צילום');
+      if (owner.status === 'approved') {
         return err(409, 'הרשומה כבר אושרה — פנו למנהל הציוד');
       }
       await db
@@ -337,7 +358,7 @@ export async function onRequest(context) {
 
         if (method === 'PUT') {
           const b = await readBody(request);
-          if (!b || (b.status !== 'open' && b.status !== 'done')) {
+          if (!b || !['open', 'partial', 'done'].includes(b.status)) {
             return err(400, 'בקשה לא תקינה');
           }
           const r = await db
