@@ -205,6 +205,8 @@ function cleanRecord(raw) {
     phone: asText(raw.phone, 15),
     dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
     weapon: asText(raw.weapon, 20),
+    amral: asText(raw.amral, 20),
+    scope: asText(raw.scope, 20),
     items,
     ...(Object.keys(lic).length ? { lic } : {}),
     createdAt: asTime(raw.createdAt) || Date.now(),
@@ -216,15 +218,23 @@ function cleanRecord(raw) {
   };
 }
 
+// Shortage reports and armoury deposits share the /reports pipe — the server
+// stores an opaque blob either way, so telling them apart is a client concern.
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
+    kind: raw.kind === 'deposit' || raw.kind === 'fault' ? raw.kind : 'report',
     name: asText(raw.name, 60),
     text: asText(raw.text, 1500),
     // legacy reports carried identity fields; keep them if present
     pn: asText(raw.pn, 9),
     phone: asText(raw.phone, 15),
     dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    // deposit-only: the weapon being handed in, plus optional accessory catalogue numbers
+    weapon: asText(raw.weapon, 20),
+    amral: asText(raw.amral, 20),
+    scope: asText(raw.scope, 20),
+    filed: !!raw.filed,          // already pushed into the armoury register
     createdAt: asTime(raw.createdAt) || Date.now(),
   };
 }
@@ -233,12 +243,12 @@ function cleanReport(raw) {
 
 const ARM_KINDS = [
   { id: 'weapon', name: 'נשק' },
+  { id: 'amral', name: 'אמר״ל' },
   { id: 'tzelem', name: 'צל״ם' },
 ];
 const ARM_LOCS = [
   { id: 'armon', name: 'ארמון' },
   { id: 'soldier', name: 'אצל חייל' },
-  { id: 'mission', name: 'במשימה' },
 ];
 // where an item goes when it leaves the armoury for good
 const AMMO_DESTS = [
@@ -259,7 +269,10 @@ const cleanArmItem = (x) => ({
   name: asText(x && x.name, 60),
   serial: asText(x && x.serial, 40),
   owner: asText(x && x.owner, 60),
-  loc: ARM_LOCS.some((l) => l.id === (x && x.loc)) ? x.loc : 'armon',
+  // 'mission' was a location until it was dropped. Legacy rows map to 'soldier',
+  // never to 'armon' — an item that was out must not read as present in the cupboard.
+  loc: ARM_LOCS.some((l) => l.id === (x && x.loc)) ? x.loc
+    : (x && x.loc === 'mission') ? 'soldier' : 'armon',
   note: asText(x && x.note, 120),
   addedAt: asTime(x && x.addedAt),
 });
@@ -432,6 +445,8 @@ function routeFromHash() {
   const h = location.hash;
   if (h === '#admin') return 'admin';
   if (h === '#report') return 'report';
+  if (h === '#deposit') return 'deposit';
+  if (h === '#fault') return 'fault';
   if (h === '#sign') return 'soldier';
   return 'home';   // the link a soldier is given lands on the chooser
 }
@@ -443,6 +458,18 @@ const S = {
   // shortage reporting (soldier-facing, separate flow)
   rep: null,                    // draft { pn, name, phone, dept, text }
   repSent: false,
+
+  // armoury deposit (soldier-facing, separate flow)
+  dep: null,                    // draft { pn, name, phone, weapon, amral, scope }
+  depSent: false,
+  depQ: '',                     // admin search over deposits
+  depFilter: 'open',            // 'open' | 'done' | 'all'
+
+  // building faults (soldier-facing, separate flow)
+  flt: null,                    // draft { name, phone, text }
+  fltSent: false,
+  fltQ: '',                     // admin search over faults
+  fltFilter: 'open',            // 'open' | 'partial' | 'done' | 'all'
 
   // soldier flow
   sStep: 1,
@@ -505,6 +532,8 @@ function lock() {
   S.docs = {};                  // decrypted licence images must not outlive the session
   S.q = '';
   S.repQ = '';
+  S.depQ = '';
+  S.fltQ = '';
   S.invQ = '';
   S.regQ = {};
   S.revealed.clear();
@@ -554,6 +583,8 @@ function renderRoute() {
   $app.classList.toggle('wide', S.route === 'admin' && !!S.priv);
   if (S.route === 'admin') renderAdmin();
   else if (S.route === 'report') renderReport();
+  else if (S.route === 'deposit') renderDeposit();
+  else if (S.route === 'fault') renderFault();
   else if (S.route === 'home') renderHome();
   else renderSoldier();
 }
@@ -597,6 +628,43 @@ function renderHome() {
         <span class="choice-txt">
           <span class="choice-t">בקשת ציוד / דיווח חוסר</span>
           <span class="choice-s">חסר לכם משהו או צריך השלמה? כתבו ומנהל הציוד יטפל.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#deposit">
+        <span class="choice-ico arm" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3.5" y="3" width="17" height="18" rx="2"/>
+            <path d="M12 3v18"/>
+            <path d="M9.6 11.4h.01M14.4 11.4h.01"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">אפסון נשק בארמון</span>
+          <span class="choice-s">מוסרים נשק לאחסון? רשמו את הפרטים ומנהל הארמון יקלוט אותו.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#fault">
+        <span class="choice-ico bld" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"/>
+            <path d="M5.5 21V6.5l7-3.5v18"/>
+            <path d="M12.5 10.5H19V21"/>
+            <path d="M8.6 9.2h.01M8.6 13h.01M15.6 14h.01"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">דיווח תקלות בינוי</span>
+          <span class="choice-s">דלת שבורה, נזילה, חשמל, מזגן? דווחו כאן ונטפל.</span>
         </span>
         <span class="choice-go" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
@@ -683,6 +751,201 @@ async function reportSubmit(form) {
   if (!S.repSent) {
     btn.disabled = false;
     btn.textContent = 'שליחת הבקשה';
+  }
+}
+
+/* ── Building faults (soldier-facing, separate from sign-out) ──────── */
+
+function renderFault() {
+  if (!S.config || !S.config.ready) {
+    render(`
+      <section class="panel center">
+        <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
+        <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר לדווח.</p>
+      </section>`);
+    return;
+  }
+  if (S.fltSent) {
+    render(`
+      <section class="panel center">
+        <div class="big-ok" aria-hidden="true"></div>
+        <h1 class="panel-title">התקלה דווחה</h1>
+        <p class="panel-sub">הדיווח נקלט ויטופל. אין צורך לשלוח שוב על אותה תקלה.</p>
+        <button class="btn ghost wide mt" data-act="flt-again">דיווח תקלה נוספת</button>
+        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      </section>`);
+    return;
+  }
+  const v = S.flt || { name: '', phone: '', text: '' };
+  render(`
+    <section class="panel center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">דיווח תקלות בינוי</h1>
+      <p class="panel-sub center">משהו שבור במבנה? נזילה, חשמל, מזגן, דלת, חלון. כתבו מה ואיפה, ונטפל.</p>
+      <form data-form="fault" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">שם המדווח <span class="req">*</span></span>
+            <input class="input" name="name" autocomplete="off" maxlength="60"
+                   value="${esc(v.name)}" required>
+          </label>
+          <label class="field">
+            <span class="field-label">טלפון המדווח <span class="req">*</span></span>
+            <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                   maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">תיאור התקלה <span class="req">*</span></span>
+          <textarea class="input area" name="text" rows="7" maxlength="1500"
+                    placeholder="לדוגמה: נזילה מהתקרה במקלחות בבניין 4, מתחת לחלון. המים מגיעים עד המסדרון." required>${esc(v.text)}</textarea>
+          <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
+        </label>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחת הדיווח</button>
+      </form>
+      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+    </section>`);
+}
+
+async function faultSubmit(form) {
+  const name = form.name.value.trim();
+  const phone = form.phone.value.trim();
+  const text = form.text.value.trim();
+  if (name.length < 2) return setFormErr(form, 'נא למלא את שם המדווח');
+  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
+  if (text.length < 5) return setFormErr(form, 'נא לתאר את התקלה');
+  setFormErr(form, '');
+  S.flt = { name, phone, text };
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const sealed = await seal(await importPubKey(S.config.pub), {
+      kind: 'fault', name, phone, text, createdAt: Date.now(),
+    });
+    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    S.fltSent = true;
+    S.flt = null;
+    renderFault();
+  });
+  if (!S.fltSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת הדיווח';
+  }
+}
+
+/* ── Armoury deposit (soldier-facing, separate from sign-out) ──────── */
+
+function renderDeposit() {
+  if (!S.config || !S.config.ready) {
+    render(`
+      <section class="panel center">
+        <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
+        <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר לאפסן.</p>
+      </section>`);
+    return;
+  }
+  if (S.depSent) {
+    render(`
+      <section class="panel center">
+        <div class="big-ok" aria-hidden="true"></div>
+        <h1 class="panel-title">בקשת האפסון נשלחה</h1>
+        <p class="panel-sub">האפסון נקלט במצב <span class="state wait">ממתין לאישור</span>. מנהל הארמון יאשר אותו והנשק ייכנס לרישום הארמון. אל תעזבו את הנשק לפני שקיבלתם אישור.</p>
+        <button class="btn ghost wide mt" data-act="dep-again">אפסון נוסף</button>
+        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      </section>`);
+    return;
+  }
+  const v = S.dep || { pn: '', name: '', phone: '', weapon: '', amral: '', scope: '' };
+  render(`
+    <section class="panel center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">אפסון נשק בארמון</h1>
+      <p class="panel-sub center">מוסרים נשק לאחסון בארמון? מלאו את הפרטים. ארבעת השדות הראשונים הם חובה.</p>
+      <form data-form="deposit" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">מספר אישי <span class="req">*</span></span>
+            <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                   maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+          </label>
+          <label class="field">
+            <span class="field-label">שם החייל <span class="req">*</span></span>
+            <input class="input" name="name" autocomplete="off" maxlength="60"
+                   value="${esc(v.name)}" required>
+          </label>
+          <label class="field">
+            <span class="field-label">מספר טלפון <span class="req">*</span></span>
+            <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                   maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+          </label>
+          <label class="field">
+            <span class="field-label">מספר נשק <span class="req">*</span></span>
+            <input class="input num" name="weapon" autocomplete="off" maxlength="20"
+                   value="${esc(v.weapon)}" placeholder="7145732" required>
+          </label>
+        </div>
+        <fieldset class="lic-set">
+          <legend class="field-label">אמצעים נלווים <span class="opt-tag">רק אם קיימים</span></legend>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מק״ט אמר״ל</span>
+              <input class="input num" name="amral" autocomplete="off" maxlength="20"
+                     value="${esc(v.amral)}">
+            </label>
+            <label class="field">
+              <span class="field-label">מק״ט כוונת יום</span>
+              <input class="input num" name="scope" autocomplete="off" maxlength="20"
+                     value="${esc(v.scope)}">
+            </label>
+          </div>
+          <span class="field-hint">אם לא מסרתם אמר״ל או כוונת — השאירו ריק.</span>
+        </fieldset>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחת בקשת אפסון</button>
+      </form>
+      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+    </section>`);
+}
+
+async function depositSubmit(form) {
+  const pn = form.pn.value.trim();
+  const name = form.name.value.trim();
+  const phone = form.phone.value.trim();
+  const weapon = form.weapon.value.trim();
+  const amral = form.amral.value.trim();
+  const scope = form.scope.value.trim();
+  if (!/^\d{5,9}$/.test(pn)) return setFormErr(form, 'מספר אישי: 5–9 ספרות');
+  if (name.length < 2) return setFormErr(form, 'נא למלא את שם החייל');
+  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
+  const serialRe = /^[A-Za-z0-9\-/]{3,20}$/;
+  if (!serialRe.test(weapon)) {
+    return setFormErr(form, 'מספר נשק: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  }
+  if (amral && !serialRe.test(amral)) {
+    return setFormErr(form, 'מק״ט אמר״ל: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  }
+  if (scope && !serialRe.test(scope)) {
+    return setFormErr(form, 'מק״ט כוונת יום: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  }
+  setFormErr(form, '');
+  S.dep = { pn, name, phone, weapon, amral, scope };
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const sealed = await seal(await importPubKey(S.config.pub), {
+      kind: 'deposit', pn, name, phone, weapon, amral, scope, createdAt: Date.now(),
+    });
+    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    S.depSent = true;
+    S.dep = null;
+    renderDeposit();
+  });
+  if (!S.depSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת בקשת אפסון';
   }
 }
 
@@ -943,7 +1206,9 @@ function renderSoldierConfirm() {
         <div><dt>מספר אישי:</dt><dd><span class="num">${esc(v.pn || '')}</span></dd></div>
         <div><dt>טלפון:</dt><dd><span class="num">${esc(v.phone || '')}</span></dd></div>
         <div><dt>מחלקה:</dt><dd>${esc(deptName(v.dept))}</dd></div>
-        ${v.weapon ? `<div><dt>נשק:</dt><dd><span class="num">${esc(v.weapon)}</span></dd></div>` : ''}
+        ${v.weapon ? `<div><dt>מספר נשק:</dt><dd><span class="num">${esc(v.weapon)}</span></dd></div>` : ''}
+        ${v.amral ? `<div><dt>מספר אמר״ל:</dt><dd><span class="num">${esc(v.amral)}</span></dd></div>` : ''}
+        ${v.scope ? `<div><dt>מספר כוונת:</dt><dd><span class="num">${esc(v.scope)}</span></dd></div>` : ''}
         ${licLine}
       </dl>
 
@@ -962,6 +1227,12 @@ function renderSoldierDone() {
       return `<span class="tagi">${esc(item.name)}${item.qty ? ` <span class="num">×${q}</span>` : ''}</span>`;
     })
     .join('');
+  // The serials are part of what was signed for, so they belong on the receipt.
+  const v = S.ident || {};
+  const serials = [['נשק', v.weapon], ['אמר״ל', v.amral], ['כוונת', v.scope]]
+    .filter(([, n]) => n)
+    .map(([k, n]) => `<span class="tagi">${k} <span class="num">${esc(n)}</span></span>`)
+    .join('');
   render(`
     ${stepsBar(4)}
     <section class="panel center">
@@ -973,6 +1244,7 @@ function renderSoldierDone() {
           : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל תקבל הודעת וואטסאפ עם פירוט הציוד שהוחתם.'
       }</p>
       <div class="tags center">${list}</div>
+      ${serials ? `<div class="tags center">${serials}</div>` : ''}
       <div class="fp num"><span aria-hidden="true">🔒</span><span class="fp-code">${esc(S.rid.slice(0, 16))}</span></div>
       <p class="muted-txt mt">סיימנו — אפשר לסגור את הדף.</p>
       <button class="btn ghost wide mt" data-act="s-reset">תיקון ורישום מחדש</button>
@@ -1063,8 +1335,10 @@ function renderConsole() {
     ['pending', 'ממתין לאישור', c.pending],
     ['track',   'מעקב ציוד',    c.approved],
     ['reports', 'בקשות חוסר',   openReps, openReps > 0],
+    ['faults',  'תקלות בינוי',  openFaults() || null, openFaults() > 0],
     ['inv',     'מלאי',         null],
-    ['armon',   'ארמון',        armonCount() || null],
+    // a deposit waiting for approval outranks the item count — it needs action
+    ['armon',   'ארמון',        openDeposits() || armonCount() || null, openDeposits() > 0],
     ['tzelem',  'דו״ח צלם',     null],
     ['ammo',    'תחמושת ואלפא', null],
     ['veh',     'רכבים',        vehAlerts() || null, true],
@@ -1088,6 +1362,7 @@ function renderConsole() {
   else if (S.tab === 'pending') body = renderPendingTab();
   else if (S.tab === 'track') body = renderTrackTab();
   else if (S.tab === 'reports') body = renderReportsTab();
+  else if (S.tab === 'faults') body = renderFaultsTab();
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'armon') body = renderArmonTab();
   else if (S.tab === 'tzelem') body = renderTzelemTab();
@@ -1167,7 +1442,9 @@ const itemsText = (d) =>
 
 /* ── Search & grouping (PLAN §7.2 — usable at 100+ soldiers) ────────── */
 
-// Matches a record against the free-text query: name, personal number, phone.
+// Matches a record against the free-text query: name, personal number, phone,
+// or any of the serials the soldier registered (weapon / amral / scope) — a
+// serial that turns up in the field is often all you have to go on.
 function matchesQuery(d, q) {
   if (!q) return true;
   const needle = q.trim().toLowerCase();
@@ -1176,7 +1453,10 @@ function matchesQuery(d, q) {
   return (
     (d.name || '').toLowerCase().includes(needle) ||
     (!!digits && (d.pn || '').includes(digits)) ||
-    (!!digits && (d.phone || '').includes(digits))
+    (!!digits && (d.phone || '').includes(digits)) ||
+    (d.weapon || '').toLowerCase().includes(needle) ||
+    (d.amral || '').toLowerCase().includes(needle) ||
+    (d.scope || '').toLowerCase().includes(needle)
   );
 }
 
@@ -1321,11 +1601,17 @@ function waLink(d, rid) {
   const lines = ITEMS.filter((i) => d.items[i.id])
     .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
     .join('\n');
+  // Serials the soldier registered — they are signed for just like the kit.
+  const serials = [['נשק', d.weapon], ['אמר״ל', d.amral], ['כוונת', d.scope]]
+    .filter(([, n]) => n)
+    .map(([k, n]) => `• ${k}: ${n}`)
+    .join('\n');
   const msg =
     '*אישור החתמת ציוד — מסייעת 951*\n\n' +
     `שלום ${d.name},\n` +
     'רישום הציוד שלך אושר והוחתמת על:\n\n' +
     `${lines}\n\n` +
+    (serials ? `*מספרים סידוריים:*\n${serials}\n\n` : '') +
     `מס' רישום: ${rid.slice(0, 8)}\n` +
     'נא לשמור הודעה זו לצורך החזרת הציוד.';
   return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
@@ -1721,6 +2007,8 @@ function weaponsPanel(approved) {
       const shown = S.revealed.has(rec.rid);
       return `<tr>
           <td class="num wpn">${esc(d.weapon)}</td>
+          <td class="num">${d.amral ? esc(d.amral) : '<span class="dim">·</span>'}</td>
+          <td class="num">${d.scope ? esc(d.scope) : '<span class="dim">·</span>'}</td>
           <td>${esc(d.name)}</td>
           <td class="num">${esc(d.pn)}</td>
           <td>${esc(deptName(d.dept))}</td>
@@ -1735,15 +2023,17 @@ function weaponsPanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רשימת נשקים</h2>
-      <p class="panel-sub">מספר סידורי מול מחזיק הנשק, ממוין לפי מספר. מכבד את החיפוש והסינון.</p>
+      <p class="panel-sub">מספר סידורי של הנשק, האמר״ל והכוונת מול המחזיק, ממוין לפי מספר הנשק. מכבד את החיפוש והסינון.</p>
       <div class="stat-row">
         <div class="stat"><span class="stat-n num">${armed.length}</span><span class="stat-l">נשקים משויכים</span></div>
+        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.amral).length}</span><span class="stat-l">אמר״ל רשום</span></div>
+        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.scope).length}</span><span class="stat-l">כוונת רשומה</span></div>
         <div class="stat"><span class="stat-n num">${unarmed.length}</span><span class="stat-l">ללא נשק רשום</span></div>
       </div>
       ${armed.length
         ? `<div class="tbl-scroll">
              <table class="tbl">
-               <thead><tr><th class="num">מס׳ סידורי</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
+               <thead><tr><th class="num">מס׳ נשק</th><th class="num">אמר״ל</th><th class="num">כוונת</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
                <tbody>${rows}</tbody>
              </table>
            </div>
@@ -1754,13 +2044,18 @@ function weaponsPanel(approved) {
 
 function exportWeaponsCsv() {
   if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const lines = [['מספר סידורי', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'].map(csvCell).join(',')];
+  const lines = [
+    ['מספר נשק', 'מספר אמר״ל', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון']
+      .map(csvCell).join(','),
+  ];
   const armed = S.recs
     .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
     .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
   for (const rec of armed) {
     const d = rec.data;
-    lines.push([d.weapon, d.name, d.pn, deptName(d.dept), d.phone].map(csvCell).join(','));
+    lines.push([
+      d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone,
+    ].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-weapons.csv');
 }
@@ -1769,7 +2064,7 @@ function exportWeaponsCsv() {
 function exportLedgerCsv() {
   if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
   const head = [
-    'שם', 'מספר אישי', 'מחלקה', 'מספר נשק',
+    'שם', 'מספר אישי', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
     ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
     'סה״כ בחוץ',
   ];
@@ -1778,7 +2073,7 @@ function exportLedgerCsv() {
     if (rec.status !== 'approved' || rec.damaged || !rec.data) continue;
     const d = rec.data;
     lines.push([
-      d.name, d.pn, deptName(d.dept), d.weapon || '',
+      d.name, d.pn, deptName(d.dept), d.weapon || '', d.amral || '', d.scope || '',
       ...ITEMS.flatMap((i) => {
         const it = d.items[i.id];
         return it ? [it.t, it.t - (it.r || 0)] : ['', ''];
@@ -1829,6 +2124,8 @@ function ledgerPanel(approved) {
           <span class="lg-sub num">${esc(d.pn)}</span>
           <span class="lg-sub">${esc(deptName(d.dept))}</span>
           ${d.weapon ? `<span class="lg-sub">נשק <span class="num">${esc(d.weapon)}</span></span>` : ''}
+          ${d.amral ? `<span class="lg-sub">אמר״ל <span class="num">${esc(d.amral)}</span></span>` : ''}
+          ${d.scope ? `<span class="lg-sub">כוונת <span class="num">${esc(d.scope)}</span></span>` : ''}
         </td>
         ${cells}
         <td class="num ${out > 0 ? 'warn' : 'ok'}">${out}</td>
@@ -2138,6 +2435,162 @@ function renderOverviewTab() {
 
 /* ── Armoury (ארמון) ───────────────────────────────────────────────── */
 
+// Deposits a soldier filed from #deposit. They are not in the register until
+// the armoury NCO approves them here — approval is what files the weapon.
+function depositsPanel() {
+  const all = depositReports();
+  const q = S.depQ.trim().toLowerCase();
+  const byStatus = all.filter((r) =>
+    S.depFilter === 'all' ? true : S.depFilter === 'done' ? r.status === 'done' : r.status !== 'done'
+  );
+  const vis = byStatus.filter((r) => {
+    if (!q) return true;
+    const d = r.data;
+    return (
+      (d.name || '').toLowerCase().includes(q) ||
+      (d.pn || '').includes(q) ||
+      (d.phone || '').includes(q) ||
+      (d.weapon || '').toLowerCase().includes(q) ||
+      (d.amral || '').toLowerCase().includes(q) ||
+      (d.scope || '').toLowerCase().includes(q)
+    );
+  });
+  const p = paged('deps', vis);
+
+  const filters = [['open', 'ממתין לאישור'], ['done', 'אושר'], ['all', 'הכל']]
+    .map(([id, label]) =>
+      `<button class="filter" aria-pressed="${S.depFilter === id}" data-act="dep-filter" data-f="${id}">${label}</button>`)
+    .join('');
+
+  const rows = p.slice.map((r) => {
+    const d = r.data;
+    const done = r.status === 'done';
+    return `<tr>
+      <td class="num">${esc(fmtDate(d.createdAt))}</td>
+      <td>${esc(d.name)}</td>
+      <td class="num">${esc(d.pn)}</td>
+      <td class="num">
+        ${esc(S.revealed.has(r.id) ? d.phone : maskPhone(d.phone))}
+        <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
+      </td>
+      <td class="num wpn">${esc(d.weapon)}</td>
+      <td class="num">${d.amral ? esc(d.amral) : '<span class="dim">·</span>'}</td>
+      <td class="num">${d.scope ? esc(d.scope) : '<span class="dim">·</span>'}</td>
+      <td><span class="state ${done ? 'done' : 'wait'}">${done ? 'אושר ונקלט' : 'ממתין'}</span></td>
+      <td class="nowrap">
+        ${done
+          ? ''
+          : `<button class="btn primary small" data-act="dep-approve" data-id="${esc(r.id)}">אישור וקליטה</button>`}
+        <button class="btn danger small" data-act="rep-del" data-id="${esc(r.id)}">מחיקה</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const waiting = openDeposits();
+  return `
+    <section class="panel${waiting ? ' alert' : ''}">
+      <h2 class="panel-title">אפסון נשק — ממתין לאישור ${waiting ? `<span class="pill bad num">${waiting}</span>` : ''}</h2>
+      <p class="panel-sub">בקשות אפסון ששלחו חיילים דרך <span class="code-inline">#deposit</span>. הנשק נכנס לרישום הארמון רק אחרי אישור כאן. האישור קולט גם את האמר״ל והכוונת אם נמסרו.</p>
+      ${all.length > 4
+        ? plainSearch('dep-search', 'dep-qclear', S.depQ,
+                      'חיפוש לפי שם, מ״א, טלפון או מספר נשק', all.length, vis.length)
+        : ''}
+      <div class="filters">${filters}</div>
+      ${vis.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr>
+                 <th class="num">נשלח</th><th>שם החייל</th><th class="num">מ״א</th><th class="num">טלפון</th>
+                 <th class="num">מס׳ נשק</th><th class="num">מק״ט אמר״ל</th><th class="num">מק״ט כוונת</th>
+                 <th>סטטוס</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           ${pager('deps', p)}
+           <button class="btn ghost wide mt" data-act="dep-export">ייצוא בקשות האפסון ל-CSV</button>`
+        : `<p class="empty">${all.length ? 'אין בקשה שתואמת את החיפוש והסינון.' : 'אין בקשות אפסון.'}</p>`}
+    </section>`;
+}
+
+// Approval is the moment the weapon becomes the armoury's responsibility, so it
+// writes the register and the log together, then closes the request.
+const depApprove = (id) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec || !isDeposit(rec) || rec.status === 'done') return;
+    if (!S.inv) { toast('נתוני המלאי עדיין נטענים', true); return; }
+    const d = rec.data;
+    const dup = (S.inv.armon || []).find(
+      (x) => x.kind === 'weapon' && x.serial.toLowerCase() === d.weapon.toLowerCase()
+    );
+    if (dup) { toast(`מספר נשק ${d.weapon} כבר רשום בארמון על שם ${dup.owner}`, true); return; }
+    const extra = [d.amral && `אמר״ל ${d.amral}`, d.scope && `כוונת ${d.scope}`].filter(Boolean).join(', ');
+    if (!window.confirm(
+      `לאשר אפסון של ${d.name} (מ״א ${d.pn})?\nנשק ${d.weapon}${extra ? `\nובנוסף: ${extra}` : ''}\n\nהפריטים ייקלטו לארמון.`
+    )) return;
+
+    const prevArmon = S.inv.armon || [];
+    const prevLog = S.inv.armonLog || [];
+    const now = Date.now();
+    const note = `אפסון עצמי · מ״א ${d.pn}`;
+    const added = [];
+    const stage = (kind, name, serial) => {
+      added.push({ id: rndId(), kind, name, serial, owner: d.name, loc: 'armon', note, addedAt: now });
+    };
+    stage('weapon', 'נשק אישי', d.weapon);
+    if (d.amral) stage('amral', 'אמר״ל', d.amral);
+    if (d.scope) stage('tzelem', 'כוונת יום', d.scope);
+
+    S.inv.armon = [...prevArmon, ...added];
+    S.inv.armonLog = [
+      ...added.map((x) => ({
+        t: now, action: 'add', kind: x.kind, name: x.name,
+        serial: x.serial, owner: x.owner, dest: '', note,
+      })),
+      ...prevLog,
+    ].slice(0, 5000);
+
+    try {
+      await saveInv();
+    } catch (e) {
+      S.inv.armon = prevArmon;                 // register untouched if the save failed
+      S.inv.armonLog = prevLog;
+      renderConsole();
+      throw e;
+    }
+    const prevStatus = rec.status;
+    rec.status = 'done';
+    renderConsole();
+    try {
+      await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: 'done' } });
+    } catch (e) {
+      rec.status = prevStatus;                 // the items are filed; only the flag failed
+      renderConsole();
+      toast('הפריטים נקלטו אך סימון הבקשה נכשל — רעננו ונסו שוב', true);
+      throw e;
+    }
+    toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון`);
+  });
+
+function exportDepCsv() {
+  const rows = depositReports();
+  if (!rows.length) { toast('אין בקשות אפסון לייצוא', true); return; }
+  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  const lines = [
+    ['נשלח', 'שם החייל', 'מספר אישי', 'טלפון', 'מספר נשק', 'מק״ט אמר״ל', 'מק״ט כוונת יום', 'סטטוס']
+      .map(csvCell).join(','),
+  ];
+  for (const r of rows) {
+    const d = r.data;
+    lines.push([
+      fmtDate(d.createdAt), d.name, d.pn, d.phone, d.weapon,
+      d.amral || '', d.scope || '', r.status === 'done' ? 'אושר ונקלט' : 'ממתין לאישור',
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-deposits.csv');
+}
+
 function armonVisible() {
   const rows = (S.inv && S.inv.armon) || [];
   const q = (S.regQ.armon || '').trim().toLowerCase();
@@ -2158,6 +2611,7 @@ function renderArmonTab() {
   const vis = armonVisible();
   const p = paged('armon', vis);
   const weapons = all.filter((x) => x.kind === 'weapon').length;
+  const amral = all.filter((x) => x.kind === 'amral').length;
   const tzelem = all.filter((x) => x.kind === 'tzelem').length;
 
   const kindChips = [['all', 'הכל'], ...ARM_KINDS.map((k) => [k.id, k.name])]
@@ -2193,6 +2647,8 @@ function renderArmonTab() {
     </tr>`).join('');
 
   return `
+    ${depositsPanel()}
+
     <section class="panel">
       <h2 class="panel-title">הוספת פריט לארמון</h2>
       <p class="panel-sub">כל פריט נכנס עם סוג, מספר סידורי ושם מלא של מי שהוא רשום עליו. כל הוספה והסרה נרשמות ביומן.</p>
@@ -2209,7 +2665,7 @@ function renderArmonTab() {
             <input class="input" name="name" maxlength="60" placeholder="לדוגמה: M4 / משקפת לילה" required>
           </label>
           <label class="field">
-            <span class="field-label">מספר סידורי <span class="req">*</span></span>
+            <span class="field-label">מספר סידורי / מק״ט <span class="req">*</span></span>
             <input class="input num" name="serial" maxlength="40" placeholder="M4-10021" required>
           </label>
           <label class="field">
@@ -2228,6 +2684,7 @@ function renderArmonTab() {
       <div class="kpis">
         ${kpi(all.length, 'סה״כ פריטים')}
         ${kpi(weapons, 'נשקים')}
+        ${kpi(amral, 'אמר״ל')}
         ${kpi(tzelem, 'פריטי צל״ם')}
       </div>
       ${all.length > 4
@@ -2273,8 +2730,15 @@ function renderArmonTab() {
 
 /* ── Tzelem report ─────────────────────────────────────────────────── */
 
+// The count is of what physically sits in the armoury, so weapons appear only
+// while they are there. אמר״ל and צל״ם are tracked wherever they are, because
+// the report is what proves they are accounted for at all.
+function tzelemScope() {
+  return ((S.inv && S.inv.armon) || []).filter((x) => x.kind !== 'weapon' || x.loc === 'armon');
+}
+
 function renderTzelemTab() {
-  const all = (S.inv && S.inv.armon) || [];
+  const all = tzelemScope();
   const q = (S.regQ.tzelem || '').trim().toLowerCase();
   const vis = all.filter(
     (x) =>
@@ -2284,6 +2748,7 @@ function renderTzelemTab() {
       (x.owner || '').toLowerCase().includes(q)
   );
   const byLoc = ARM_LOCS.map((l) => ({ ...l, n: all.filter((x) => x.loc === l.id).length }));
+  const held = ((S.inv && S.inv.armon) || []).filter((x) => x.kind === 'weapon' && x.loc !== 'armon').length;
 
   const rows = vis.map((x) => `
     <tr>
@@ -2297,11 +2762,17 @@ function renderTzelemTab() {
   return `
     <section class="panel">
       <h2 class="panel-title">דו״ח צלם</h2>
-      <p class="panel-sub">כל הפריטים הרשומים בארמון — נשקים וצל״ם — והיכן כל אחד נמצא. המיקום נקבע בלשונית ארמון.</p>
+      <p class="panel-sub"><strong>נשקים</strong> מוצגים רק כשהם נמצאים בארמון. <strong>אמר״ל וצל״ם</strong> מוצגים בכל המצבים, כולל אצל חייל. המיקום נקבע בלשונית ארמון.</p>
       <div class="kpis">
-        ${kpi(all.length, 'סה״כ פריטים')}
+        ${kpi(all.length, 'סה״כ בדו״ח')}
+        ${kpi(all.filter((x) => x.kind === 'weapon').length, 'נשקים בארמון', 'ok')}
+        ${kpi(all.filter((x) => x.kind === 'amral').length, 'אמר״ל')}
+        ${kpi(all.filter((x) => x.kind === 'tzelem').length, 'צל״ם')}
         ${byLoc.map((l) => kpi(l.n, l.name, l.id === 'armon' ? 'ok' : 'warn')).join('')}
       </div>
+      ${held
+        ? `<div class="callout"><p class="mb0"><strong class="num">${held}</strong> נשקים אינם בארמון ולכן אינם בדו״ח. הם מופיעים בלשונית ארמון.</p></div>`
+        : ''}
       ${all.length > 4
         ? plainSearch('tz-search', 'tz-qclear', S.regQ.tzelem || '',
                       'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length)
@@ -2319,7 +2790,7 @@ function renderTzelemTab() {
              <button class="btn ghost" data-act="tz-export">ייצוא ל-CSV</button>
            </div>
            <p class="field-hint mt center">"הפקת PDF" פותחת את חלון ההדפסה — בחרו <strong>שמירה כ-PDF</strong>. וואטסאפ מקבל טקסט בלבד, ולכן הכפתור שולח סיכום ומצרפים את ה-PDF ידנית.</p>`
-        : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'אין פריטים בארמון עדיין.'}</p>`}
+        : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'אין פריטים להצגה בדו״ח.'}</p>`}
     </section>`;
 }
 
@@ -2491,8 +2962,14 @@ function armAdd(form) {
   if (name.length < 2) return setFormErr(form, 'נא למלא שם פריט');
   if (serial.length < 2) return setFormErr(form, 'נא למלא מספר סידורי');
   if (owner.length < 2) return setFormErr(form, 'נא למלא שם מלא של בעל הפריט');
-  const dup = (S.inv.armon || []).find((x) => x.serial.toLowerCase() === serial.toLowerCase());
-  if (dup) return setFormErr(form, `מספר סידורי ${serial} כבר קיים בארמון (${dup.name})`);
+  // Weapon serials are unique. Accessories are logged by מק״ט — a catalogue
+  // number shared by every unit of that model — so duplicates are expected there.
+  if (kind === 'weapon') {
+    const dup = (S.inv.armon || []).find(
+      (x) => x.kind === 'weapon' && x.serial.toLowerCase() === serial.toLowerCase()
+    );
+    if (dup) return setFormErr(form, `מספר סידורי ${serial} כבר קיים בארמון (${dup.name})`);
+  }
   setFormErr(form, '');
   const now = Date.now();
   S.inv.armon = [...(S.inv.armon || []), { id: rndId(), kind, name, serial, owner, loc: 'armon', note: '', addedAt: now }];
@@ -2581,7 +3058,7 @@ function exportTzelemCsv() {
     '',
     ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום'].map(csvCell).join(','),
   ];
-  for (const x of S.inv.armon || []) {
+  for (const x of tzelemScope()) {
     lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc)].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-tzelem.csv');
@@ -2629,7 +3106,7 @@ function exportVehCsv() {
 // so the report is laid out for print and the browser's "Save as PDF" makes the
 // actual file. That keeps it dependency-free and renders Hebrew correctly.
 function tzelemPdf() {
-  const rows = (S.inv.armon || []);
+  const rows = tzelemScope();
   if (!rows.length) { toast('אין פריטים להפקה', true); return; }
   const host = document.createElement('section');
   host.className = 'printdoc';
@@ -2671,13 +3148,15 @@ function tzelemPdf() {
 }
 
 function tzelemWa() {
-  const rows = (S.inv.armon || []);
+  const rows = tzelemScope();
   if (!rows.length) { toast('אין פריטים לשליחה', true); return; }
   const counts = ARM_LOCS.map((l) => `${l.name}: ${rows.filter((x) => x.loc === l.id).length}`).join('\n');
   const offsite = rows.filter((x) => x.loc !== 'armon');
+  const held = ((S.inv && S.inv.armon) || []).filter((x) => x.kind === 'weapon' && x.loc !== 'armon').length;
   const msg =
     `*דו״ח צלם — מסייעת 951*\n${fmtDate(Date.now())}\n\n` +
-    `סה״כ פריטים: ${rows.length}\n${counts}\n` +
+    `סה״כ פריטים בדו״ח: ${rows.length}\n${counts}\n` +
+    (held ? `\n(${held} נשקים אינם בארמון ואינם נכללים)\n` : '') +
     (offsite.length
       ? `\n*לא בארמון:*\n${offsite.slice(0, 40).map((x) => `• ${x.name} (${x.serial}) — ${nameOf(ARM_LOCS, x.loc)}, ${x.owner}`).join('\n')}`
       : '\nכל הפריטים בארמון.');
@@ -2686,8 +3165,24 @@ function tzelemWa() {
 
 /* ── Shortage reports (admin) ──────────────────────────────────────── */
 
+// Deposits and building faults ride the same pipe as shortage reports; each
+// tab sees only its own kind, and damaged rows stay with the shortage tab so
+// they are never silently dropped.
+const isKind = (r, k) => !r.damaged && !!r.data && r.data.kind === k;
+const isDeposit = (r) => isKind(r, 'deposit');
+const isFault = (r) => isKind(r, 'fault');
+const shortageReports = () => S.reports.filter((r) => !isDeposit(r) && !isFault(r));
+const depositReports = () => S.reports.filter(isDeposit);
+const faultReports = () => S.reports.filter(isFault);
+
 // 'open' and 'partial' both still need the admin's attention.
-const openReports = () => S.reports.filter((r) => r.status !== 'done' && !r.damaged).length;
+const openReports = () => shortageReports().filter((r) => r.status !== 'done' && !r.damaged).length;
+
+// Deposits awaiting the armoury NCO's approval.
+const openDeposits = () => depositReports().filter((r) => r.status !== 'done').length;
+
+// Faults not yet closed — 'partial' means handed to the works team.
+const openFaults = () => faultReports().filter((r) => r.status !== 'done').length;
 
 const armonCount = () => ((S.inv && S.inv.armon) || []).length;
 
@@ -2728,7 +3223,7 @@ function renderReportsTab() {
     )
     .join('');
 
-  const byStatus = S.reports.filter((r) => {
+  const byStatus = shortageReports().filter((r) => {
     if (r.damaged || S.repFilter === 'all') return true;
     if (S.repFilter === 'open') return r.status !== 'done';   // open + partial
     return r.status === S.repFilter;
@@ -2812,6 +3307,126 @@ function renderReportsTab() {
       ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
       ${pager('reports', pgReports)}
     </section>`;
+}
+
+/* ── Building faults (admin) ───────────────────────────────────────── */
+
+// A fault's life is: reported → handed to the works team → fixed. That maps
+// onto the same three states the reports pipe already persists.
+const FLT_LABEL = { open: 'נפתחה', partial: 'הועבר לטיפול', done: '✓ טופל' };
+
+function renderFaultsTab() {
+  const all = faultReports();
+  const filters = [['open', 'פתוחות'], ['partial', 'בטיפול'], ['done', 'טופלו'], ['all', 'הכל']]
+    .map(([id, label]) =>
+      `<button class="filter" aria-pressed="${S.fltFilter === id}" data-act="flt-filter" data-f="${id}">${label}</button>`)
+    .join('');
+
+  const byStatus = all.filter((r) => {
+    if (S.fltFilter === 'all') return true;
+    if (S.fltFilter === 'open') return r.status !== 'done';   // open + in progress
+    return r.status === S.fltFilter;
+  });
+  const q = S.fltQ.trim().toLowerCase();
+  const vis = byStatus.filter((r) =>
+    !q ||
+    (r.data.name || '').toLowerCase().includes(q) ||
+    (r.data.phone || '').includes(q) ||
+    (r.data.text || '').toLowerCase().includes(q)
+  );
+  const p = paged('faults', vis);
+
+  const cards = p.slice.map((r) => {
+    const d = r.data;
+    const st = r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open';
+    return `
+      <article class="rec ${st === 'done' ? 'done' : st === 'partial' ? 'live' : 'wait'}">
+        <header class="rec-head">
+          <div>
+            <div class="rec-name">${esc(d.name)}</div>
+            <div class="rec-meta">דווח ${esc(fmtDate(d.createdAt))}</div>
+          </div>
+          <span class="state ${st === 'done' ? 'done' : st === 'partial' ? 'live' : 'wait'}">${FLT_LABEL[st]}</span>
+        </header>
+        <div class="rec-meta">טלפון:
+          <span class="num">${esc(S.revealed.has(r.id) ? d.phone : maskPhone(d.phone))}</span>
+          <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
+        </div>
+        <blockquote class="rep-text">${esc(d.text)}</blockquote>
+
+        <fieldset class="rep-states">
+          <legend class="field-label">סטטוס טיפול</legend>
+          ${['open', 'partial', 'done'].map((v) => `
+            <label class="rep-state ${st === v ? 'on' : ''}">
+              <input type="radio" name="flt-${esc(r.id)}" data-act="flt-state"
+                     data-id="${esc(r.id)}" data-st="${v}" ${st === v ? 'checked' : ''}>
+              <span class="rep-tick" aria-hidden="true"></span>
+              <span>${FLT_LABEL[v]}</span>
+            </label>`).join('')}
+        </fieldset>
+
+        <div class="rec-actions">
+          <a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}"
+             target="_blank" rel="noopener noreferrer">וואטסאפ למדווח</a>
+          <button class="btn danger" data-act="rep-del" data-id="${esc(r.id)}">מחיקה</button>
+        </div>
+      </article>`;
+  }).join('');
+
+  const waiting = openFaults();
+  return `
+    <section class="panel">
+      <h2 class="panel-title">תקלות בינוי</h2>
+      <p class="panel-sub">תקלות מבנה שדווחו דרך <span class="code-inline">#fault</span>. סמנו "הועבר לטיפול" כשהתקלה נמסרה לגורם המטפל, ו-✓ כשתוקנה.</p>
+      <div class="kpis">
+        ${kpi(all.length, 'סה״כ דיווחים')}
+        ${kpi(all.filter((r) => r.status !== 'done' && r.status !== 'partial').length, 'פתוחות', waiting ? 'warn' : null)}
+        ${kpi(all.filter((r) => r.status === 'partial').length, 'הועברו לטיפול')}
+        ${kpi(all.filter((r) => r.status === 'done').length, 'טופלו', 'ok')}
+      </div>
+      ${all.length > 4
+        ? plainSearch('flt-search', 'flt-qclear', S.fltQ,
+                      'חיפוש לפי שם המדווח, טלפון או תוכן', all.length, vis.length)
+        : ''}
+      <div class="filters">${filters}</div>
+      ${cards || '<p class="empty">אין תקלות שתואמות את החיפוש והסינון.</p>'}
+      ${pager('faults', p)}
+      ${all.length ? '<button class="btn ghost wide mt" data-act="flt-export">ייצוא התקלות ל-CSV</button>' : ''}
+    </section>`;
+}
+
+const fltSetState = (id, next) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec || rec.status === next) return;
+    const prev = rec.status;
+    rec.status = next;                       // optimistic, rolled back on failure
+    renderConsole();
+    try {
+      await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: next } });
+    } catch (e) {
+      rec.status = prev;
+      renderConsole();
+      throw e;
+    }
+    toast(next === 'done' ? 'התקלה סומנה כטופלה'
+      : next === 'partial' ? 'סומן כהועבר לטיפול'
+      : 'הוחזר למצב פתוח');
+  });
+
+function exportFaultsCsv() {
+  const rows = faultReports();
+  if (!rows.length) { toast('אין תקלות לייצוא', true); return; }
+  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  const lines = [
+    ['דווח', 'שם המדווח', 'טלפון', 'סטטוס', 'תיאור התקלה'].map(csvCell).join(','),
+  ];
+  for (const r of rows) {
+    const d = r.data;
+    const st = r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open';
+    lines.push([fmtDate(d.createdAt), d.name, d.phone, FLT_LABEL[st], d.text].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-faults.csv');
 }
 
 function renderSecurityTab() {
@@ -3280,6 +3895,7 @@ const adminApprove = (rid) =>
         parent.data.name = rec.data.name;
         parent.data.phone = rec.data.phone;
         if (rec.data.dept) parent.data.dept = rec.data.dept;
+        if (rec.data.weapon) parent.data.weapon = rec.data.weapon;
         if (rec.data.amral) parent.data.amral = rec.data.amral;
         if (rec.data.scope) parent.data.scope = rec.data.scope;
         parent.data.log.push({ a: 'supplement', t: now });
@@ -3541,6 +4157,8 @@ $app.addEventListener('input', (e) => {
     case 'inv-xname': S.inv.extra[i].name = el.value; break;
     case 'inv-notes': S.inv.notes = el.value; break;
     case 'arm-search':  S.regQ = { ...S.regQ, armon: el.value };  S.page = {}; rerenderKeepFocus(el); break;
+    case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
     case 'veh-search':  S.regQ = { ...S.regQ, veh: el.value };    rerenderKeepFocus(el); break;
@@ -3560,6 +4178,7 @@ $app.addEventListener('change', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !$app.contains(el)) return;
   if (el.dataset.act === 'rep-state') { repSetState(el.dataset.id, el.dataset.st); return; }
+  if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'arm-loc') { S.inv.armon[+el.dataset.i].loc = el.value; renderConsole(); return; }
@@ -3581,6 +4200,8 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'login') loginSubmit(form);
   else if (kind === 'rotate') rotateSubmit(form);
   else if (kind === 'report') reportSubmit(form);
+  else if (kind === 'deposit') depositSubmit(form);
+  else if (kind === 'fault') faultSubmit(form);
   else if (kind === 'arm-add') armAdd(form);
   else if (kind === 'ammo-add') ammoAdd(form);
 });
@@ -3712,6 +4333,17 @@ function dispatch(act, el) {
       break;
     }
     case 'rep-again': S.repSent = false; S.rep = null; renderReport(); break;
+    // armoury deposits
+    case 'dep-again': S.depSent = false; S.dep = null; renderDeposit(); break;
+    case 'dep-filter': S.depFilter = el.dataset.f; S.page = {}; renderConsole(); break;
+    case 'dep-approve': depApprove(el.dataset.id); break;
+    case 'dep-export': exportDepCsv(); break;
+    case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
+    // building faults
+    case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
+    case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
+    case 'flt-export': exportFaultsCsv(); break;
+    case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;
     case 'wa-ret': markSent(rid, 'returnNotified'); break;

@@ -220,12 +220,28 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   margin-bottom: 16px;
   animation: rise 0.32s var(--ease) both;
 }
+/* a panel holding something that needs the admin to act */
+.panel.alert {
+  border-color: var(--bad-fill);
+  box-shadow: 0 0 0 1px var(--bad-tint), var(--sh-2);
+}
 .panel-title {
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.015em;
   margin-bottom: 5px;
 }
+.pill {
+  display: inline-block;
+  vertical-align: 2px;
+  margin-inline-start: 6px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pill.bad { background: var(--bad-fill); color: #fff; }
+.nowrap { white-space: nowrap; }
 .panel-sub {
   color: var(--muted);
   font-size: 14px;
@@ -894,6 +910,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   animation: rise 0.34s var(--ease) both;
 }
 .choice:nth-child(2) { animation-delay: 0.06s; }
+.choice:nth-child(3) { animation-delay: 0.12s; }
 .choice:hover {
   border-color: var(--pine);
   box-shadow: 0 0 0 1px var(--pine-ring), var(--sh-3);
@@ -910,6 +927,8 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   place-items: center;
 }
 .choice-ico.alt { background: var(--brass-tint); color: #6A5416; }
+.choice-ico.arm { background: var(--bad-tint); color: var(--bad-ink); }
+.choice-ico.bld { background: var(--warn-tint); color: var(--warn-ink); }
 .choice-ico svg { width: 26px; height: 26px; }
 .choice-txt { flex: 1; min-width: 0; }
 .choice-t { display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
