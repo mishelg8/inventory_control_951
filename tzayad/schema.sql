@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS reports (
   ek          TEXT NOT NULL,
   iv          TEXT NOT NULL,
   ct          TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'done'
+  status      TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'partial' | 'done'
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
