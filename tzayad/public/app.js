@@ -241,15 +241,25 @@ function cleanReport(raw) {
 
 /* ── Armoury domain ────────────────────────────────────────────────── */
 
+// Each kind carries the locations it is allowed to be in. Only צל״ם can go out
+// on a mission, and when it does the mission has to be named — an item that is
+// "somewhere on an operation" with no name attached is an item you have lost.
 const ARM_KINDS = [
-  { id: 'weapon', name: 'נשק' },
-  { id: 'amral', name: 'אמר״ל' },
-  { id: 'tzelem', name: 'צל״ם' },
+  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier'] },
+  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier'] },
+  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier'] },
+  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier'] },
+  { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission'] },
 ];
 const ARM_LOCS = [
   { id: 'armon', name: 'ארמון' },
   { id: 'soldier', name: 'אצל חייל' },
+  { id: 'mission', name: 'במשימה' },
 ];
+const kindLocs = (kind) => {
+  const k = ARM_KINDS.find((x) => x.id === kind);
+  return ARM_LOCS.filter((l) => (k ? k.locs : ['armon', 'soldier']).includes(l.id));
+};
 // where an item goes when it leaves the armoury for good
 const AMMO_DESTS = [
   { id: 'mission', name: 'משימה' },
@@ -263,19 +273,24 @@ const ARM_DESTS = [
 ];
 const nameOf = (list, id) => (list.find((x) => x.id === id) || {}).name || '—';
 
-const cleanArmItem = (x) => ({
-  id: asText(x && x.id, 40) || rndId(),
-  kind: ARM_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'weapon',
-  name: asText(x && x.name, 60),
-  serial: asText(x && x.serial, 40),
-  owner: asText(x && x.owner, 60),
-  // 'mission' was a location until it was dropped. Legacy rows map to 'soldier',
-  // never to 'armon' — an item that was out must not read as present in the cupboard.
-  loc: ARM_LOCS.some((l) => l.id === (x && x.loc)) ? x.loc
-    : (x && x.loc === 'mission') ? 'soldier' : 'armon',
-  note: asText(x && x.note, 120),
-  addedAt: asTime(x && x.addedAt),
-});
+const cleanArmItem = (x) => {
+  const kind = ARM_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'weapon';
+  // A location the kind is not allowed in falls back to 'soldier', never to
+  // 'armon' — an item that was out must not read as present in the cupboard.
+  const allowed = kindLocs(kind).map((l) => l.id);
+  const raw = x && x.loc;
+  return {
+    id: asText(x && x.id, 40) || rndId(),
+    kind,
+    name: asText(x && x.name, 60),
+    serial: asText(x && x.serial, 40),
+    owner: asText(x && x.owner, 60),
+    loc: allowed.includes(raw) ? raw : (raw && raw !== 'armon' ? 'soldier' : 'armon'),
+    mission: asText(x && x.mission, 60),
+    note: asText(x && x.note, 120),
+    addedAt: asTime(x && x.addedAt),
+  };
+};
 
 const cleanArmLog = (x) => ({
   t: asTime(x && x.t),
@@ -318,11 +333,32 @@ const cleanVehicle = (x) => {
     company: asText(x && x.company, 40),
     km: asCount(x && x.km, 9999999),
     service: asText(x && x.service, 10),
+    code: asText(x && x.code, 12),        // door keypad (קודן)
+    fuelCode: asText(x && x.fuelCode, 12), // fuel dispenser (דלקן)
     note: asText(x && x.note, 120),
   };
   for (const k of VEH_KIT) v[k.id] = !!(x && x[k.id]);
   return v;
 };
+
+const FUEL_KINDS = [
+  { id: 'diesel', name: 'דיזל' },
+  { id: 'petrol', name: 'בנזין' },
+  { id: 'urea', name: 'אוריאה' },
+];
+
+// A refuelling card. `doc` is a random 32-hex id naming the receipt image in
+// the docs table — the picture never enters the vault, which has a size cap.
+const cleanFuel = (x) => ({
+  id: asText(x && x.id, 40) || rndId(),
+  kind: FUEL_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'diesel',
+  no: asText(x && x.no, 30),
+  litres: asCount(x && x.litres, 99999),
+  plate: asText(x && x.plate, 20),        // which vehicle holds the card, if any
+  doc: /^[0-9a-f]{32}$/.test(x && x.doc) ? x.doc : '',
+  docAt: asTime(x && x.docAt),
+  note: asText(x && x.note, 120),
+});
 
 const rndId = () => hex(crypto.getRandomValues(new Uint8Array(8)));
 
@@ -346,6 +382,7 @@ function cleanInv(raw) {
     ammo: arr(src.ammo, cleanAmmo, 1000),
     ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
     vehicles: arr(src.vehicles, cleanVehicle, 500),
+    fuel: arr(src.fuel, cleanFuel, 300),
     countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
     updatedAt: asTime(src.updatedAt),
   };
@@ -1894,8 +1931,10 @@ const LIC_LABEL = {
   none:    'אין רישיון',
 };
 
-function licenceRows(approved) {
-  return applyFilters(approved).map((rec) => {
+// The overview has no search box of its own, so it must not inherit the search
+// and department filter left behind on another tab — it passes `false`.
+function licenceRows(approved, filtered = true) {
+  return (filtered ? applyFilters(approved) : approved).map((rec) => {
     const d = rec.data;
     const civ = (d.lic || {}).civil;
     const st = civ && civ.has ? licState(civ.exp) : 'none';
@@ -2154,7 +2193,7 @@ function ledgerPanel(approved) {
 
 const emptyInv = () => ({
   open: {}, extra: [], notes: '',
-  armon: [], armonLog: [], ammo: [], ammoLog: [], vehicles: [], countedAt: {},
+  armon: [], armonLog: [], ammo: [], ammoLog: [], vehicles: [], fuel: [], countedAt: {},
 });
 
 // The two counting registers are the same thing with different names, so they
@@ -2237,6 +2276,7 @@ function renderInvTab() {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      <button class="btn ghost wide mt" data-act="inv-export">ייצוא המלאי ל-CSV</button>
     </section>
 
     <section class="panel">
@@ -2255,7 +2295,10 @@ function renderInvTab() {
            </div>`
           : '<p class="empty">אין פריט שתואם את החיפוש.</p>'
         : '<p class="empty">אין פריטים נוספים. הוסיפו את הראשון למטה.</p>'}
-      <button class="btn ghost wide mt" data-act="inv-xadd">+ הוספת פריט</button>
+      <div class="rec-actions mt">
+        <button class="btn ghost" data-act="inv-xadd">+ הוספת פריט</button>
+        ${inv.extra.length ? '<button class="btn ghost" data-act="inv-xexport">ייצוא ל-CSV</button>' : ''}
+      </div>
     </section>
 
     <section class="panel">
@@ -2320,7 +2363,7 @@ function renderOverviewTab() {
   const openReps = openReports();
 
   // licences are their own subject — kept apart from the weapon count
-  const licRows = licenceRows(approved);
+  const licRows = licenceRows(approved, false);
   const licOk = licRows.filter((r) => r.st === 'valid').length;
   const licBad = licRows.filter((r) => r.st !== 'valid' && r.st !== 'soon').length;
   const licSoon = licRows.filter((r) => r.st === 'soon').length;
@@ -2337,6 +2380,110 @@ function renderOverviewTab() {
         `${licOk} בתוקף${licSoon ? ` · ${licSoon} פגים בקרוב` : ''}`),
   ].join('');
 
+  // Everything the armoury, ammunition, vehicle and fuel registers know, in the
+  // same glance as the equipment numbers — otherwise those pages are invisible
+  // from here and only get looked at when something has already gone wrong.
+  const armon = inv.armon || [];
+  const armOut = armon.filter((x) => x.kind === 'weapon' && x.loc !== 'armon');
+  const ammo = inv.ammo || [];
+  const ammoEmpty = ammo.filter((x) => x.qty <= 0);
+  const vehicles = inv.vehicles || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const vehLate = vehicles.filter((v) => v.service && v.service < today);
+  const vehKitShort = vehicles.filter((v) => VEH_KIT.some((k) => !v[k.id]));
+  const fuel = inv.fuel || [];
+  const fuelLow = fuel.filter((x) => x.litres < 50);
+
+  const logistics = [
+    kpi(armon.length, 'פריטים בארמון', null,
+        armOut.length ? `${armOut.length} נשקים לא בארמון` : 'כל הנשקים בארמון'),
+    kpi(ammo.reduce((s, x) => s + x.qty, 0), 'יחידות תחמושת', ammoEmpty.length ? 'warn' : null,
+        ammoEmpty.length ? `${ammoEmpty.length} פריטים אזלו` : `${ammo.length} סוגים`),
+    kpi(vehicles.length, 'רכבים', vehLate.length ? 'bad' : vehKitShort.length ? 'warn' : 'ok',
+        vehLate.length ? `${vehLate.length} טיפול עבר` : vehKitShort.length ? `${vehKitShort.length} חסר ציוד` : 'הכול תקין'),
+    kpi(fuel.reduce((s, x) => s + x.litres, 0), 'ליטרים בכרטיסים', fuelLow.length ? 'warn' : null,
+        fuelLow.length ? `${fuelLow.length} כרטיסים במלאי נמוך` : `${fuel.length} כרטיסים`),
+  ].join('');
+
+  // One board for everything waiting on the quartermaster, ordered by urgency.
+  // Each row jumps straight to the page that clears it.
+  const actions = [
+    c.pending && { n: c.pending, tone: 'warn', tab: 'pending',
+      t: 'החתמות ממתינות לאישור', s: 'חיילים ששלחו רישום ועדיין לא אושרו' },
+    openDeposits() && { n: openDeposits(), tone: 'bad', tab: 'armon',
+      t: 'אפסוני נשק ממתינים', s: 'נשק שנמסר ועדיין לא נקלט לרישום הארמון' },
+    openFaults() && { n: openFaults(), tone: 'warn', tab: 'faults',
+      t: 'תקלות בינוי פתוחות', s: 'דווחו ועדיין לא סומנו כטופלו' },
+    openReps && { n: openReps, tone: 'warn', tab: 'reports',
+      t: 'בקשות חוסר פתוחות', s: 'חיילים שמחכים לתשובה' },
+    shortItems.length && { n: shortItems.length, tone: 'bad', tab: 'inv',
+      t: 'פריטים בחוסר', s: shortItems.map((i) => i.name).join(', ') },
+    licBad && { n: licBad, tone: 'bad', tab: 'sum',
+      t: 'רישיונות לא בתוקף', s: 'חיילים שאסור שינהגו' },
+    licSoon && { n: licSoon, tone: 'warn', tab: 'sum',
+      t: 'רישיונות פגים בקרוב', s: 'כדאי לחדש לפני שיפוג' },
+    vehLate.length && { n: vehLate.length, tone: 'bad', tab: 'veh',
+      t: 'רכבים עם טיפול שעבר', s: vehLate.map((v) => v.plate).filter(Boolean).join(', ') || 'ללא מספר רכב' },
+    vehKitShort.length && { n: vehKitShort.length, tone: 'warn', tab: 'veh',
+      t: 'רכבים עם ציוד חסר', s: 'ג׳ק, מפתח גלגלים, אפודה, משולש או צ׳קלקה' },
+    fuelLow.length && { n: fuelLow.length, tone: 'warn', tab: 'veh',
+      t: 'כרטיסי תדלוק במלאי נמוך', s: 'מתחת ל-50 ליטר' },
+    ammoEmpty.length && { n: ammoEmpty.length, tone: 'warn', tab: 'ammo',
+      t: 'פריטי תחמושת שאזלו', s: ammoEmpty.map((x) => x.name).join(', ') },
+    armOut.length && { n: armOut.length, tone: 'warn', tab: 'armon',
+      t: 'נשקים שאינם בארמון', s: 'רשומים אצל חיילים — לא ייכללו בדו״ח צלם' },
+    c.damaged && { n: c.damaged, tone: 'bad', tab: 'sec',
+      t: 'רשומות פגומות', s: 'הפענוח נכשל — חשד לשיבוש נתונים' },
+  ].filter(Boolean);
+
+  const actionRows = actions.map((a) => `
+    <button class="todo is-${a.tone}" data-act="tab" data-tab="${a.tab}">
+      <span class="todo-n num">${a.n}</span>
+      <span class="todo-txt">
+        <span class="todo-t">${esc(a.t)}</span>
+        <span class="todo-s">${esc(a.s)}</span>
+      </span>
+      <span class="todo-go" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+      </span>
+    </button>`).join('');
+
+  // Who is holding the most, so the person to chase is named rather than
+  // hunted for across the ledger.
+  const topHolders = approved
+    .map((rec) => ({ d: rec.data, out: outstanding(rec.data) }))
+    .filter((x) => x.out > 0)
+    .sort((a, b) => b.out - a.out)
+    .slice(0, 5);
+
+  const holderRows = topHolders.map((x) => `
+    <tr>
+      <td>${esc(x.d.name)}</td>
+      <td class="num">${esc(x.d.pn)}</td>
+      <td>${esc(deptName(x.d.dept))}</td>
+      <td class="num warn">${x.out}</td>
+    </tr>`).join('');
+
+  // Latest movements across both registers, merged into one timeline.
+  const feed = [
+    ...(inv.armonLog || []).slice(0, 12).map((e) => ({
+      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
+      txt: `${e.action === 'add' ? 'נכנס לארמון' : 'יצא מהארמון'}: ${e.name} (${e.serial})${e.owner ? ` — ${e.owner}` : ''}${e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : ''}`,
+    })),
+    ...(inv.ammoLog || []).slice(0, 12).map((e) => ({
+      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
+      txt: `${e.action === 'add' ? 'נוספה תחמושת' : 'הונפקה תחמושת'}: ${e.name} ×${e.qty}${e.who ? ` — ${e.who}` : ''}`,
+    })),
+  ].sort((a, b) => b.t - a.t).slice(0, 10);
+
+  const feedRows = feed.map((e) => `
+    <li class="feed-row">
+      <span class="feed-dot is-${e.tone}" aria-hidden="true"></span>
+      <span class="feed-txt">${esc(e.txt)}</span>
+      <span class="feed-t num">${esc(fmtDate(e.t))}</span>
+    </li>`).join('');
+
   // Per-department table. This used to be a stacked bar whose length compared
   // departments while its label read as a ratio — two different meanings in one
   // mark, which nobody could parse. Explicit columns say exactly what they say.
@@ -2349,7 +2496,9 @@ function renderOverviewTab() {
         if (it) { t += it.t; r += it.r || 0; }
       }
     }
-    return { ...dp, n: recs.length, t, r, out: t - r, pct: pct(r, t) };
+    const armedN = recs.filter((x) => x.data.weapon).length;
+    const badLic = licRows.filter((l) => l.dept === dp.name && l.st !== 'valid' && l.st !== 'soon').length;
+    return { ...dp, n: recs.length, t, r, out: t - r, pct: pct(r, t), armedN, badLic };
   }).filter((d) => d.n);
 
   const deptTable = deptRows
@@ -2360,6 +2509,8 @@ function renderOverviewTab() {
         <td class="num">${d.t}</td>
         <td class="num">${d.r}</td>
         <td class="num ${d.out > 0 ? 'warn' : 'ok'}">${d.out}</td>
+        <td class="num">${d.armedN}</td>
+        <td class="num ${d.badLic ? 'bad' : 'ok'}">${d.badLic || '—'}</td>
         <td>
           <div class="minibar" title="${d.pct}% הוחזר">
             <span class="minibar-fill" data-w="${d.pct}"></span>
@@ -2387,10 +2538,21 @@ function renderOverviewTab() {
     );
   }).join('');
 
+  const counted = inv.countedAt || {};
+  const stamp = (ms) => (ms ? fmtDate(ms) : 'טרם נספר');
+
   return `
+    <section class="panel${actions.length ? ' alert' : ''}">
+      <h2 class="panel-title">דורש טיפול${actions.length ? ` <span class="pill bad num">${actions.length}</span>` : ''}</h2>
+      <p class="panel-sub">כל מה שממתין לך כרגע, לפי דחיפות. לחיצה על שורה פותחת את הדף שמטפל בה.</p>
+      ${actions.length
+        ? `<div class="todos">${actionRows}</div>`
+        : '<p class="empty">אין משימות פתוחות — הכול מטופל.</p>'}
+    </section>
+
     <section class="panel">
-      <h2 class="panel-title">סקירה כללית</h2>
-      <p class="panel-sub">תמונת מצב מלאה. הנתונים מחושבים מרשומות מאושרות בלבד.</p>
+      <h2 class="panel-title">ציוד אישי</h2>
+      <p class="panel-sub">מחושב מרשומות מאושרות בלבד. רשומות שממתינות לאישור אינן נספרות.</p>
       <div class="kpis">${tiles}</div>
       ${shortItems.length
         ? `<div class="callout alert">
@@ -2407,14 +2569,47 @@ function renderOverviewTab() {
     </section>
 
     <section class="panel">
+      <h2 class="panel-title">ארמון, תחמושת ורכבים</h2>
+      <p class="panel-sub">מצב הרישומים הלוגיסטיים שמנוהלים בדפים הייעודיים.</p>
+      <div class="kpis">${logistics}</div>
+      <p class="field-hint mb0">
+        ספירת צל״ם אחרונה: <strong>${esc(stamp(counted.tzelem))}</strong> ·
+        ספירת ארמון אחרונה: <strong>${esc(stamp(counted.armon))}</strong> ·
+        עדכון אחרון של המלאי: <strong>${esc(inv.updatedAt ? fmtDate(inv.updatedAt) : 'לא נשמר עדיין')}</strong>
+      </p>
+    </section>
+
+    ${topHolders.length
+      ? `<section class="panel">
+           <h2 class="panel-title">מי מחזיק הכי הרבה</h2>
+           <p class="panel-sub">חמשת החיילים עם הכי הרבה פריטים שטרם הוחזרו — מכאן מתחילים כשצריך לסגור חשבון.</p>
+           <div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">פריטים בחוץ</th></tr></thead>
+               <tbody>${holderRows}</tbody>
+             </table>
+           </div>
+         </section>`
+      : ''}
+
+    ${feed.length
+      ? `<section class="panel">
+           <h2 class="panel-title">תנועות אחרונות</h2>
+           <p class="panel-sub">עשר הפעולות האחרונות בארמון ובתחמושת. היומן המלא נמצא בדפים עצמם.</p>
+           <ul class="feed">${feedRows}</ul>
+         </section>`
+      : ''}
+
+    <section class="panel">
       <h2 class="panel-title">פילוח לפי מחלקה</h2>
-      <p class="panel-sub">כמה פריטים הוחתמו בכל מחלקה, כמה מהם כבר הוחזרו, וכמה עדיין בחוץ.</p>
+      <p class="panel-sub">כמה פריטים הוחתמו בכל מחלקה, כמה הוחזרו, כמה עדיין בחוץ, כמה נשקים משויכים וכמה רישיונות אינם בתוקף.</p>
       ${deptRows.length
         ? `<div class="tbl-scroll">
              <table class="tbl">
                <thead><tr>
                  <th>מחלקה</th><th class="num">חיילים</th><th class="num">הוחתם</th>
-                 <th class="num">הוחזר</th><th class="num">בחוץ</th><th>% הוחזר</th>
+                 <th class="num">הוחזר</th><th class="num">בחוץ</th>
+                 <th class="num">נשקים</th><th class="num">רישיון לא תקף</th><th>% הוחזר</th>
                </tr></thead>
                <tbody>${deptTable}</tbody>
              </table>
@@ -2540,7 +2735,7 @@ const depApprove = (id) =>
     };
     stage('weapon', 'נשק אישי', d.weapon);
     if (d.amral) stage('amral', 'אמר״ל', d.amral);
-    if (d.scope) stage('tzelem', 'כוונת יום', d.scope);
+    if (d.scope) stage('dscope', 'כוונת יום', d.scope);
 
     S.inv.armon = [...prevArmon, ...added];
     S.inv.armonLog = [
@@ -2610,9 +2805,8 @@ function renderArmonTab() {
   const log = (S.inv && S.inv.armonLog) || [];
   const vis = armonVisible();
   const p = paged('armon', vis);
-  const weapons = all.filter((x) => x.kind === 'weapon').length;
-  const amral = all.filter((x) => x.kind === 'amral').length;
-  const tzelem = all.filter((x) => x.kind === 'tzelem').length;
+  const byKind = ARM_KINDS.map((k) => ({ ...k, n: all.filter((x) => x.kind === k.id).length }));
+  const noMission = all.filter((x) => x.loc === 'mission' && !x.mission).length;
 
   const kindChips = [['all', 'הכל'], ...ARM_KINDS.map((k) => [k.id, k.name])]
     .map(([id, label]) =>
@@ -2627,8 +2821,12 @@ function renderArmonTab() {
       <td>${esc(x.owner)}</td>
       <td>
         <select class="input mini select-mini" data-act="arm-loc" data-i="${i}" aria-label="מיקום">
-          ${ARM_LOCS.map((l) => `<option value="${l.id}"${x.loc === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
+          ${kindLocs(x.kind).map((l) => `<option value="${l.id}"${x.loc === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
         </select>
+        ${x.loc === 'mission'
+          ? `<input class="input mini mt-xs" type="text" maxlength="60" value="${esc(x.mission)}"
+                    data-act="arm-mission" data-i="${i}" aria-label="שם המשימה" placeholder="שם המשימה">`
+          : ''}
       </td>
       <td class="num">${x.addedAt ? esc(fmtDay(new Date(x.addedAt).toISOString().slice(0, 10))) : '—'}</td>
       <td><button class="btn danger small" data-act="arm-remove" data-i="${i}">הסרה</button></td>
@@ -2680,13 +2878,14 @@ function renderArmonTab() {
 
     <section class="panel">
       <h2 class="panel-title">פריטים בארמון</h2>
-      <p class="panel-sub">כל הפריטים הרשומים בארמון. שינוי מיקום נשמר עם "שמירת השינויים".</p>
+      <p class="panel-sub">כל הפריטים הרשומים בארמון. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".</p>
       <div class="kpis">
         ${kpi(all.length, 'סה״כ פריטים')}
-        ${kpi(weapons, 'נשקים')}
-        ${kpi(amral, 'אמר״ל')}
-        ${kpi(tzelem, 'פריטי צל״ם')}
+        ${byKind.map((k) => kpi(k.n, k.name)).join('')}
       </div>
+      ${noMission
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${noMission}</strong> פריטים מסומנים "במשימה" בלי שם משימה — מלאו את שם המשימה בשורה.</p></div>`
+        : ''}
       ${all.length > 4
         ? plainSearch('arm-search', 'arm-qclear', S.regQ.armon || '',
                       'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length)
@@ -2756,8 +2955,16 @@ function renderTzelemTab() {
       <td>${esc(x.name)}</td>
       <td class="num wpn">${esc(x.serial)}</td>
       <td>${esc(x.owner)}</td>
-      <td class="${x.loc === 'armon' ? 'ok' : 'warn'}">${esc(nameOf(ARM_LOCS, x.loc))}</td>
+      <td class="${x.loc === 'armon' ? 'ok' : 'warn'}">
+        ${esc(nameOf(ARM_LOCS, x.loc))}
+        ${x.loc === 'mission'
+          ? `<span class="lg-sub">${x.mission ? esc(x.mission) : '<span class="bad">משימה ללא שם</span>'}</span>`
+          : ''}
+      </td>
     </tr>`).join('');
+
+  // A מיקום of 'mission' with no mission named is an item nobody can go and find.
+  const unnamed = all.filter((x) => x.loc === 'mission' && !x.mission).length;
 
   return `
     <section class="panel">
@@ -2772,6 +2979,9 @@ function renderTzelemTab() {
       </div>
       ${held
         ? `<div class="callout"><p class="mb0"><strong class="num">${held}</strong> נשקים אינם בארמון ולכן אינם בדו״ח. הם מופיעים בלשונית ארמון.</p></div>`
+        : ''}
+      ${unnamed
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${unnamed}</strong> פריטי צל״ם מסומנים "במשימה" בלי שם משימה — השלימו בלשונית ארמון.</p></div>`
         : ''}
       ${all.length > 4
         ? plainSearch('tz-search', 'tz-qclear', S.regQ.tzelem || '',
@@ -2903,6 +3113,10 @@ function renderVehTab() {
                  data-act="veh-km" data-i="${i}" aria-label="ק״מ עדכני"></td>
       <td><input class="input mini" type="date" value="${esc(x.service)}"
                  data-act="veh-service" data-i="${i}" aria-label="מועד טיפול"></td>
+      <td><input class="input mini num" type="text" maxlength="12" value="${esc(x.code)}"
+                 data-act="veh-code" data-i="${i}" aria-label="קוד קודן" placeholder="קודן"></td>
+      <td><input class="input mini num" type="text" maxlength="12" value="${esc(x.fuelCode)}"
+                 data-act="veh-fuelcode" data-i="${i}" aria-label="קוד דלקן" placeholder="דלקן"></td>
       ${VEH_KIT.map((k) => `
         <td class="num">
           <input type="checkbox" class="kitbox" data-act="veh-kit" data-i="${i}" data-k="${k.id}"
@@ -2932,6 +3146,7 @@ function renderVehTab() {
              <table class="tbl">
                <thead><tr>
                  <th class="num">מספר רכב</th><th>חברת השכרה</th><th class="num">ק״מ</th><th class="num">טיפול</th>
+                 <th class="num">קוד קודן</th><th class="num">קוד דלקן</th>
                  ${VEH_KIT.map((k) => `<th class="num lg-col"><span class="lg-h">${esc(k.name)}</span></th>`).join('')}
                  <th>סטטוס</th><th></th>
                </tr></thead>
@@ -2944,7 +3159,220 @@ function renderVehTab() {
         <button class="btn ghost" data-act="veh-export">ייצוא ל-CSV</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
+    </section>
+
+    ${fuelPanel()}`;
+}
+
+/* ── Fuel cards ────────────────────────────────────────────────────── */
+
+// Receipts live in the docs table, not the vault: the vault is one blob with a
+// size cap, and a handful of photos would burst it.
+function fuelPanel() {
+  const all = (S.inv && S.inv.fuel) || [];
+  const q = (S.regQ.fuel || '').trim().toLowerCase();
+  const vis = all
+    .map((x, i) => ({ x, i }))
+    .filter(({ x }) =>
+      !q ||
+      (x.no || '').toLowerCase().includes(q) ||
+      (x.plate || '').toLowerCase().includes(q) ||
+      nameOf(FUEL_KINDS, x.kind).includes(q)
+    );
+  const p = paged('fuel', vis);
+  const LOW = 50;                                  // litres below which a card is flagged
+  const low = all.filter((x) => x.litres < LOW).length;
+
+  const rows = p.slice.map(({ x, i }) => {
+    const shown = S.docs[`${x.doc}:fuel`];
+    return `<tr${x.litres < LOW ? ' class="row-short"' : ''}>
+      <td>
+        <select class="input mini select-mini" data-act="fuel-kind" data-i="${i}" aria-label="סוג כרטיס">
+          ${FUEL_KINDS.map((k) => `<option value="${k.id}"${x.kind === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="input mini num" type="text" maxlength="30" value="${esc(x.no)}"
+                 data-act="fuel-no" data-i="${i}" aria-label="מספר כרטיס" placeholder="1234-5678"></td>
+      <td><input class="input mini num" type="text" inputmode="numeric" maxlength="5" value="${x.litres}"
+                 data-act="fuel-litres" data-i="${i}" aria-label="ליטרים שנותרו"></td>
+      <td><input class="input mini num" type="text" maxlength="20" value="${esc(x.plate)}"
+                 data-act="fuel-plate" data-i="${i}" aria-label="רכב משויך" placeholder="—"></td>
+      <td class="${x.litres < LOW ? 'bad' : 'ok'}">${x.litres < LOW ? '⚠ מלאי נמוך' : '✓ תקין'}</td>
+      <td class="nowrap">
+        <label class="linkbtn">
+          📷 ${x.doc ? 'צילום מחדש' : 'צילום קבלה'}
+          <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                 data-act="fuel-file" data-i="${i}">
+        </label>
+        <label class="linkbtn">
+          🖼 מהגלריה
+          <input class="vis-hidden" type="file" accept="image/*"
+                 data-act="fuel-file" data-i="${i}">
+        </label>
+        ${x.doc
+          ? `<button class="linkbtn" data-act="fuel-doc" data-i="${i}">${shown ? 'הסתרה' : 'הצגה'}</button>
+             <button class="linkbtn danger-link" data-act="fuel-doc-del" data-i="${i}">מחיקת קבלה</button>`
+          : ''}
+        ${shown ? `<img class="doc-img" src="${shown}" alt="קבלת תדלוק">` : ''}
+        ${x.docAt ? `<span class="muted-txt">צולם ${esc(fmtDate(x.docAt))}</span>` : ''}
+      </td>
+      <td><button class="linkbtn danger-link" data-act="fuel-del" data-i="${i}" aria-label="מחיקת כרטיס">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">כרטיסי תדלוק</h2>
+      <p class="panel-sub">סוג הדלק, מספר הכרטיס והיתרה בליטרים. אפשר לצרף צילום קבלה לכל כרטיס — הצילום מוצפן ונשמר בנפרד מהטבלה. כרטיס מתחת ל-${LOW} ליטר נצבע באדום.</p>
+      <div class="kpis">
+        ${kpi(all.length, 'כרטיסים')}
+        ${FUEL_KINDS.map((k) => kpi(
+          all.filter((x) => x.kind === k.id).reduce((s, x) => s + x.litres, 0),
+          `ליטר ${k.name}`
+        )).join('')}
+        ${kpi(low, 'מלאי נמוך', low ? 'bad' : 'ok')}
+      </div>
+      ${all.length > 4
+        ? plainSearch('fuel-search', 'fuel-qclear', S.regQ.fuel || '',
+                      'חיפוש לפי מספר כרטיס, רכב או סוג', all.length, vis.length)
+        : ''}
+      ${vis.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr>
+                 <th>סוג כרטיס</th><th class="num">מספר כרטיס</th><th class="num">ליטרים שנותרו</th>
+                 <th class="num">רכב</th><th>סטטוס</th><th>קבלה</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           ${pager('fuel', p)}`
+        : `<p class="empty">${all.length ? 'אין כרטיס שתואם את החיפוש.' : 'אין כרטיסי תדלוק. הוסיפו את הראשון למטה.'}</p>`}
+      <div class="rec-actions mt">
+        <button class="btn ghost" data-act="fuel-add">+ הוספת כרטיס</button>
+        <button class="btn ghost" data-act="fuel-export">ייצוא ל-CSV</button>
+        <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
+      </div>
     </section>`;
+}
+
+/* ── Fuel card actions ─────────────────────────────────────────────── */
+
+// Deleting a card also drops its receipt, so an orphan image is never left
+// sitting in the docs table with nothing pointing at it.
+const fuelDelete = (i) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    if (!card) return;
+    if (!window.confirm(`למחוק את כרטיס ${card.no || 'התדלוק'}${card.doc ? ' ואת הקבלה המצורפת' : ''}?`)) return;
+    if (card.doc) {
+      await api(`/admin/docs/${card.doc}/fuel`, { method: 'DELETE' }).catch(() => {});
+      delete S.docs[`${card.doc}:fuel`];
+    }
+    S.inv.fuel.splice(i, 1);
+    await saveInv();
+    renderConsole();
+    toast('הכרטיס נמחק');
+  });
+
+const fuelFile = (i, input) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    const file = input.files && input.files[0];
+    input.value = '';                       // let the same file be picked again
+    if (!card || !file) return;
+    if (!/^image\//.test(file.type)) { toast('יש לבחור קובץ תמונה', true); return; }
+    toast('מעבד את התמונה…');
+    const { bytes } = await compressImage(file);
+    const doc = card.doc || hex(crypto.getRandomValues(new Uint8Array(16)));
+    const sealed = await sealBytes(S.pubKey, bytes);
+    await api(`/admin/docs/${doc}/fuel`, { method: 'PUT', body: sealed });
+    card.doc = doc;
+    card.docAt = Date.now();
+    delete S.docs[`${doc}:fuel`];           // force a re-fetch of the new image
+    await saveInv();
+    renderConsole();
+    toast('הקבלה נשמרה');
+  });
+
+const fuelDocToggle = (i) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    if (!card || !card.doc) return;
+    const key = `${card.doc}:fuel`;
+    if (S.docs[key]) { delete S.docs[key]; renderConsole(); return; }
+    const { docs } = await api(`/admin/docs/${card.doc}`);
+    const row = (docs || []).find((x) => x.kind === 'fuel');
+    if (!row) { toast('הקבלה לא נמצאה', true); return; }
+    const bytes = await openBytes(S.priv, row);
+    let bin = '';
+    for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
+    S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
+    renderConsole();
+  });
+
+const fuelDocDelete = (i) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    if (!card || !card.doc) return;
+    if (!window.confirm('למחוק את צילום הקבלה? הפעולה אינה הפיכה.')) return;
+    await api(`/admin/docs/${card.doc}/fuel`, { method: 'DELETE' });
+    delete S.docs[`${card.doc}:fuel`];
+    card.doc = '';
+    card.docAt = 0;
+    await saveInv();
+    renderConsole();
+    toast('הקבלה נמחקה');
+  });
+
+// The stock table, exactly as the page computes it — opening stock less what
+// the approved sign-outs still hold.
+function exportInvCsv() {
+  const inv = S.inv || emptyInv();
+  const iss = issuedTotals();
+  const lines = [
+    ['פריט', 'מלאי פתיחה', 'אצל חיילים', 'נותר במחסן', 'סטטוס'].map(csvCell).join(','),
+  ];
+  for (const item of ITEMS) {
+    const open = Number(inv.open[item.id]) || 0;
+    const held = iss[item.id].t - iss[item.id].r;
+    const left = open - held;
+    lines.push([
+      item.name, open, held, left,
+      left < 0 ? 'חוסר' : left === 0 ? 'אזל' : 'תקין',
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-stock.csv');
+}
+
+function exportInvExtraCsv() {
+  const rows = (S.inv && S.inv.extra) || [];
+  if (!rows.length) { toast('אין פריטים נוספים לייצוא', true); return; }
+  const lines = [['פריט', 'סה״כ', 'בשימוש', 'נותר', 'סטטוס'].map(csvCell).join(',')];
+  for (const x of rows) {
+    const open = Number(x.open) || 0;
+    const out = Number(x.out) || 0;
+    lines.push([
+      x.name, open, out, open - out, open - out < 0 ? 'חוסר' : 'תקין',
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-stock-extra.csv');
+}
+
+function exportFuelCsv() {
+  const rows = (S.inv && S.inv.fuel) || [];
+  if (!rows.length) { toast('אין כרטיסים לייצוא', true); return; }
+  const lines = [
+    ['סוג כרטיס', 'מספר כרטיס', 'ליטרים שנותרו', 'רכב משויך', 'קבלה מצורפת', 'תאריך צילום']
+      .map(csvCell).join(','),
+  ];
+  for (const x of rows) {
+    lines.push([
+      nameOf(FUEL_KINDS, x.kind), x.no, x.litres, x.plate || '',
+      x.doc ? 'כן' : 'לא', x.docAt ? fmtDate(x.docAt) : '',
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-fuel.csv');
 }
 
 /* ── Armoury / ammunition / vehicle actions ───────────────────────── */
@@ -3033,9 +3461,12 @@ function ammoMove(i, issue) {
 
 function exportArmonCsv() {
   if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'תאריך הוספה'].map(csvCell).join(',')];
+  const lines = [
+    ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה', 'תאריך הוספה'].map(csvCell).join(','),
+  ];
   for (const x of S.inv.armon || []) {
     lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
+      x.loc === 'mission' ? (x.mission || '(ללא שם)') : '',
       x.addedAt ? fmtDate(x.addedAt) : ''].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-armon.csv');
@@ -3056,10 +3487,11 @@ function exportTzelemCsv() {
   const lines = [
     ['דו״ח צלם', fmtDate(Date.now())].map(csvCell).join(','),
     '',
-    ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום'].map(csvCell).join(','),
+    ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה'].map(csvCell).join(','),
   ];
   for (const x of tzelemScope()) {
-    lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc)].map(csvCell).join(','));
+    lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
+      x.loc === 'mission' ? (x.mission || '(ללא שם)') : ''].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-tzelem.csv');
 }
@@ -3085,14 +3517,14 @@ function exportVehCsv() {
   if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
   const today = new Date().toISOString().slice(0, 10);
   const lines = [
-    ['מספר רכב', 'חברת השכרה', 'ק״מ עדכני', 'מועד טיפול',
+    ['מספר רכב', 'חברת השכרה', 'ק״מ עדכני', 'מועד טיפול', 'קוד קודן', 'קוד דלקן',
       ...VEH_KIT.map((k) => k.name), 'סטטוס'].map(csvCell).join(','),
   ];
   for (const v of S.inv.vehicles || []) {
     const late = v.service && v.service < today;
     const missing = VEH_KIT.filter((k) => !v[k.id]);
     lines.push([
-      v.plate, v.company, v.km, v.service ? fmtDay(v.service) : '',
+      v.plate, v.company, v.km, v.service ? fmtDay(v.service) : '', v.code || '', v.fuelCode || '',
       ...VEH_KIT.map((k) => (v[k.id] ? 'כן' : 'לא')),
       late ? 'טיפול עבר' : missing.length ? `חסר: ${missing.map((k) => k.name).join(', ')}` : 'תקין',
     ].map(csvCell).join(','));
@@ -3119,7 +3551,7 @@ function tzelemPdf() {
       </div>
     </header>
     <table class="pd-tbl">
-      <thead><tr><th>#</th><th>סוג</th><th>פריט</th><th>מספר סידורי</th><th>בעלים</th><th>מיקום</th></tr></thead>
+      <thead><tr><th>#</th><th>סוג</th><th>פריט</th><th>מספר סידורי</th><th>בעלים</th><th>מיקום</th><th>משימה</th></tr></thead>
       <tbody>
         ${rows.map((x, i) => `<tr>
           <td>${i + 1}</td>
@@ -3128,6 +3560,7 @@ function tzelemPdf() {
           <td>${esc(x.serial)}</td>
           <td>${esc(x.owner)}</td>
           <td>${esc(nameOf(ARM_LOCS, x.loc))}</td>
+          <td>${x.loc === 'mission' ? esc(x.mission || '(ללא שם)') : '—'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -3158,7 +3591,7 @@ function tzelemWa() {
     `סה״כ פריטים בדו״ח: ${rows.length}\n${counts}\n` +
     (held ? `\n(${held} נשקים אינם בארמון ואינם נכללים)\n` : '') +
     (offsite.length
-      ? `\n*לא בארמון:*\n${offsite.slice(0, 40).map((x) => `• ${x.name} (${x.serial}) — ${nameOf(ARM_LOCS, x.loc)}, ${x.owner}`).join('\n')}`
+      ? `\n*לא בארמון:*\n${offsite.slice(0, 40).map((x) => `• ${x.name} (${x.serial}) — ${nameOf(ARM_LOCS, x.loc)}${x.loc === 'mission' ? ` (${x.mission || 'ללא שם'})` : ''}, ${x.owner}`).join('\n')}`
       : '\nכל הפריטים בארמון.');
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener');
 }
@@ -4120,7 +4553,7 @@ $app.addEventListener('keydown', (e) => {
 });
 
 // Number inputs whose derived columns are recomputed when the field is left.
-const NUM_COMMIT = new Set(['inv-open', 'inv-xopen', 'inv-xout', 'veh-km']);
+const NUM_COMMIT = new Set(['inv-open', 'inv-xopen', 'inv-xout', 'veh-km', 'fuel-litres']);
 
 // Live-typed fields: search and the inventory grid. Re-rendering on each
 // keystroke would drop focus, so the caret is restored afterwards.
@@ -4158,6 +4591,7 @@ $app.addEventListener('input', (e) => {
     case 'inv-notes': S.inv.notes = el.value; break;
     case 'arm-search':  S.regQ = { ...S.regQ, armon: el.value };  S.page = {}; rerenderKeepFocus(el); break;
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    case 'arm-mission': S.inv.armon[+el.dataset.i].mission = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
@@ -4167,6 +4601,15 @@ $app.addEventListener('input', (e) => {
     case 'veh-km':
       S.inv.vehicles[+el.dataset.i].km =
         Math.max(0, Math.min(9999999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
+      break;
+    case 'veh-code':     S.inv.vehicles[+el.dataset.i].code = el.value; break;
+    case 'veh-fuelcode': S.inv.vehicles[+el.dataset.i].fuelCode = el.value; break;
+    case 'fuel-search':  S.regQ = { ...S.regQ, fuel: el.value }; S.page = {}; rerenderKeepFocus(el); break;
+    case 'fuel-no':      S.inv.fuel[+el.dataset.i].no = el.value; break;
+    case 'fuel-plate':   S.inv.fuel[+el.dataset.i].plate = el.value; break;
+    case 'fuel-litres':
+      S.inv.fuel[+el.dataset.i].litres =
+        Math.max(0, Math.min(99999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
       break;
     case 'lic-no': S.licNo = el.value.trim(); break;
     case 'lic-exp': S.licExp = el.value; break;   // re-render happens on 'change'
@@ -4181,9 +4624,17 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
-  if (el.dataset.act === 'arm-loc') { S.inv.armon[+el.dataset.i].loc = el.value; renderConsole(); return; }
+  if (el.dataset.act === 'arm-loc') {
+    const it = S.inv.armon[+el.dataset.i];
+    it.loc = el.value;
+    if (it.loc !== 'mission') it.mission = '';   // the mission name belongs to the mission
+    renderConsole();
+    return;
+  }
   if (el.dataset.act === 'veh-service') { S.inv.vehicles[+el.dataset.i].service = el.value; renderConsole(); return; }
   if (el.dataset.act === 'veh-kit') { S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked; renderConsole(); return; }
+  if (el.dataset.act === 'fuel-kind') { S.inv.fuel[+el.dataset.i].kind = el.value; renderConsole(); return; }
+  if (el.dataset.act === 'fuel-file') { fuelFile(+el.dataset.i, el); return; }
   if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
   else if (el.dataset.act === 'lic-file') licFile(el.dataset.kind, el);
   // committed date → re-render so the validity hint updates
@@ -4315,6 +4766,20 @@ function dispatch(act, el) {
       break;
     case 'veh-export': exportVehCsv(); break;
     case 'veh-qclear': S.regQ = { ...S.regQ, veh: '' }; renderConsole(); break;
+    // fuel cards
+    case 'fuel-add':
+      S.inv.fuel = [...(S.inv.fuel || []), cleanFuel({})];
+      S.regQ = { ...S.regQ, fuel: '' };
+      renderConsole();
+      focusLast('[data-act="fuel-no"]');
+      break;
+    case 'fuel-del': fuelDelete(+el.dataset.i); break;
+    case 'fuel-doc': fuelDocToggle(+el.dataset.i); break;
+    case 'fuel-doc-del': fuelDocDelete(+el.dataset.i); break;
+    case 'fuel-export': exportFuelCsv(); break;
+    case 'inv-export': exportInvCsv(); break;
+    case 'inv-xexport': exportInvExtraCsv(); break;
+    case 'fuel-qclear': S.regQ = { ...S.regQ, fuel: '' }; renderConsole(); break;
     case 'page':
       S.page = { ...S.page, [el.dataset.key]: parseInt(el.dataset.page, 10) };
       renderConsole();

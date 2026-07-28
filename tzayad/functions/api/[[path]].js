@@ -390,6 +390,36 @@ export async function onRequest(context) {
         return json({ docs: results });
       }
 
+      // PUT | DELETE /api/admin/docs/:rid/:kind — admin-owned attachments.
+      // Only 'fuel' (a refuelling receipt): these belong to the vault rather
+      // than to any soldier, so unlike POST /docs there is no record to check.
+      if (seg[1] === 'docs' && seg.length === 4) {
+        const [, , rid, kind] = seg;
+        if (!isHex(rid, HEX32) || kind !== 'fuel') return err(400, 'בקשה לא תקינה');
+
+        if (method === 'PUT') {
+          const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const { ek, iv, ct } = b;
+          if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, DOC_MAX_B64)) {
+            return err(400, 'בקשה לא תקינה');
+          }
+          await db
+            .prepare(
+              `INSERT INTO docs (rid, kind, ek, iv, ct, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               ON CONFLICT(rid, kind) DO UPDATE SET ek = ?3, iv = ?4, ct = ?5, created_at = ?6`
+            )
+            .bind(rid, kind, ek, iv, ct, now)
+            .run();
+          return json({ ok: true });
+        }
+
+        if (method === 'DELETE') {
+          await db.prepare('DELETE FROM docs WHERE rid = ?1 AND kind = ?2').bind(rid, kind).run();
+          return json({ ok: true });
+        }
+      }
+
       // GET | PUT /api/admin/vault — the encrypted inventory blob
       if (seg[1] === 'vault' && seg.length === 2) {
         if (method === 'GET') {
