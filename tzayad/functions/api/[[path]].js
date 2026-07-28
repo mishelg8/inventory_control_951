@@ -17,6 +17,10 @@ const DOC_LIMIT = 120;                    // licence photos per IP per hour (hea
 // the cap is a backstop so a single row can never bloat the database.
 const DOC_MAX_B64 = 400000;
 
+// The vault holds opening stock, extra items, and the two counting registers
+// (צלם / צלם ארמון). ~600 KB of base64 leaves room for a few thousand rows.
+const VAULT_MAX_B64 = 600000;
+
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const B64RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -398,7 +402,7 @@ export async function onRequest(context) {
           const b = await readBody(request);
           if (!b) return err(400, 'בקשה לא תקינה');
           const { ek, iv, ct } = b;
-          if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 20000)) {
+          if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, VAULT_MAX_B64)) {
             return err(400, 'בקשה לא תקינה');
           }
           await db
