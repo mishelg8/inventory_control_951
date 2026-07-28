@@ -281,6 +281,8 @@ const S = {
   docs: {},                     // "rid:kind" -> data URL, fetched on demand
   reports: [],                  // { id, status, created_at, data|null, damaged }
   repFilter: 'open',            // 'open' | 'done' | 'all'
+  repQ: '',                     // search over request name + body
+  invQ: '',                     // search over the extra-inventory rows
   tab: 'over',
   filter: 'out',
   q: '',                        // free-text search over name / pn / phone
@@ -314,6 +316,8 @@ function lock() {
   S.reports = [];
   S.docs = {};                  // decrypted licence images must not outlive the session
   S.q = '';
+  S.repQ = '';
+  S.invQ = '';
   S.revealed.clear();
   clearTimeout(idleTimer);
   api('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
@@ -904,6 +908,19 @@ function groupByDept(recs) {
   return groups.filter((g) => g.recs.length);
 }
 
+// Standalone search box for lists that aren't the soldier roster.
+function plainSearch(act, clearAct, value, placeholder, total, shown) {
+  return `
+    <div class="search">
+      <input class="input search-in" type="search" data-act="${act}" value="${esc(value)}"
+             placeholder="${esc(placeholder)}" autocomplete="off" enterkeyhint="search">
+      ${value ? `<button class="linkbtn search-clear" data-act="${clearAct}">ניקוי</button>` : ''}
+    </div>
+    ${shown !== total
+      ? `<p class="result-count"><span class="num">${shown}</span> מתוך <span class="num">${total}</span></p>`
+      : ''}`;
+}
+
 function searchBar(total, shown) {
   const chips = [['all', 'כל המחלקות'], ...DEPTS.map((d) => [d.id, d.name])]
     .map(
@@ -1204,7 +1221,14 @@ function renderSummaryTab() {
     return open > 0 && open - x.out < 0;
   });
 
+  const shownAll = applyFilters(approved).length;
   return `
+    <section class="panel">
+      <h2 class="panel-title">חיפוש בדוחות</h2>
+      <p class="panel-sub">החיפוש והסינון חלים על שלוש הטבלאות שמתחת — רישיונות, נשקים ומי חתום על מה.</p>
+      ${searchBar(approved.length, shownAll)}
+    </section>
+
     <section class="panel">
       <h2 class="panel-title">סיכום מלאי</h2>
       <p class="panel-sub">רשומות מאושרות בלבד. <span class="num">${c.pending}</span> ממתינות לאישור.</p>
@@ -1483,7 +1507,6 @@ function ledgerPanel(approved) {
     <section class="panel">
       <h2 class="panel-title">מי חתום על מה</h2>
       <p class="panel-sub">כל שורה היא חייל, כל עמודה פריט. המספר הוא מה שעדיין אצלו, מתוך מה שהוחתם. ✓ = הוחזר במלואו.</p>
-      ${searchBar(approved.length, visible.length)}
       ${visible.length
         ? `<div class="tbl-scroll">
              <table class="tbl lg">
@@ -1539,9 +1562,15 @@ function renderInvTab() {
       </tr>`;
   }).join('');
 
-  const extraRows = inv.extra
+  // keep each row's true index so editing still targets the right entry
+  const extraNeedle = S.invQ.trim().toLowerCase();
+  const extraVisible = inv.extra
+    .map((x, i) => ({ x, i }))
+    .filter(({ x }) => !extraNeedle || (x.name || '').toLowerCase().includes(extraNeedle));
+
+  const extraRows = extraVisible
     .map(
-      (x, i) => `<tr>
+      ({ x, i }) => `<tr>
         <td><input class="input mini" type="text" maxlength="40" value="${esc(x.name)}"
                    data-act="inv-xname" data-i="${i}" aria-label="שם פריט" placeholder="שם הפריט"></td>
         <td><input class="input mini num" type="number" min="0" max="9999" value="${Number(x.open) || 0}"
@@ -1576,13 +1605,18 @@ function renderInvTab() {
     <section class="panel">
       <h2 class="panel-title">פריטים נוספים</h2>
       <p class="panel-sub">ציוד שהחיילים לא חותמים עליו בטופס (מזרנים, אוהלים וכו'). כאן הספירה ידנית — הזינו כמה יש וכמה בשימוש.</p>
+      ${inv.extra.length > 4
+        ? plainSearch('inv-search', 'inv-qclear', S.invQ, 'חיפוש פריט', inv.extra.length, extraVisible.length)
+        : ''}
       ${inv.extra.length
-        ? `<div class="tbl-scroll">
+        ? extraVisible.length
+          ? `<div class="tbl-scroll">
              <table class="tbl">
                <thead><tr><th>פריט</th><th>סה״כ</th><th>בשימוש</th><th class="num">נותר</th><th></th></tr></thead>
                <tbody>${extraRows}</tbody>
              </table>
            </div>`
+          : '<p class="empty">אין פריט שתואם את החיפוש.</p>'
         : '<p class="empty">אין פריטים נוספים. הוסיפו את הראשון למטה.</p>'}
       <button class="btn ghost wide mt" data-act="inv-xadd">+ הוספת פריט</button>
     </section>
@@ -1767,10 +1801,17 @@ function renderReportsTab() {
     )
     .join('');
 
-  const visible = S.reports.filter((r) => {
-    if (r.damaged) return true;
-    if (S.repFilter === 'all') return true;
-    return r.status === S.repFilter;
+  const byStatus = S.reports.filter(
+    (r) => r.damaged || S.repFilter === 'all' || r.status === S.repFilter
+  );
+  const needle = S.repQ.trim().toLowerCase();
+  const visible = byStatus.filter((r) => {
+    if (!needle) return true;
+    if (r.damaged || !r.data) return false;
+    return (
+      (r.data.name || '').toLowerCase().includes(needle) ||
+      (r.data.text || '').toLowerCase().includes(needle)
+    );
   });
 
   const cards = visible
@@ -1821,8 +1862,9 @@ function renderReportsTab() {
     <section class="panel">
       <h2 class="panel-title">בקשות ודיווחי חוסר</h2>
       <p class="panel-sub">בקשות שחיילים שלחו בעצמם דרך <span class="code-inline">#report</span>. לא קשור למאגר ההחתמות. סמנו ✓ אחרי הטיפול.</p>
+      ${plainSearch('rep-search', 'rep-qclear', S.repQ, 'חיפוש לפי שם או תוכן הבקשה', byStatus.length, visible.length)}
       <div class="filters">${filters}</div>
-      ${cards || '<p class="empty">אין דיווחים בסינון הזה.</p>'}
+      ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
     </section>`;
 }
 
@@ -2408,6 +2450,8 @@ const adminWipe = () =>
     S.inv = null;
     S.reports = [];
     S.q = '';
+    S.repQ = '';
+    S.invQ = '';
     S.dept = 'all';
     S.collapsed.clear();
     S.revealed.clear();
@@ -2500,6 +2544,8 @@ $app.addEventListener('input', (e) => {
   const num = () => Math.max(0, Math.min(9999, parseInt(el.value, 10) || 0));
   switch (act) {
     case 'search': S.q = el.value; rerenderKeepFocus(el); break;
+    case 'rep-search': S.repQ = el.value; rerenderKeepFocus(el); break;
+    case 'inv-search': S.invQ = el.value; rerenderKeepFocus(el); break;
     case 'inv-open': S.inv.open[el.dataset.item] = num(); rerenderKeepFocus(el); break;
     case 'inv-xopen': S.inv.extra[i].open = num(); rerenderKeepFocus(el); break;
     case 'inv-xout': S.inv.extra[i].out = num(); rerenderKeepFocus(el); break;
@@ -2569,6 +2615,8 @@ function dispatch(act, el) {
     // search & grouping
     case 'dept': S.dept = el.dataset.dept; renderConsole(); break;
     case 'qclear': S.q = ''; renderConsole(); break;
+    case 'rep-qclear': S.repQ = ''; renderConsole(); break;
+    case 'inv-qclear': S.invQ = ''; renderConsole(); break;
     case 'fold': {
       const id = el.dataset.dept;
       if (S.collapsed.has(id)) S.collapsed.delete(id);
