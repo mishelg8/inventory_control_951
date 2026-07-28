@@ -229,6 +229,16 @@ function cleanReport(raw) {
   };
 }
 
+// One row of a counting register: what it is, how many the establishment
+// allows, and how many were actually counted today.
+const cleanRegRow = (x) => ({
+  name: asText(x && x.name, 60),
+  serial: asText(x && x.serial, 30),
+  req: asCount(x && x.req),
+  count: asCount(x && x.count),
+  note: asText(x && x.note, 120),
+});
+
 function cleanInv(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const open = {};
@@ -238,7 +248,17 @@ function cleanInv(raw) {
     open: asCount(x && x.open),
     out: asCount(x && x.out),
   }));
-  return { open, extra, notes: asText(src.notes, 4000), updatedAt: asTime(src.updatedAt) };
+  const reg = (v) => (Array.isArray(v) ? v : []).slice(0, 2000).map(cleanRegRow);
+  const counted = src.countedAt && typeof src.countedAt === 'object' ? src.countedAt : {};
+  return {
+    open,
+    extra,
+    notes: asText(src.notes, 4000),
+    tzelem: reg(src.tzelem),
+    armon: reg(src.armon),
+    countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
+    updatedAt: asTime(src.updatedAt),
+  };
 }
 
 // Open: admin only (§4.5). Throws on tampered ciphertext — caller counts it.
@@ -371,6 +391,7 @@ const S = {
   repFilter: 'open',            // 'open' | 'done' | 'all'
   repQ: '',                     // search over request name + body
   invQ: '',                     // search over the extra-inventory rows
+  regQ: {},                     // register key -> search query
   tab: 'over',
   filter: 'out',
   q: '',                        // free-text search over name / pn / phone
@@ -407,6 +428,7 @@ function lock() {
   S.q = '';
   S.repQ = '';
   S.invQ = '';
+  S.regQ = {};
   S.revealed.clear();
   clearTimeout(idleTimer);
   api('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
@@ -949,6 +971,8 @@ function renderConsole() {
     ['track',   'מעקב ציוד',    c.approved],
     ['reports', 'בקשות חוסר',   openReps, openReps > 0],
     ['inv',     'מלאי',         null],
+    ['tzelem',  'דו״ח צלם',     regShort('tzelem') || null, true],
+    ['armon',   'צלם ארמון',    regShort('armon')  || null, true],
     ['sum',     'דוחות',        null],
     ['sec',     'אבטחה',        null],
   ];
@@ -970,6 +994,8 @@ function renderConsole() {
   else if (S.tab === 'track') body = renderTrackTab();
   else if (S.tab === 'reports') body = renderReportsTab();
   else if (S.tab === 'inv') body = renderInvTab();
+  else if (S.tab === 'tzelem') body = registerPanel(REGISTERS.tzelem);
+  else if (S.tab === 'armon') body = registerPanel(REGISTERS.armon);
   else if (S.tab === 'sum') body = renderSummaryTab();
   else body = renderSecurityTab();
 
@@ -1727,7 +1753,25 @@ function ledgerPanel(approved) {
 
 /* ── Inventory (מלאי) ──────────────────────────────────────────────── */
 
-const emptyInv = () => ({ open: {}, extra: [], notes: '' });
+const emptyInv = () => ({
+  open: {}, extra: [], notes: '',
+  tzelem: [], armon: [], countedAt: {},
+});
+
+// The two counting registers are the same thing with different names, so they
+// share one implementation and differ only by these descriptors.
+const REGISTERS = {
+  tzelem: {
+    key: 'tzelem',
+    title: 'דו״ח צלם',
+    sub: 'פריטי הצל״ם של היחידה. הזינו תקן וספירה בפועל — ההפרש מחושב אוטומטית.',
+  },
+  armon: {
+    key: 'armon',
+    title: 'צלם ארמון',
+    sub: 'רשימת צל״ם ארמון. אותה שיטת עבודה: תקן, ספירה יומית והפרש.',
+  },
+};
 
 // Issued/returned totals per catalog item across all approved records.
 function issuedTotals() {
@@ -2002,10 +2046,145 @@ function renderOverviewTab() {
     </section>`;
 }
 
+/* ── Counting registers (צלם / צלם ארמון) ─────────────────────────── */
+
+// Rows carry their true index so editing and deleting stay correct while the
+// list is filtered — the same trap the extra-items table had.
+function regVisible(key) {
+  const rows = (S.inv && S.inv[key]) || [];
+  const q = (S.regQ[key] || '').trim().toLowerCase();
+  return rows
+    .map((x, i) => ({ x, i }))
+    .filter(({ x }) =>
+      !q ||
+      (x.name || '').toLowerCase().includes(q) ||
+      (x.serial || '').toLowerCase().includes(q)
+    );
+}
+
+function registerPanel(def) {
+  const key = def.key;
+  const all = (S.inv && S.inv[key]) || [];
+  const vis = regVisible(key);
+  const p = paged(`reg-${key}`, vis);
+
+  const totals = all.reduce(
+    (a, x) => {
+      a.req += x.req; a.count += x.count;
+      const d = x.count - x.req;
+      if (d < 0) a.missing += -d; else if (d > 0) a.surplus += d;
+      return a;
+    },
+    { req: 0, count: 0, missing: 0, surplus: 0 }
+  );
+
+  const rows = p.slice
+    .map(({ x, i }) => {
+      const diff = x.count - x.req;
+      const cls = diff < 0 ? 'bad' : diff > 0 ? 'warn' : 'ok';
+      return `<tr${diff < 0 ? ' class="row-short"' : ''}>
+        <td><input class="input mini" type="text" maxlength="60" value="${esc(x.name)}"
+                   data-act="reg-name" data-reg="${key}" data-i="${i}"
+                   aria-label="שם פריט" placeholder="שם הפריט"></td>
+        <td><input class="input mini num" type="text" maxlength="30" value="${esc(x.serial)}"
+                   data-act="reg-serial" data-reg="${key}" data-i="${i}"
+                   aria-label="מספר סידורי" placeholder="מס׳ סידורי"></td>
+        <td><input class="input mini num" type="number" min="0" max="9999" value="${x.req}"
+                   data-act="reg-req" data-reg="${key}" data-i="${i}" aria-label="תקן"></td>
+        <td><input class="input mini num" type="number" min="0" max="9999" value="${x.count}"
+                   data-act="reg-count" data-reg="${key}" data-i="${i}" aria-label="נספר בפועל"></td>
+        <td class="num ${cls}">${diff > 0 ? '+' : ''}${diff}</td>
+        <td><input class="input mini" type="text" maxlength="120" value="${esc(x.note)}"
+                   data-act="reg-note" data-reg="${key}" data-i="${i}"
+                   aria-label="הערה" placeholder="הערה"></td>
+        <td><button class="linkbtn danger-link" data-act="reg-del" data-reg="${key}" data-i="${i}"
+                    aria-label="מחיקת שורה">✕</button></td>
+      </tr>`;
+    })
+    .join('');
+
+  const counted = (S.inv && S.inv.countedAt && S.inv.countedAt[key]) || null;
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">${esc(def.title)}</h2>
+      <p class="panel-sub">${esc(def.sub)}</p>
+
+      <div class="kpis">
+        ${kpi(all.length, 'פריטים ברשימה')}
+        ${kpi(totals.req, 'סה״כ תקן')}
+        ${kpi(totals.count, 'סה״כ נספר')}
+        ${kpi(totals.missing, 'חוסר', totals.missing ? 'bad' : 'ok')}
+        ${kpi(totals.surplus, 'עודף', totals.surplus ? 'warn' : 'ok')}
+      </div>
+
+      ${totals.missing
+        ? `<div class="callout alert"><p class="mb0"><strong class="num">${totals.missing}</strong> פריטים חסרים מול התקן — ראו את השורות האדומות.</p></div>`
+        : ''}
+
+      ${all.length > 4
+        ? plainSearch(`reg-search-${key}`, `reg-qclear-${key}`, S.regQ[key] || '',
+                      'חיפוש לפי שם פריט או מספר סידורי', all.length, vis.length)
+        : ''}
+
+      ${all.length
+        ? vis.length
+          ? `<div class="tbl-scroll">
+               <table class="tbl">
+                 <thead><tr>
+                   <th>פריט</th><th class="num">מס׳ סידורי</th><th class="num">תקן</th>
+                   <th class="num">נספר</th><th class="num">הפרש</th><th>הערה</th><th></th>
+                 </tr></thead>
+                 <tbody>${rows}</tbody>
+               </table>
+             </div>
+             ${pager(`reg-${key}`, p)}`
+          : '<p class="empty">אין פריט שתואם את החיפוש.</p>'
+        : '<p class="empty">הרשימה ריקה. הוסיפו את הפריט הראשון למטה.</p>'}
+
+      <div class="rec-actions mt">
+        <button class="btn ghost" data-act="reg-add" data-reg="${key}">+ הוספת פריט</button>
+        <button class="btn primary" data-act="reg-counted" data-reg="${key}">סימון ספירה יומית</button>
+        <button class="btn ghost" data-act="reg-export" data-reg="${key}">ייצוא ל-CSV</button>
+      </div>
+      ${counted
+        ? `<p class="muted-txt mt center">ספירה אחרונה: ${esc(fmtDate(counted))}</p>`
+        : '<p class="muted-txt mt center">טרם בוצעה ספירה.</p>'}
+      <button class="btn primary wide mt" data-act="inv-save">שמירת השינויים</button>
+    </section>`;
+}
+
+function exportRegCsv(key) {
+  const def = REGISTERS[key];
+  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
+  const rows = (S.inv && S.inv[key]) || [];
+  const counted = (S.inv && S.inv.countedAt && S.inv.countedAt[key]) || null;
+  const lines = [
+    [`${def.title} — ספירה`, counted ? fmtDate(counted) : 'טרם נספר'].map(csvCell).join(','),
+    [].map(csvCell).join(','),
+    ['פריט', 'מספר סידורי', 'תקן', 'נספר בפועל', 'הפרש', 'סטטוס', 'הערה'].map(csvCell).join(','),
+    ...rows.map((x) => {
+      const d = x.count - x.req;
+      return [
+        x.name, x.serial, x.req, x.count, d > 0 ? `+${d}` : d,
+        d < 0 ? 'חוסר' : d > 0 ? 'עודף' : 'תקין',
+        x.note,
+      ].map(csvCell).join(',');
+    }),
+  ];
+  downloadCsv(lines, `tzayad-${key}.csv`);
+}
+
 /* ── Shortage reports (admin) ──────────────────────────────────────── */
 
 // 'open' and 'partial' both still need the admin's attention.
 const openReports = () => S.reports.filter((r) => r.status !== 'done' && !r.damaged).length;
+
+// How many units a register is short against its establishment.
+function regShort(key) {
+  const rows = (S.inv && S.inv[key]) || [];
+  return rows.reduce((n, x) => n + Math.max(0, x.req - x.count), 0);
+}
 
 const REP_LABEL = { open: 'טרם טופל', partial: 'טופל חלקית', done: '✓ טופל' };
 
@@ -2830,6 +3009,19 @@ $app.addEventListener('input', (e) => {
     // name and notes don't affect any computed figure — no re-render needed
     case 'inv-xname': S.inv.extra[i].name = el.value; break;
     case 'inv-notes': S.inv.notes = el.value; break;
+    case 'reg-search-tzelem': S.regQ = { ...S.regQ, tzelem: el.value }; S.page = {}; rerenderKeepFocus(el); break;
+    case 'reg-search-armon':  S.regQ = { ...S.regQ, armon: el.value };  S.page = {}; rerenderKeepFocus(el); break;
+    case 'reg-name':   S.inv[el.dataset.reg][+el.dataset.i].name = el.value; break;
+    case 'reg-serial': S.inv[el.dataset.reg][+el.dataset.i].serial = el.value; break;
+    case 'reg-note':   S.inv[el.dataset.reg][+el.dataset.i].note = el.value; break;
+    case 'reg-req':
+      S.inv[el.dataset.reg][+el.dataset.i].req = Math.max(0, Math.min(9999, parseInt(el.value, 10) || 0));
+      rerenderKeepFocus(el);
+      break;
+    case 'reg-count':
+      S.inv[el.dataset.reg][+el.dataset.i].count = Math.max(0, Math.min(9999, parseInt(el.value, 10) || 0));
+      rerenderKeepFocus(el);
+      break;
     case 'lic-no': S.licNo = el.value.trim(); break;
     case 'lic-exp': S.licExp = el.value; break;   // re-render happens on 'change'
   }
@@ -2911,6 +3103,8 @@ function dispatch(act, el) {
     case 'qclear': S.q = ''; S.page = {}; renderConsole(); break;
     case 'rep-qclear': S.repQ = ''; S.page = {}; renderConsole(); break;
     case 'inv-qclear': S.invQ = ''; renderConsole(); break;
+    case 'reg-qclear-tzelem': S.regQ = { ...S.regQ, tzelem: '' }; S.page = {}; renderConsole(); break;
+    case 'reg-qclear-armon':  S.regQ = { ...S.regQ, armon: '' };  S.page = {}; renderConsole(); break;
     case 'fold': {
       const id = el.dataset.dept;
       if (S.collapsed.has(id)) S.collapsed.delete(id);
@@ -2929,6 +3123,26 @@ function dispatch(act, el) {
       renderConsole();
       break;
     case 'inv-save': invSave(); break;
+    case 'reg-add': {
+      const k = el.dataset.reg;
+      S.inv[k] = [...(S.inv[k] || []), { name: '', serial: '', req: 0, count: 0, note: '' }];
+      S.regQ[k] = '';                       // a fresh row must not hide behind a filter
+      S.page = { ...S.page, [`reg-${k}`]: 0 };
+      renderConsole();
+      focusLast(`[data-act="reg-name"][data-reg="${k}"]`);
+      break;
+    }
+    case 'reg-del':
+      S.inv[el.dataset.reg].splice(parseInt(el.dataset.i, 10), 1);
+      renderConsole();
+      break;
+    case 'reg-counted': {
+      const k = el.dataset.reg;
+      S.inv.countedAt = { ...(S.inv.countedAt || {}), [k]: Date.now() };
+      invSave();
+      break;
+    }
+    case 'reg-export': exportRegCsv(el.dataset.reg); break;
     case 'page':
       S.page = { ...S.page, [el.dataset.key]: parseInt(el.dataset.page, 10) };
       renderConsole();
