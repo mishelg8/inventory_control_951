@@ -1640,3 +1640,14 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .rolepick.on { border-color: var(--pine); background: var(--pine-tint); }
 .rolepick-t { display: block; font-size: 14.5px; font-weight: 700; }
 .rolepick-s { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+
+/* Inline editors and multi-field cells: room to breathe without widening. */
+.cellrow { display: flex; gap: 4px; }
+.cellrow .input { flex: 1; min-width: 0; }
+.useredit { padding: 4px 0; }
+.useredit .lic-set { margin-bottom: 12px; }
+.tbl td .input.mini + .input.mini,
+.tbl td .select-mini + .input.mini,
+.tbl td .input.mini + .btn,
+.tbl td .select-mini + .btn { margin-top: 4px; }
+.tbl td > .btn.small { width: 100%; }
