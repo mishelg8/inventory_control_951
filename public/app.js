@@ -244,18 +244,27 @@ function cleanReport(raw) {
 // Each kind carries the locations it is allowed to be in. Only צל״ם can go out
 // on a mission, and when it does the mission has to be named — an item that is
 // "somewhere on an operation" with no name attached is an item you have lost.
+const LIFECYCLE = ['repair', 'lost', 'decom'];
 const ARM_KINDS = [
-  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier'] },
-  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier'] },
-  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier'] },
-  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier'] },
-  { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission'] },
+  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
 ];
+// A weapon or piece of kit is not only "here" or "with someone" — it can be at
+// the workshop, written off, or genuinely missing. Without these states a
+// broken item is deleted from the register and the shortage becomes invisible.
 const ARM_LOCS = [
   { id: 'armon', name: 'ארמון' },
   { id: 'soldier', name: 'אצל חייל' },
   { id: 'mission', name: 'במשימה' },
+  { id: 'repair', name: 'בתיקון' },
+  { id: 'lost', name: 'אבוד' },
+  { id: 'decom', name: 'מושבת' },
 ];
+// States that mean the item is not usable, as opposed to merely elsewhere.
+const ARM_BAD_LOCS = new Set(['lost', 'decom']);
 const kindLocs = (kind) => {
   const k = ARM_KINDS.find((x) => x.id === kind);
   return ARM_LOCS.filter((l) => (k ? k.locs : ['armon', 'soldier']).includes(l.id));
@@ -540,6 +549,8 @@ const S = {
   me: '',                       // username of the signed-in user
   tabs: '*',                    // '*' or the list of screens this user may see
   users: [],                    // roster, admin only
+  trash: null,                  // soft-deleted rows, loaded on demand
+  audit: null,                  // admin action log, loaded on demand
   userTabs: new Set(),          // screens ticked in the new-user form
   priv: null,                   // CryptoKey (RSA private)
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
@@ -564,6 +575,8 @@ const S = {
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
+  invVersion: 0,                // vault updated_at at load, for conflict detection
+  invBytes: 0,                  // sealed vault size, for the headroom gauge
   busy: false,
 };
 
@@ -600,6 +613,8 @@ function lock() {
   S.me = '';
   S.tabs = '*';
   S.users = [];
+  S.trash = null;
+  S.audit = null;
   S.revealed.clear();
   S.fuelOpen.clear();
   S.expanded.clear();
@@ -629,8 +644,40 @@ function resetSoldier() {
 
 let lastRenderKey = '';
 
+// Identifies a control well enough to find it again after the DOM is replaced.
+// The console re-renders wholesale on every state change; without this the
+// caret and the scroll position jump on every click, which is unusable when
+// you are working down a long table.
+function fieldKey(el) {
+  if (!el || !el.dataset || !el.dataset.act) return null;
+  const d = el.dataset;
+  return [d.act, d.i, d.item, d.rid, d.id, d.k, d.r, d.n].filter((x) => x !== undefined).join('|');
+}
+
 const render = (html, focusKey) => {
+  // remember where the user was before the DOM underneath them is replaced
+  const active = document.activeElement;
+  const keep = $app.contains(active) ? {
+    key: fieldKey(active),
+    start: active.selectionStart,
+    end: active.selectionEnd,
+  } : null;
+  const scrollY = window.scrollY;
+
   $app.innerHTML = html;
+
+  if (keep && keep.key) {
+    const back = [...$app.querySelectorAll('[data-act]')].find((e) => fieldKey(e) === keep.key);
+    if (back && typeof back.focus === 'function') {
+      back.focus({ preventScroll: true });
+      // setSelectionRange throws on inputs that do not support it (number, date)
+      if (keep.start != null) {
+        try { back.setSelectionRange(keep.start, keep.end); } catch { /* not a text field */ }
+      }
+      window.scrollTo({ top: scrollY });
+    }
+  }
+
   // On a genuine view change, put focus on the new heading. Re-renders of the
   // same view (typing in search, stepping a quantity) must NOT steal focus.
   if (focusKey && focusKey !== lastRenderKey) {
@@ -810,7 +857,9 @@ async function reportSubmit(form) {
   btn.textContent = 'שולח…';
   await withBusy(async () => {
     const sealed = await seal(await importPubKey(S.config.pub), { name, phone, text, createdAt: Date.now() });
-    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    await api('/reports', {
+      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+    });
     S.repSent = true;
     S.rep = null;
     renderReport();
@@ -891,7 +940,9 @@ async function faultSubmit(form) {
     const sealed = await seal(await importPubKey(S.config.pub), {
       kind: 'fault', name, phone, text, createdAt: Date.now(),
     });
-    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    await api('/reports', {
+      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+    });
     S.fltSent = true;
     S.flt = null;
     renderFault();
@@ -1005,7 +1056,9 @@ async function depositSubmit(form) {
     const sealed = await seal(await importPubKey(S.config.pub), {
       kind: 'deposit', pn, name, phone, weapon, amral, scope, createdAt: Date.now(),
     });
-    await api('/reports', { body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ...sealed } });
+    await api('/reports', {
+      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+    });
     S.depSent = true;
     S.dep = null;
     renderDeposit();
@@ -1273,11 +1326,21 @@ function renderSoldierConfirm() {
         <div><dt>מספר אישי:</dt><dd><span class="num">${esc(v.pn || '')}</span></dd></div>
         <div><dt>טלפון:</dt><dd><span class="num">${esc(v.phone || '')}</span></dd></div>
         <div><dt>מחלקה:</dt><dd>${esc(deptName(v.dept))}</dd></div>
-        ${v.weapon ? `<div><dt>מספר נשק:</dt><dd><span class="num">${esc(v.weapon)}</span></dd></div>` : ''}
-        ${v.amral ? `<div><dt>מספר אמר״ל:</dt><dd><span class="num">${esc(v.amral)}</span></dd></div>` : ''}
-        ${v.scope ? `<div><dt>מספר כוונת:</dt><dd><span class="num">${esc(v.scope)}</span></dd></div>` : ''}
         ${licLine}
       </dl>
+
+      ${v.weapon || v.amral || v.scope ? `
+      <div class="serial-check">
+        <p class="serial-check-t">בדקו ספרה-ספרה — אין ברקוד ואין צילום, מה שנרשם כאן הוא הרישום היחיד</p>
+        ${[['מספר נשק', v.weapon], ['מספר אמר״ל', v.amral], ['מספר כוונת', v.scope]]
+          .filter(([, n]) => n)
+          .map(([k, n]) => `
+            <div class="serial-row">
+              <span class="serial-lbl">${k}</span>
+              <span class="serial-val num">${esc(n)}</span>
+            </div>`).join('')}
+        <button type="button" class="linkbtn" data-act="s-edit-ident">תיקון המספרים</button>
+      </div>` : ''}
 
       <h2 class="field-label">הציוד שאתם חותמים עליו</h2>
       <div class="confirm-list">${rows}</div>
@@ -3061,6 +3124,12 @@ function renderOverviewTab() {
       t: 'פריטי תחמושת שאזלו', s: ammoEmpty.map((x) => x.name).join(', ') },
     armOut.length && { n: armOut.length, tone: 'warn', tab: 'armon',
       t: 'נשקים שאינם בארמון', s: 'רשומים אצל חיילים — לא ייכללו בדו״ח צלם' },
+    armon.filter((x) => ARM_BAD_LOCS.has(x.loc)).length && {
+      n: armon.filter((x) => ARM_BAD_LOCS.has(x.loc)).length, tone: 'bad', tab: 'armon',
+      t: 'פריטים אבודים או מושבתים', s: 'דורשים דיווח או החלפה' },
+    armon.filter((x) => x.loc === 'repair').length && {
+      n: armon.filter((x) => x.loc === 'repair').length, tone: 'warn', tab: 'armon',
+      t: 'פריטים בתיקון', s: 'ממתינים לחזרה מהמעבדה' },
     c.damaged && { n: c.damaged, tone: 'bad', tab: 'sec',
       t: 'רשומות פגומות', s: 'הפענוח נכשל — חשד לשיבוש נתונים' },
   ].filter(Boolean);
@@ -3430,6 +3499,7 @@ function renderArmonTab() {
     out: out.filter((x) => x.kind === k.id).length,
   }));
   const noMission = all.filter((x) => x.loc === 'mission' && !x.mission).length;
+  const unusable = all.filter((x) => ARM_BAD_LOCS.has(x.loc));
 
   const kindChips = [['all', 'הכל'], ...ARM_KINDS.map((k) => [k.id, k.name])]
     .map(([id, label]) =>
@@ -3511,6 +3581,9 @@ function renderArmonTab() {
       ${noMission
         ? `<div class="callout risk"><p class="mb0"><strong class="num">${noMission}</strong> פריטים מסומנים "במשימה" בלי שם משימה — מלאו את שם המשימה בשורה.</p></div>`
         : ''}
+      ${unusable.length
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${unusable.length}</strong> פריטים אבודים או מושבתים: ${unusable.slice(0, 6).map((x) => `${esc(x.name)} (${esc(x.serial)}) — ${esc(nameOf(ARM_LOCS, x.loc))}`).join(' · ')}${unusable.length > 6 ? ' …' : ''}</p></div>`
+        : ''}
       ${all.length > 4
         ? plainSearch('arm-search', 'arm-qclear', S.regQ.armon || '',
                       'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length + visOut.length)
@@ -3580,7 +3653,9 @@ function renderArmonTab() {
 // while they are there. אמר״ל and צל״ם are tracked wherever they are, because
 // the report is what proves they are accounted for at all.
 function tzelemScope() {
-  return ((S.inv && S.inv.armon) || []).filter((x) => x.kind !== 'weapon' || x.loc === 'armon');
+  return ((S.inv && S.inv.armon) || [])
+    .filter((x) => !ARM_BAD_LOCS.has(x.loc))          // written off or missing is not stock
+    .filter((x) => x.kind !== 'weapon' || x.loc === 'armon');
 }
 
 function renderTzelemTab() {
@@ -4002,17 +4077,32 @@ const fuelFile = (i, input) =>
       toast('מקסימום 60 קבלות לכרטיס', true);
       return;
     }
+    // Images go up first because they are the slow part, but nothing points at
+    // them until the vault names them. If that save fails they are unreachable
+    // rows nobody will ever find, so they are removed again.
+    const uploaded = [];
+    const before = card.receipts.slice();
     let done = 0;
     for (const file of files) {
       toast(`מעבד קבלה ${done + 1} מתוך ${files.length}…`);
       const { bytes } = await compressImage(file);
       const id = hex(crypto.getRandomValues(new Uint8Array(16)));
       await api(`/admin/docs/${id}/fuel`, { method: 'PUT', body: await sealBytes(S.pubKey, bytes) });
+      uploaded.push(id);
       card.receipts.push({ id, at: Date.now() });
       done++;
     }
+    try {
+      await saveInv();
+    } catch (e) {
+      card.receipts = before;
+      for (const id of uploaded) {
+        await api(`/admin/docs/${id}/fuel`, { method: 'DELETE' }).catch(() => {});
+      }
+      renderConsole();
+      throw e;
+    }
     S.fuelOpen.add(card.id);
-    await saveInv();
     renderConsole();
     toast(`${done} קבלות נשמרו${rejected ? ` · ${rejected} קבצים שאינם תמונה דולגו` : ''}`);
   });
@@ -4477,6 +4567,136 @@ const fltSetState = (id, next) =>
       : 'הוחזר למצב פתוח');
   });
 
+// The wrapped private key, saved to a file. Without the password it is inert,
+// which is exactly why it can be kept somewhere else: it turns "we lost the
+// laptop" from total loss into an inconvenience. It does NOT rescue a
+// forgotten password — nothing can.
+const exportRecoveryKey = () =>
+  withBusy(async () => {
+    if (!window.confirm(
+      'הקובץ מכיל את המפתח הפרטי עטוף בסיסמה שלכם. בלי הסיסמה הוא חסר ערך — אבל שמרו אותו במקום מוגן ולא באותו מקום עם הסיסמה. להמשיך?'
+    )) return;
+    const cfg = await api('/config');
+    const blob = new Blob([JSON.stringify({
+      note: 'גיבוי מפתח שחזור — מסייעת 951. דורש את סיסמת המנהל כדי להיפתח.',
+      exportedAt: new Date().toISOString(),
+      username: S.me,
+      pub: cfg.pub,
+      idSalt: cfg.idSalt,
+    }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `tzayad-recovery-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('קובץ השחזור הורד');
+  });
+
+const loadTrash = () =>
+  withBusy(async () => {
+    const { records, reports, keepMs } = await api('/admin/trash');
+    const open = async (rows, clean) => {
+      const out = [];
+      for (const row of rows) {
+        try { out.push({ ...row, data: await openRecord(S.priv, row, clean), damaged: false }); }
+        catch { out.push({ ...row, data: null, damaged: true }); }
+      }
+      return out;
+    };
+    S.trash = {
+      records: await open(records, cleanRecord),
+      reports: await open(reports, cleanReport),
+      keepDays: Math.round(keepMs / 86400000),
+    };
+    renderConsole();
+  });
+
+const trashRestore = (kind, id) =>
+  withBusy(async () => {
+    await api(`/admin/trash/${kind}/${id}`, { method: 'POST', body: {} });
+    await loadTrash();
+    await adminRefreshQuiet();
+    toast('הפריט שוחזר');
+  });
+
+const adminRefreshQuiet = async () => {
+  const scopes = allowedScopes();
+  if (scopes.has('records')) await loadRecords();
+  if (scopes.has('reports')) await loadReports();
+};
+
+const loadAudit = () =>
+  withBusy(async () => {
+    const { audit } = await api('/admin/audit');
+    S.audit = audit || [];
+    renderConsole();
+  });
+
+const AUDIT_LABEL = {
+  approve: 'אישור רשומה', update: 'עדכון רשומה', 'delete-record': 'מחיקת רשומה',
+  'delete-report': 'מחיקת דיווח', 'restore-record': 'שחזור רשומה',
+  'restore-report': 'שחזור דיווח', vault: 'שמירת מלאי', 'user-create': 'יצירת משתמש',
+  'user-update': 'עדכון משתמש', 'user-delete': 'מחיקת משתמש',
+};
+
+function trashPanel() {
+  const t = S.trash;
+  return `
+    <section class="panel">
+      <h2 class="panel-title">סל מיחזור</h2>
+      <p class="panel-sub">רשומות ודיווחים שנמחקו נשמרים ${t ? t.keepDays : 30} יום וניתנים לשחזור. אחרי כן הם נמחקים לצמיתות.</p>
+      ${!t
+        ? '<button class="btn ghost wide" data-act="trash-load">טעינת סל המיחזור</button>'
+        : (t.records.length + t.reports.length)
+          ? `<div class="tbl-scroll">
+               <table class="tbl">
+                 <thead><tr><th>סוג</th><th>פרטים</th><th class="num">נמחק</th><th></th></tr></thead>
+                 <tbody>
+                   ${t.records.map((r) => `<tr>
+                     <td>רשומת חייל</td>
+                     <td>${r.damaged ? '<span class="bad">פגום</span>' : esc(r.data.name) + ' · ' + esc(r.data.pn)}</td>
+                     <td class="num">${esc(fmtDate(r.deleted_at))}</td>
+                     <td><button class="btn ghost small" data-act="trash-restore" data-kind="record" data-id="${esc(r.rid)}">שחזור</button></td>
+                   </tr>`).join('')}
+                   ${t.reports.map((r) => `<tr>
+                     <td>${r.damaged ? 'דיווח' : r.data.kind === 'deposit' ? 'אפסון נשק' : r.data.kind === 'fault' ? 'תקלת בינוי' : 'בקשת חוסר'}</td>
+                     <td>${r.damaged ? '<span class="bad">פגום</span>' : esc(r.data.name)}</td>
+                     <td class="num">${esc(fmtDate(r.deleted_at))}</td>
+                     <td><button class="btn ghost small" data-act="trash-restore" data-kind="report" data-id="${esc(r.id)}">שחזור</button></td>
+                   </tr>`).join('')}
+                 </tbody>
+               </table>
+             </div>
+             <button class="btn ghost wide mt" data-act="trash-load">רענון</button>`
+          : '<p class="empty">הסל ריק.</p>'}
+    </section>`;
+}
+
+function auditPanel() {
+  return `
+    <section class="panel">
+      <h2 class="panel-title">יומן פעולות מנהלים</h2>
+      <p class="panel-sub">מי עשה מה ומתי. היומן אינו מוצפן ולכן אינו מכיל שמות חיילים או פרטים אישיים — רק סוג הפעולה והמזהה.</p>
+      ${!S.audit
+        ? '<button class="btn ghost wide" data-act="audit-load">טעינת היומן</button>'
+        : S.audit.length
+          ? `<div class="tbl-scroll">
+               <table class="tbl">
+                 <thead><tr><th class="num">מתי</th><th>משתמש</th><th>פעולה</th><th class="num">מזהה</th><th>פרטים</th></tr></thead>
+                 <tbody>${S.audit.map((e) => `<tr>
+                   <td class="num">${esc(fmtDate(e.at))}</td>
+                   <td>${esc(e.username || '—')}</td>
+                   <td>${esc(AUDIT_LABEL[e.action] || e.action)}</td>
+                   <td class="num">${esc((e.target || '').slice(0, 12))}</td>
+                   <td>${esc(e.detail || '')}</td>
+                 </tr>`).join('')}</tbody>
+               </table>
+             </div>
+             <button class="btn ghost wide mt" data-act="audit-load">רענון</button>`
+          : '<p class="empty">לא נרשמו פעולות.</p>'}
+    </section>`;
+}
+
 function renderSecurityTab() {
   return `
     <div class="callout">
@@ -4493,6 +4713,16 @@ function renderSecurityTab() {
       <p class="mb0">איבוד הסיסמה משמעו איבוד כל הנתונים. הדרך היחידה להמשיך היא מחיקה מלאה והתחלה מחדש.</p>
     </div>
     ${usersPanel()}
+
+    ${trashPanel()}
+
+    ${auditPanel()}
+
+    <section class="panel">
+      <h2 class="panel-title">גיבוי מפתח שחזור</h2>
+      <p class="panel-sub">קובץ קטן עם המפתח הציבורי ומזהי המערכת, לשמירה בנפרד מהמכשיר. בלי סיסמת המנהל הוא חסר ערך, ולכן אפשר לשמור אותו במקום אחר — אבל <strong>הוא אינו מחליף את הסיסמה</strong>: אם היא תאבד, אין שחזור.</p>
+      <button class="btn ghost wide" data-act="key-export">הורדת קובץ שחזור</button>
+    </section>
 
     <section class="panel">
       <h2 class="panel-title">החלפת סיסמה</h2>
@@ -4598,18 +4828,45 @@ const repDelete = (id) =>
 async function loadInv() {
   try {
     const { vault } = await api('/admin/vault');
-    if (!vault) { S.inv = emptyInv(); return; }
+    if (!vault) { S.inv = emptyInv(); S.invVersion = 0; return; }
+    S.invVersion = vault.updated_at || 0;   // what a later save will be checked against
     S.inv = await openRecord(S.priv, vault, cleanInv);
   } catch {
     S.inv = emptyInv();
+    S.invVersion = 0;
     toast('לא ניתן לפענח את נתוני המלאי', true);
   }
 }
 
+// The vault is one blob shared by every admin. Sending the version it was
+// loaded at lets the server refuse a save that would overwrite someone else's
+// work, instead of silently discarding it.
 async function saveInv() {
   S.inv.updatedAt = Date.now();
   const sealed = await seal(S.pubKey, S.inv);
-  await api('/admin/vault', { method: 'PUT', body: sealed });
+  try {
+    const res = await api('/admin/vault', {
+      method: 'PUT',
+      body: { ...sealed, baseVersion: S.invVersion },
+    });
+    S.invVersion = res.updatedAt || S.inv.updatedAt;
+    vaultSizeWarn(sealed.ct.length);
+  } catch (e) {
+    if (e.status === 409) {
+      throw new Error('המלאי עודכן על ידי מנהל אחר בזמן שערכתם. לחצו "רענון", בדקו מה השתנה ובצעו את השינוי שוב — לא דרסנו את העבודה שלו.');
+    }
+    throw e;
+  }
+}
+
+// The vault has a hard ceiling at the server. Silence until the save simply
+// fails is not a warning, so the headroom is reported as it shrinks.
+const VAULT_MAX = 600000;
+function vaultSizeWarn(len) {
+  S.invBytes = len;
+  const pct = Math.round((len / VAULT_MAX) * 100);
+  if (pct >= 90) toast(`שימו לב: נפח המלאי ${pct}% מהמותר — פנו מקום בקרוב`, true);
+  else if (pct >= 80) toast(`נפח המלאי ${pct}% מהמותר`, true);
 }
 
 /* ── Action handlers ───────────────────────────────────────────────── */
@@ -4766,6 +5023,14 @@ function soldierStep(itemId, delta) {
   renderSoldier();
 }
 
+// A one-shot permit fetched just before submitting. The server will not accept
+// a record or a report without one, which stops a script posting straight at
+// the API with the (necessarily public) encryption key.
+async function getTicket() {
+  const { ticket } = await api('/ticket', { method: 'GET' });
+  return ticket;
+}
+
 async function soldierSubmit() {
   const errEl = $app.querySelector('[data-err]');
   if (!Object.keys(S.sel).length) {
@@ -4803,7 +5068,7 @@ async function soldierSubmit() {
 
     const pubKey = await importPubKey(S.config.pub);
     const sealed = await seal(pubKey, payload);
-    await api('/records', { body: { rid: S.rid, ...sealed } });
+    await api('/records', { body: { rid: S.rid, ticket: await getTicket(), ...sealed } });
 
     // Photos ride separately so listing soldiers never pulls image data.
     for (const k of LIC_KINDS) {
@@ -4937,6 +5202,69 @@ const adminAdjust = (rid, itemId, delta) =>
     renderConsole();
   });
 
+/* ── Serial-number safety ──────────────────────────────────────────────
+   There is no barcode and no photograph, so a typed serial is the only record
+   that exists. Two things can go wrong and both are silent: the same serial
+   ends up on two soldiers, or one digit is mistyped and a weapon that does not
+   exist enters the books. Neither is caught by field validation, so they are
+   caught here — at approval, where a human is already looking. */
+
+// Levenshtein distance, capped: we only care whether it is 0, 1 or "more".
+function editDistance(a, b) {
+  a = String(a); b = String(b);
+  if (Math.abs(a.length - b.length) > 1) return 2;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], cur[j - 1]);
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
+
+// Every serial already in use, excluding one record (the one being approved).
+function serialIndex(exceptRid) {
+  const out = [];
+  for (const rec of S.recs) {
+    if (rec.rid === exceptRid || rec.damaged || !rec.data || rec.status !== 'approved') continue;
+    for (const [f, label] of SERIAL_FIELDS) {
+      if (rec.data[f]) out.push({ v: String(rec.data[f]), label, who: rec.data.name, kind: 'חייל' });
+    }
+  }
+  for (const x of (S.inv && S.inv.armon) || []) {
+    if (x.kind === 'weapon' && x.serial) {
+      out.push({ v: String(x.serial), label: 'נשק', who: x.owner, kind: 'ארמון' });
+    }
+  }
+  return out;
+}
+
+// Returns [] when nothing is suspicious, otherwise a list of human sentences.
+function serialWarnings(d, exceptRid) {
+  const index = serialIndex(exceptRid);
+  const out = [];
+  for (const [f, label] of SERIAL_FIELDS) {
+    const val = d[f];
+    if (!val) continue;
+    const lower = String(val).toLowerCase();
+    for (const other of index) {
+      const o = other.v.toLowerCase();
+      if (o === lower) {
+        out.push(`⛔ ${label} ${val} כבר רשום על ${other.who} (${other.kind}) — אותו מספר לא יכול להיות בשני מקומות`);
+      } else if (editDistance(lower, o) === 1) {
+        out.push(`⚠ ${label} ${val} שונה בתו אחד בלבד מ-${other.v} של ${other.who} (${other.kind}) — ודאו שאין טעות הקלדה`);
+      }
+    }
+  }
+  return out;
+}
+
 // Approving one record. Split out of the click handler so a bulk run can call
 // it repeatedly without nesting withBusy or firing a toast per soldier.
 // Returns a short outcome the caller turns into a message.
@@ -4988,6 +5316,13 @@ async function approveCore(rid) {
 
 const adminApprove = (rid) =>
   withBusy(async () => {
+    const rec = findRec(rid);
+    if (rec && !rec.damaged && rec.data) {
+      const warns = serialWarnings(rec.data, rid);
+      if (warns.length && !window.confirm(
+        `בדיקת מספרים סידוריים עבור ${rec.data.name}:\n\n${warns.join('\n')}\n\nלאשר בכל זאת?`
+      )) return;
+    }
     const r = await approveCore(rid);
     S.picked.delete(rid);
     renderConsole();
@@ -5010,7 +5345,17 @@ const bulkApprove = () =>
   withBusy(async () => {
     const rids = [...S.picked];
     if (!rids.length) return;
-    if (!window.confirm(`לאשר ${rids.length} רישומים? לכל חייל תישלח הודעה.`)) return;
+    const flagged = [];
+    for (const rid of rids) {
+      const rec = findRec(rid);
+      if (!rec || rec.damaged || !rec.data) continue;
+      const w = serialWarnings(rec.data, rid);
+      if (w.length) flagged.push(`${rec.data.name}: ${w[0]}`);
+    }
+    const head = flagged.length
+      ? `⚠ ${flagged.length} מתוך ${rids.length} עם בעיה במספרים סידוריים:\n\n${flagged.slice(0, 8).join('\n')}${flagged.length > 8 ? `\n…ועוד ${flagged.length - 8}` : ''}\n\n`
+      : '';
+    if (!window.confirm(`${head}לאשר ${rids.length} רישומים? לכל חייל תישלח הודעה.`)) return;
     let ok = 0, noMsg = 0;
     const failedRids = [];
     for (const rid of rids) {
@@ -5437,6 +5782,7 @@ function dispatch(act, el) {
     case 's-submit': soldierSubmit(); break;
     case 's-back': S.sStep = 1; renderSoldier(); break;
     case 's-edit': S.sStep = 2; renderSoldier(); break;
+    case 's-edit-ident': S.sStep = 1; renderSoldier(); break;
     case 's-review':
       if (!Object.keys(S.sel).length) {
         const e = $app.querySelector('[data-err]');
@@ -5575,7 +5921,11 @@ function dispatch(act, el) {
       renderConsole();
       break;
     }
-    // users
+    // users, trash, audit
+    case 'key-export': exportRecoveryKey(); break;
+    case 'trash-load': loadTrash(); break;
+    case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
+    case 'audit-load': loadAudit(); break;
     case 'user-del': userDelete(el.dataset.u); break;
     case 'user-pw': userSetPassword(el.dataset.u); break;
     case 'user-screens': userSetScreens(el.dataset.u); break;
