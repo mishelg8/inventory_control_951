@@ -1374,8 +1374,7 @@ function renderLogin() {
         <label class="field">
           <span class="field-label">שם משתמש</span>
           <input class="input" type="text" name="username" autocomplete="username"
-                 inputmode="email" spellcheck="false" maxlength="31"
-                 placeholder="admin.951" required>
+                 spellcheck="false" autocapitalize="off" maxlength="31" required>
         </label>
         <label class="field">
           <span class="field-label">סיסמה</span>
