@@ -93,12 +93,16 @@ async function sweepThrottle(db, now) {
 
 const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first();
 
+// Returns null rather than throwing when the table predates the viewer feature.
+const getViewer = (db) =>
+  db.prepare('SELECT * FROM viewer WHERE id = 1').first().catch(() => null);
+
 async function getSession(db, request, now) {
   const cookie = request.headers.get('Cookie') || '';
   const m = cookie.match(/(?:^|;\s*)sid=([0-9a-f]{64})(?:;|$)/);
   if (!m) return null;
   const row = await db
-    .prepare('SELECT token, expires FROM sessions WHERE token = ?1')
+    .prepare('SELECT token, expires, role FROM sessions WHERE token = ?1')
     .bind(m[1])
     .first();
   if (!row || row.expires <= now) return null;
@@ -106,7 +110,9 @@ async function getSession(db, request, now) {
     .prepare('UPDATE sessions SET expires = ?1 WHERE token = ?2')
     .bind(now + SESSION_MS, row.token)
     .run();
-  return row.token;
+  // Anything but an explicit 'viewer' is treated as an admin, matching the
+  // column default for sessions created before the role existed.
+  return { token: row.token, role: row.role === 'viewer' ? 'viewer' : 'admin' };
 }
 
 const sessionCookie = (token) =>
@@ -305,31 +311,37 @@ export async function onRequest(context) {
 
     // ── /api/admin/* ─────────────────────────────────────────────────
     if (seg[0] === 'admin') {
-      // GET /api/admin/challenge
+      // GET /api/admin/challenge[?role=viewer] — the salt to derive the KEK from
       if (seg[1] === 'challenge' && seg.length === 2 && method === 'GET') {
+        if (url.searchParams.get('role') === 'viewer') {
+          const v = await getViewer(db);
+          if (!v) return err(404, 'לא הוגדר משתמש צפייה');
+          return json({ salt: v.salt });
+        }
         const cfg = await getConfig(db);
         if (!cfg) return err(404, 'המערכת עדיין לא הוגדרה');
         return json({ salt: cfg.salt });
       }
 
-      // POST /api/admin/login
+      // POST /api/admin/login — { verifier, role? }
       if (seg[1] === 'login' && seg.length === 2 && method === 'POST') {
         if (!(await allow(db, `login:${ip}`, LOGIN_LIMIT, LOGIN_WINDOW_MS, now))) {
           return err(429, 'יותר מדי ניסיונות התחברות — נעילה של 10 דקות');
         }
-        const cfg = await getConfig(db);
-        if (!cfg) return err(404, 'המערכת עדיין לא הוגדרה');
         const b = await readBody(request);
         if (!b || !isHex(b.verifier, HEX64)) return err(400, 'בקשה לא תקינה');
-        if (!tsEqual(b.verifier, cfg.verifier)) return err(401, 'סיסמה שגויה');
+        const role = b.role === 'viewer' ? 'viewer' : 'admin';
+        const cred = role === 'viewer' ? await getViewer(db) : await getConfig(db);
+        if (!cred) return err(404, role === 'viewer' ? 'לא הוגדר משתמש צפייה' : 'המערכת עדיין לא הוגדרה');
+        if (!tsEqual(b.verifier, cred.verifier)) return err(401, 'סיסמה שגויה');
         const token = randomToken();
         await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
         await db
-          .prepare('INSERT INTO sessions (token, expires) VALUES (?1, ?2)')
-          .bind(token, now + SESSION_MS)
+          .prepare('INSERT INTO sessions (token, expires, role) VALUES (?1, ?2, ?3)')
+          .bind(token, now + SESSION_MS, role)
           .run();
         return json(
-          { keyIv: cfg.key_iv, wrappedKey: cfg.wrapped_key },
+          { keyIv: cred.key_iv, wrappedKey: cred.wrapped_key, role },
           200,
           { 'Set-Cookie': sessionCookie(token) }
         );
@@ -339,10 +351,57 @@ export async function onRequest(context) {
       const session = await getSession(db, request, now);
       if (!session) return err(401, 'נדרשת התחברות');
 
+      // A viewer may read; it may not change anything. Enforced here rather
+      // than per-endpoint so a new write route cannot forget to opt in.
+      if (session.role === 'viewer' && method !== 'GET' && !(seg[1] === 'logout' && method === 'POST')) {
+        return err(403, 'משתמש צפייה בלבד — אין הרשאת עריכה');
+      }
+
       // POST /api/admin/logout
       if (seg[1] === 'logout' && seg.length === 2 && method === 'POST') {
-        await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session).run();
+        await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session.token).run();
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
+      }
+
+      // GET | PUT | DELETE /api/admin/viewer — manage the read-only credential.
+      // The client wraps the same private key under the viewer's password; the
+      // server only ever stores the wrapped blob and the verifier.
+      if (seg[1] === 'viewer' && seg.length === 2) {
+        if (method === 'GET') {
+          const v = await getViewer(db);
+          return json({ viewer: v ? { createdAt: v.created_at } : null });
+        }
+        if (method === 'PUT') {
+          const b = await readBody(request);
+          if (
+            !b ||
+            !isB64(b.salt, 64) ||
+            !isHex(b.verifier, HEX64) ||
+            !isB64(b.keyIv, 64) ||
+            !isB64(b.wrappedKey, 8000)
+          ) {
+            return err(400, 'בקשה לא תקינה');
+          }
+          await db
+            .prepare(
+              `INSERT INTO viewer (id, salt, verifier, key_iv, wrapped_key, created_at)
+               VALUES (1, ?1, ?2, ?3, ?4, ?5)
+               ON CONFLICT(id) DO UPDATE SET salt = ?1, verifier = ?2, key_iv = ?3,
+                                             wrapped_key = ?4, created_at = ?5`
+            )
+            .bind(b.salt, b.verifier, b.keyIv, b.wrappedKey, now)
+            .run();
+          // any viewer already signed in loses access immediately
+          await db.prepare("DELETE FROM sessions WHERE role = 'viewer'").run();
+          return json({ ok: true });
+        }
+        if (method === 'DELETE') {
+          await db.batch([
+            db.prepare('DELETE FROM viewer'),
+            db.prepare("DELETE FROM sessions WHERE role = 'viewer'"),
+          ]);
+          return json({ ok: true });
+        }
       }
 
       // GET /api/admin/reports — every shortage report
@@ -594,6 +653,7 @@ export async function onRequest(context) {
           db.prepare('DELETE FROM vault'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),
+          db.prepare('DELETE FROM viewer'),
           db.prepare('DELETE FROM config'),
         ]);
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
