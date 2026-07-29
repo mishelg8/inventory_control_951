@@ -690,7 +690,47 @@ const render = (html, focusKey) => {
   for (const el of $app.querySelectorAll('.brk-fill[data-w], .minibar-fill[data-w]')) {
     el.style.width = `${el.dataset.w}%`;
   }
+
+  fitTables();
 };
+
+/* ── Tables that do not fit ────────────────────────────────────────────
+   A sideways scrollbar hides data: whatever is off to the side is invisible
+   until you think to drag for it, and on a phone most of the row is off to
+   the side. So a table that cannot fit its column stops being a table and
+   becomes one labelled card per row, where every field is visible at once.
+   Each table decides for itself by measurement rather than by breakpoint,
+   because they range from two columns to twenty-three. */
+
+function fitTables() {
+  for (const box of $app.querySelectorAll('.tbl-scroll')) {
+    const table = box.querySelector('table');
+    if (!table || !table.tHead) continue;
+
+    // Carry the column heading onto every cell, so a stacked row can label
+    // its own fields. Done once per render, from the live header.
+    const heads = [...table.tHead.rows[0].cells].map((c) => c.textContent.trim());
+    for (const row of table.tBodies[0] ? table.tBodies[0].rows : []) {
+      if (row.cells.length === 1 && row.cells[0].colSpan > 1) continue;   // detail row
+      [...row.cells].forEach((cell, i) => {
+        if (heads[i]) cell.dataset.label = heads[i];
+        else cell.removeAttribute('data-label');
+      });
+    }
+
+    // Measure against the unstacked layout, then switch if it overflows.
+    box.classList.remove('stacked');
+    if (table.scrollWidth > box.clientWidth + 1) box.classList.add('stacked');
+  }
+}
+
+// Re-measure when the window changes: a table that fits in landscape may not
+// fit in portrait, and the reverse.
+let fitTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fitTables, 120);
+}, { passive: true });
 
 function renderRoute() {
   // the console needs a wide column for tables; soldier pages stay narrow
@@ -2744,7 +2784,7 @@ function reportPdf(id) {
   if (!rows.length) { toast('אין נתונים להפקה', true); return; }
   printDoc({
     title: def.name,
-    meta: `הופק ${fmtDate(Date.now())} · ${rows.length} שורות${S.me ? ` · הופק על ידי ${S.me}` : ''}`,
+    meta: `הופק ${fmtDate(Date.now())} · ${rows.length} שורות`,
     head, rows, summary,
   });
 }
