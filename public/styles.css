@@ -1540,3 +1540,69 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .serial-row:last-of-type { border-bottom: 0; }
 .serial-lbl { font-size: 14px; font-weight: 600; }
 .serial-val { font-size: 26px; font-weight: 800; letter-spacing: 0.08em; }
+
+/* ── Stacked tables ────────────────────────────────────────────────────
+   Applied by measurement (see fitTables) when a table cannot fit its
+   container. Each row becomes a card and each cell carries its column
+   heading, so nothing is hidden off to the side. */
+.tbl-scroll.stacked { overflow-x: visible; }
+/* Drop table layout entirely: with the headings moved onto each cell, the
+   column algorithm is what was still forcing a minimum width. */
+.tbl-scroll.stacked table { display: block; width: 100%; }
+.tbl-scroll.stacked thead { display: none; }
+.tbl-scroll.stacked tbody { display: block; }
+/* nothing inside a card should refuse to wrap — that is what pushed it wide */
+.tbl-scroll.stacked .nowrap { white-space: normal; }
+.tbl-scroll.stacked tbody td > * { min-width: 0; }
+
+.tbl-scroll.stacked tbody tr {
+  display: block;
+  margin-bottom: 10px;
+  padding: 4px 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--sh-1);
+}
+.tbl-scroll.stacked tbody tr:last-child { margin-bottom: 0; }
+.tbl-scroll.stacked tbody tr.row-short { border-color: var(--bad-fill); background: var(--bad-tint); }
+.tbl-scroll.stacked tbody tr.is-open { border-color: var(--pine); background: var(--pine-tint); }
+
+.tbl-scroll.stacked tbody td {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  width: auto;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: start;
+}
+.tbl-scroll.stacked tbody td:last-child { border-bottom: 0; }
+
+/* the column heading, restored beside the value it belongs to */
+.tbl-scroll.stacked tbody td[data-label]::before {
+  content: attr(data-label);
+  flex: none;
+  min-width: 96px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+/* cells with no heading (actions, checkboxes) simply fill the row */
+.tbl-scroll.stacked tbody td:not([data-label]) { justify-content: flex-start; gap: 8px; }
+.tbl-scroll.stacked tbody td:empty { display: none; }
+
+/* inputs inside a stacked cell take the space the column used to give them */
+.tbl-scroll.stacked tbody td .input { flex: 1; min-width: 0; max-width: 60%; }
+.tbl-scroll.stacked tbody td .chips { justify-content: flex-end; }
+
+/* a detail row keeps the full width of the card */
+.tbl-scroll.stacked tbody tr.sub {
+  border-color: var(--line);
+  background: var(--bg);
+  padding: 10px 12px;
+}
+.tbl-scroll.stacked tbody tr.sub td { display: block; padding: 0; }
