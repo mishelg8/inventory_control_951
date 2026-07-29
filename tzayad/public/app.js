@@ -1519,7 +1519,7 @@ const READ_ACTS = new Set([
   'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
   'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
-  'tz-pdf', 'tz-wa',
+  'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
 
 function stripWriteControls() {
@@ -2213,7 +2213,7 @@ function renderSummaryTab() {
         <span class="num">${soldiersOut}</span> עם ציוד בחוץ
         ${c.damaged ? ` · <span class="num">${c.damaged}</span> רשומות פגומות` : ''}
       </p>
-      <button class="btn ghost wide mt" data-act="export">ייצוא CSV</button>
+      ${reportButtons('summary')}
     </section>
 
     ${licencePanel(approved)}
@@ -2311,25 +2311,9 @@ function licencePanel(approved) {
                <tbody>${body}</tbody>
              </table>
            </div>
-           <button class="btn ghost wide mt" data-act="export-lic">ייצוא רישיונות ל-CSV</button>`
+           ${reportButtons('licences')}`
         : '<p class="empty">אין רשומות מאושרות.</p>'}
     </section>`;
-}
-
-function exportLicCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged);
-  const rows = licenceRows(approved)
-    .slice()
-    .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
-  const lines = [
-    ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי', 'צילום מצורף'],
-    ...rows.map((r) => [
-      r.name, r.pn, r.dept, r.no, r.exp ? fmtDay(r.exp) : '',
-      LIC_LABEL[r.st], r.mil ? 'כן' : 'לא', r.doc ? 'כן' : 'לא',
-    ]),
-  ];
-  downloadCsv(lines.map((l) => l.map(csvCell).join(',')), 'tzayad-licences.csv');
 }
 
 // Weapon register: serial → holder. The one table a logistics NCO reaches for
@@ -2377,51 +2361,394 @@ function weaponsPanel(approved) {
                <tbody>${rows}</tbody>
              </table>
            </div>
-           <button class="btn ghost wide mt" data-act="export-weapons">ייצוא רשימת נשקים ל-CSV</button>`
+           ${reportButtons('weapons')}`
         : '<p class="empty">אף חייל לא רשם מספר נשק עדיין.</p>'}
     </section>`;
 }
 
-function exportWeaponsCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const lines = [
-    ['מספר נשק', 'מספר אמר״ל', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון']
-      .map(csvCell).join(','),
-  ];
-  const armed = S.recs
-    .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
-    .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
-  for (const rec of armed) {
-    const d = rec.data;
-    lines.push([
-      d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone,
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-weapons.csv');
+/* ── Reports: one definition per table, two outputs ────────────────────
+   Every exportable table is described once — name, columns, rows — and both
+   the CSV and the printable PDF are generated from that description. Adding a
+   column to a report can no longer leave its PDF behind. */
+
+const REPORTS = {
+  stock: {
+    name: 'מלאי ציוד', file: 'tzayad-stock',
+    build() {
+      const inv = S.inv || emptyInv();
+      const iss = issuedTotals();
+      return {
+        head: ['פריט', 'מלאי פתיחה', 'אצל חיילים', 'נותר במחסן', 'סטטוס'],
+        rows: ITEMS.map((item) => {
+          const open = Number(inv.open[item.id]) || 0;
+          const held = iss[item.id].t - iss[item.id].r;
+          const left = open - held;
+          return [item.name, open, held, left,
+            left < 0 ? 'חוסר' : left === 0 ? 'אזל' : 'תקין'];
+        }),
+      };
+    },
+  },
+
+  stockExtra: {
+    name: 'פריטים נוספים', file: 'tzayad-stock-extra',
+    build() {
+      const rows = (S.inv && S.inv.extra) || [];
+      return {
+        head: ['פריט', 'סה״כ', 'בשימוש', 'נותר', 'סטטוס'],
+        rows: rows.map((x) => {
+          const open = Number(x.open) || 0;
+          const out = Number(x.out) || 0;
+          return [x.name, open, out, open - out, open - out < 0 ? 'חוסר' : 'תקין'];
+        }),
+      };
+    },
+  },
+
+  summary: {
+    name: 'סיכום מלאי והחתמות', file: 'tzayad-summary', sensitive: true,
+    build() {
+      const licCell = (d, kind) => {
+        const l = (d.lic || {})[kind];
+        if (!l || !l.has) return '';
+        return l.doc ? 'כן (עם צילום)' : 'כן';
+      };
+      return {
+        head: [
+          'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
+          ...ITEMS.flatMap((i) => [`${i.name} נלקח`, `${i.name} הוחזר`]),
+          'רישיון אזרחי', 'רישיון צבאי', 'סטטוס', 'נשלח', 'אושר',
+        ],
+        rows: S.recs.filter((r) => !r.damaged).map((rec) => {
+          const d = rec.data;
+          return [
+            d.pn, d.name, d.phone, deptName(d.dept), d.weapon || '', d.amral || '', d.scope || '',
+            ...ITEMS.flatMap((i) => {
+              const it = d.items[i.id];
+              return it ? [it.t, it.r || 0] : ['', ''];
+            }),
+            licCell(d, 'civil'), licCell(d, 'military'),
+            rec.status === 'approved' ? 'מאושר' : 'ממתין',
+            fmtDate(d.createdAt),
+            d.approvedAt ? fmtDate(d.approvedAt) : '',
+          ];
+        }),
+      };
+    },
+  },
+
+  licences: {
+    name: 'רישיונות נהיגה', file: 'tzayad-licences', sensitive: true,
+    build() {
+      const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged);
+      const rows = licenceRows(approved).slice()
+        .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
+      return {
+        head: ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי', 'צילום מצורף'],
+        rows: rows.map((r) => [
+          r.name, r.pn, r.dept, r.no, r.exp ? fmtDay(r.exp) : '',
+          LIC_LABEL[r.st], r.mil ? 'כן' : 'לא', r.doc ? 'כן' : 'לא',
+        ]),
+        summary: `${rows.filter((r) => r.st === 'valid').length} בתוקף · ` +
+          `${rows.filter((r) => r.st === 'soon').length} פגים בקרוב · ` +
+          `${rows.filter((r) => r.st !== 'valid' && r.st !== 'soon').length} לא בתוקף`,
+      };
+    },
+  },
+
+  weapons: {
+    name: 'רשימת נשקים', file: 'tzayad-weapons', sensitive: true,
+    build() {
+      const armed = S.recs
+        .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
+        .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
+      return {
+        head: ['מספר נשק', 'מספר אמר״ל', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'],
+        rows: armed.map((rec) => {
+          const d = rec.data;
+          return [d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone];
+        }),
+      };
+    },
+  },
+
+  ledger: {
+    name: 'מי חתום על מה', file: 'tzayad-ledger', sensitive: true,
+    build() {
+      return {
+        head: [
+          'שם', 'מספר אישי', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
+          ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
+          'סה״כ בחוץ',
+        ],
+        rows: S.recs
+          .filter((r) => r.status === 'approved' && !r.damaged && r.data)
+          .map((rec) => {
+            const d = rec.data;
+            return [
+              d.name, d.pn, deptName(d.dept), d.weapon || '', d.amral || '', d.scope || '',
+              ...ITEMS.flatMap((i) => {
+                const it = d.items[i.id];
+                return it ? [it.t, it.t - (it.r || 0)] : ['', ''];
+              }),
+              outstanding(d),
+            ];
+          }),
+      };
+    },
+  },
+
+  deposits: {
+    name: 'בקשות אפסון נשק', file: 'tzayad-deposits', sensitive: true,
+    build() {
+      const rows = depositReports();
+      return {
+        head: ['נשלח', 'שם החייל', 'מספר אישי', 'טלפון', 'מספר נשק', 'מק״ט אמר״ל', 'מק״ט כוונת יום', 'סטטוס'],
+        rows: rows.map((r) => {
+          const d = r.data;
+          return [fmtDate(d.createdAt), d.name, d.pn, d.phone, d.weapon,
+            d.amral || '', d.scope || '', r.status === 'done' ? 'אושר ונקלט' : 'ממתין לאישור'];
+        }),
+      };
+    },
+  },
+
+  faults: {
+    name: 'תקלות בינוי', file: 'tzayad-faults', sensitive: true,
+    build() {
+      const rows = faultReports();
+      return {
+        head: ['דווח', 'שם המדווח', 'טלפון', 'סטטוס', 'תיאור התקלה'],
+        rows: rows.map((r) => {
+          const d = r.data;
+          const st = r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open';
+          return [fmtDate(d.createdAt), d.name, d.phone, FLT_LABEL[st], d.text];
+        }),
+      };
+    },
+  },
+
+  armon: {
+    name: 'פריטים בארמון', file: 'tzayad-armon',
+    build() {
+      const all = (S.inv && S.inv.armon) || [];
+      return {
+        head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה', 'תאריך הוספה'],
+        rows: all.map((x) => [
+          nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
+          x.loc === 'mission' ? (x.mission || '(ללא שם)') : '',
+          x.addedAt ? fmtDate(x.addedAt) : '',
+        ]),
+        summary: `${all.filter((x) => x.loc === 'armon').length} נמצאים בארמון · ` +
+          `${all.filter((x) => x.loc !== 'armon').length} בחוץ · ${all.length} רשומים`,
+      };
+    },
+  },
+
+  armonLog: {
+    name: 'יומן פעולות ארמון', file: 'tzayad-armon-log',
+    build: () => ({
+      head: ['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'יעד', 'הערה'],
+      rows: ((S.inv && S.inv.armonLog) || []).map((e) => [
+        fmtDate(e.t), e.action === 'add' ? 'הוספה' : 'הסרה', nameOf(ARM_KINDS, e.kind),
+        e.name, e.serial, e.owner, e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note,
+      ]),
+    }),
+  },
+
+  tzelem: {
+    name: 'דו״ח צלם', file: 'tzayad-tzelem',
+    build() {
+      const rows = tzelemScope();
+      const held = ((S.inv && S.inv.armon) || []).filter((x) => x.kind === 'weapon' && x.loc !== 'armon').length;
+      return {
+        head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה'],
+        rows: rows.map((x) => [
+          nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
+          x.loc === 'mission' ? (x.mission || '(ללא שם)') : '',
+        ]),
+        summary: ARM_LOCS.map((l) => `${l.name}: ${rows.filter((x) => x.loc === l.id).length}`).join(' · ') +
+          (held ? ` · ${held} נשקים אינם בארמון ואינם נכללים` : ''),
+      };
+    },
+  },
+
+  ammo: {
+    name: 'מלאי תחמושת ואלפא', file: 'tzayad-ammo',
+    build() {
+      const all = (S.inv && S.inv.ammo) || [];
+      return {
+        head: ['פריט', 'כמות'],
+        rows: all.map((x) => [x.name, x.qty]),
+        summary: `${all.length} סוגים · ${all.reduce((s, x) => s + x.qty, 0)} יחידות סה״כ`,
+      };
+    },
+  },
+
+  ammoLog: {
+    name: 'יומן תנועות תחמושת', file: 'tzayad-ammo-log',
+    build: () => ({
+      head: ['תאריך', 'פעולה', 'פריט', 'כמות', 'יעד', 'למי'],
+      rows: ((S.inv && S.inv.ammoLog) || []).map((e) => [
+        fmtDate(e.t), e.action === 'add' ? 'כניסה' : 'הוצאה', e.name, e.qty,
+        e.dest ? nameOf(AMMO_DESTS, e.dest) : '', e.who,
+      ]),
+    }),
+  },
+
+  vehicles: {
+    name: 'רכבים', file: 'tzayad-vehicles',
+    build() {
+      const today = new Date().toISOString().slice(0, 10);
+      const all = (S.inv && S.inv.vehicles) || [];
+      return {
+        head: ['מספר רכב', 'חברת השכרה', 'ק״מ עדכני', 'מועד טיפול', 'קוד קודן', 'קוד דלקן',
+          ...VEH_KIT.map((k) => k.name), 'סטטוס'],
+        rows: all.map((v) => {
+          const late = v.service && v.service < today;
+          const missing = VEH_KIT.filter((k) => !v[k.id]);
+          return [
+            v.plate, v.company, v.km, v.service ? fmtDay(v.service) : '', v.code || '', v.fuelCode || '',
+            ...VEH_KIT.map((k) => (v[k.id] ? 'כן' : 'לא')),
+            late ? 'טיפול עבר' : missing.length ? `חסר: ${missing.map((k) => k.name).join(', ')}` : 'תקין',
+          ];
+        }),
+      };
+    },
+  },
+
+  fuel: {
+    name: 'כרטיסי תדלוק', file: 'tzayad-fuel',
+    build() {
+      const rows = (S.inv && S.inv.fuel) || [];
+      return {
+        head: ['סוג כרטיס', 'מספר כרטיס', 'ליטרים שנותרו', 'סטטוס', 'אצל מי',
+          'שימושים', 'ליטרים שנוצלו', 'שימוש אחרון', 'מספר קבלות', 'זוכה אצל קצין רכב'],
+        rows: rows.map((x) => {
+          const used = x.uses.reduce((s, u) => s + u.litres, 0);
+          return [
+            nameOf(FUEL_KINDS, x.kind), x.no, x.litres,
+            x.litres < FUEL_LOW ? 'מלאי נמוך' : 'תקין', x.holder || '',
+            x.uses.length, used, x.uses[0] ? fmtDate(x.uses[0].t) : '',
+            x.receipts.length, x.credited ? `כן — ${fmtDate(x.creditedAt)}` : 'לא',
+          ];
+        }),
+      };
+    },
+  },
+
+  fuelUses: {
+    name: 'יומן שימוש בכרטיסי תדלוק', file: 'tzayad-fuel-uses',
+    build() {
+      const uses = ((S.inv && S.inv.fuel) || []).flatMap((c) => c.uses.map((u) => ({ ...u, card: c })));
+      uses.sort((a, b) => b.t - a.t);
+      return {
+        head: ['תאריך', 'מספר כרטיס', 'סוג דלק', 'מי השתמש', 'ליטרים', 'מספר רכב'],
+        rows: uses.map((u) => [
+          fmtDate(u.t), u.card.no, nameOf(FUEL_KINDS, u.card.kind), u.who, u.litres, u.plate || '',
+        ]),
+        summary: `${uses.length} שימושים · ${uses.reduce((s, u) => s + u.litres, 0)} ליטר סה״כ`,
+      };
+    },
+  },
+};
+
+// The two output buttons every report carries, side by side.
+function reportButtons(id, extra = '') {
+  return `
+    <div class="rec-actions mt">
+      <button class="btn ghost" data-act="rep-csv" data-r="${id}">ייצוא ל-CSV</button>
+      <button class="btn ghost" data-act="rep-pdf" data-r="${id}">הפקת PDF</button>
+      ${extra}
+    </div>`;
 }
 
-// The ledger, flattened: one row per soldier, two columns per item.
-function exportLedgerCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const head = [
-    'שם', 'מספר אישי', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
-    ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
-    'סה״כ בחוץ',
-  ];
-  const lines = [head.map(csvCell).join(',')];
-  for (const rec of S.recs) {
-    if (rec.status !== 'approved' || rec.damaged || !rec.data) continue;
-    const d = rec.data;
-    lines.push([
-      d.name, d.pn, deptName(d.dept), d.weapon || '', d.amral || '', d.scope || '',
-      ...ITEMS.flatMap((i) => {
-        const it = d.items[i.id];
-        return it ? [it.t, it.t - (it.r || 0)] : ['', ''];
-      }),
-      outstanding(d),
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-ledger.csv');
+function reportCsv(id) {
+  const def = REPORTS[id];
+  const { head, rows } = def.build();
+  if (!rows.length) { toast('אין נתונים לייצוא', true); return; }
+  if (def.sensitive && !window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
+  if (!def.sensitive && !window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
+  downloadCsv([head, ...rows].map((l) => l.map(csvCell).join(',')), `${def.file}.csv`);
+}
+
+// No PDF library can be loaded under this CSP, and Hebrew needs font embedding,
+// so the report is laid out for print and the browser's "Save as PDF" makes the
+// actual file. Dependency-free, and Hebrew renders correctly.
+function reportPdf(id) {
+  const def = REPORTS[id];
+  const { head, rows, summary } = def.build();
+  if (!rows.length) { toast('אין נתונים להפקה', true); return; }
+  printDoc({
+    title: def.name,
+    meta: `הופק ${fmtDate(Date.now())} · ${rows.length} שורות${S.me ? ` · הופק על ידי ${S.me}` : ''}`,
+    head, rows, summary,
+  });
+}
+
+// Builds the printable sheet: unit emblem, title, repeating table header, a
+// summary line, and a signature block — then hands over to the print dialog.
+function printDoc({ title, meta, head, rows, summary }) {
+  const host = document.createElement('section');
+  host.className = 'printdoc';
+  host.innerHTML = `
+    <header class="pd-head">
+      <img class="pd-logo" src="/logo.png" alt="">
+      <div class="pd-headtxt">
+        <h1 class="pd-title">${esc(title)} — מסייעת 951</h1>
+        <p class="pd-date">${esc(meta)}</p>
+      </div>
+    </header>
+    <table class="pd-tbl">
+      <thead><tr><th class="pd-n">#</th>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${rows.map((r, i) => `<tr>
+          <td class="pd-n">${i + 1}</td>
+          ${r.map((c) => `<td>${esc(c == null ? '' : String(c))}</td>`).join('')}
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    ${summary ? `<p class="pd-summary">${esc(summary)}</p>` : ''}
+    <footer class="pd-foot">
+      <div class="pd-sigs">
+        <div class="pd-sig">
+          <span class="pd-sig-l">שם עורך הדו״ח</span>
+          <span class="pd-sig-line"></span>
+        </div>
+        <div class="pd-sig">
+          <span class="pd-sig-l">חתימה</span>
+          <span class="pd-sig-line"></span>
+        </div>
+        <div class="pd-sig">
+          <span class="pd-sig-l">תאריך</span>
+          <span class="pd-sig-line"></span>
+        </div>
+      </div>
+      <div class="pd-sigs">
+        <div class="pd-sig">
+          <span class="pd-sig-l">שם המאשר / דרגה ותפקיד</span>
+          <span class="pd-sig-line"></span>
+        </div>
+        <div class="pd-sig">
+          <span class="pd-sig-l">חתימה</span>
+          <span class="pd-sig-line"></span>
+        </div>
+        <div class="pd-sig">
+          <span class="pd-sig-l">תאריך</span>
+          <span class="pd-sig-line"></span>
+        </div>
+      </div>
+    </footer>`;
+  document.body.appendChild(host);
+  document.body.classList.add('printing');
+  const cleanup = () => {
+    document.body.classList.remove('printing');
+    host.remove();
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup);
+  window.print();
+  setTimeout(cleanup, 60000);   // belt and braces if afterprint never fires
 }
 
 // Excel-safe CSV cell: always quoted, embedded quotes doubled.
@@ -2485,7 +2812,7 @@ function ledgerPanel(approved) {
              </table>
            </div>
            ${pager('ledger', pgLg)}
-           <button class="btn ghost wide mt" data-act="export-ledger">ייצוא הטבלה ל-CSV</button>`
+           ${reportButtons('ledger')}`
         : '<p class="empty">אין חיילים שתואמים את החיפוש.</p>'}
     </section>`;
 }
@@ -2577,7 +2904,7 @@ function renderInvTab() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <button class="btn ghost wide mt" data-act="inv-export">ייצוא המלאי ל-CSV</button>
+      ${reportButtons('stock')}
     </section>
 
     <section class="panel">
@@ -2598,7 +2925,8 @@ function renderInvTab() {
         : '<p class="empty">אין פריטים נוספים. הוסיפו את הראשון למטה.</p>'}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="inv-xadd">+ הוספת פריט</button>
-        ${inv.extra.length ? '<button class="btn ghost" data-act="inv-xexport">ייצוא ל-CSV</button>' : ''}
+        ${inv.extra.length ? `<button class="btn ghost" data-act="rep-csv" data-r="stockExtra">ייצוא ל-CSV</button>
+             <button class="btn ghost" data-act="rep-pdf" data-r="stockExtra">הפקת PDF</button>` : ''}
       </div>
     </section>
 
@@ -3003,9 +3331,9 @@ function depositsPanel() {
                <tbody>${rows}</tbody>
              </table>
            </div>
-           ${pager('deps', p)}
-           <button class="btn ghost wide mt" data-act="dep-export">ייצוא בקשות האפסון ל-CSV</button>`
+           ${pager('deps', p)}`
         : `<p class="empty">${all.length ? 'אין בקשה שתואמת את החיפוש והסינון.' : 'אין בקשות אפסון.'}</p>`}
+      ${all.length ? reportButtons('deposits') : ''}
     </section>`;
 }
 
@@ -3068,24 +3396,6 @@ const depApprove = (id) =>
     }
     toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון`);
   });
-
-function exportDepCsv() {
-  const rows = depositReports();
-  if (!rows.length) { toast('אין בקשות אפסון לייצוא', true); return; }
-  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const lines = [
-    ['נשלח', 'שם החייל', 'מספר אישי', 'טלפון', 'מספר נשק', 'מק״ט אמר״ל', 'מק״ט כוונת יום', 'סטטוס']
-      .map(csvCell).join(','),
-  ];
-  for (const r of rows) {
-    const d = r.data;
-    lines.push([
-      fmtDate(d.createdAt), d.name, d.pn, d.phone, d.weapon,
-      d.amral || '', d.scope || '', r.status === 'done' ? 'אושר ונקלט' : 'ממתין לאישור',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-deposits.csv');
-}
 
 function armonVisible() {
   const rows = (S.inv && S.inv.armon) || [];
@@ -3210,7 +3520,8 @@ function renderArmonTab() {
            </div>
            ${pager('armon', p)}
            <div class="rec-actions mt">
-             <button class="btn ghost" data-act="arm-export">ייצוא ל-CSV</button>
+             <button class="btn ghost" data-act="rep-csv" data-r="armon">ייצוא ל-CSV</button>
+             <button class="btn ghost" data-act="rep-pdf" data-r="armon">הפקת PDF</button>
              <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
            </div>`
         : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'הארמון ריק. הוסיפו פריט למעלה.'}</p>`}
@@ -3229,7 +3540,7 @@ function renderArmonTab() {
                <tbody>${logRows}</tbody>
              </table>
            </div>
-           <button class="btn ghost wide mt" data-act="arm-log-export">ייצוא היומן ל-CSV</button>`
+           ${reportButtons('armonLog')}`
         : '<p class="empty">טרם בוצעו פעולות.</p>'}
     </section>`;
 }
@@ -3302,9 +3613,9 @@ function renderTzelemTab() {
              </table>
            </div>
            <div class="rec-actions mt">
-             <button class="btn primary" data-act="tz-pdf">הפקת PDF</button>
+             <button class="btn primary" data-act="rep-pdf" data-r="tzelem">הפקת PDF</button>
              <button class="btn wa ghost-wa" data-act="tz-wa">שליחת סיכום בוואטסאפ</button>
-             <button class="btn ghost" data-act="tz-export">ייצוא ל-CSV</button>
+             <button class="btn ghost" data-act="rep-csv" data-r="tzelem">ייצוא ל-CSV</button>
            </div>
            <p class="field-hint mt center">"הפקת PDF" פותחת את חלון ההדפסה — בחרו <strong>שמירה כ-PDF</strong>. וואטסאפ מקבל טקסט בלבד, ולכן הכפתור שולח סיכום ומצרפים את ה-PDF ידנית.</p>`
         : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'אין פריטים להצגה בדו״ח.'}</p>`}
@@ -3378,7 +3689,7 @@ function renderAmmoTab() {
                <tbody>${rows}</tbody>
              </table>
            </div>
-           <button class="btn ghost wide mt" data-act="ammo-export">ייצוא ל-CSV</button>`
+           ${reportButtons('ammo')}`
         : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'המלאי ריק. הוסיפו פריט למעלה.'}</p>`}
     </section>
 
@@ -3391,7 +3702,7 @@ function renderAmmoTab() {
                <tbody>${logRows}</tbody>
              </table>
            </div>
-           <button class="btn ghost wide mt" data-act="ammo-log-export">ייצוא היומן ל-CSV</button>`
+           ${reportButtons('ammoLog')}`
         : '<p class="empty">טרם בוצעו תנועות.</p>'}
     </section>`;
 }
@@ -3463,7 +3774,8 @@ function renderVehTab() {
         : `<p class="empty">${all.length ? 'אין רכב שתואם את החיפוש.' : 'אין רכבים. הוסיפו את הראשון למטה.'}</p>`}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="veh-add">+ הוספת רכב</button>
-        <button class="btn ghost" data-act="veh-export">ייצוא ל-CSV</button>
+        <button class="btn ghost" data-act="rep-csv" data-r="vehicles">ייצוא ל-CSV</button>
+        <button class="btn ghost" data-act="rep-pdf" data-r="vehicles">הפקת PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
     </section>
@@ -3571,8 +3883,10 @@ function fuelPanel() {
         : `<p class="empty">${all.length ? 'אין כרטיס שתואם את החיפוש.' : 'אין כרטיסי תדלוק. הוסיפו את הראשון למטה.'}</p>`}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="fuel-add">+ הוספת כרטיס</button>
-        <button class="btn ghost" data-act="fuel-export">ייצוא הכרטיסים ל-CSV</button>
-        <button class="btn ghost" data-act="fuel-uses-export">ייצוא יומן השימושים ל-CSV</button>
+        <button class="btn ghost" data-act="rep-csv" data-r="fuel">כרטיסים — CSV</button>
+        <button class="btn ghost" data-act="rep-pdf" data-r="fuel">כרטיסים — PDF</button>
+        <button class="btn ghost" data-act="rep-csv" data-r="fuelUses">יומן שימושים — CSV</button>
+        <button class="btn ghost" data-act="rep-pdf" data-r="fuelUses">יומן שימושים — PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
     </section>`;
@@ -3777,77 +4091,6 @@ function fuelCredit(i) {
   invSave();
 }
 
-// The stock table, exactly as the page computes it — opening stock less what
-// the approved sign-outs still hold.
-function exportInvCsv() {
-  const inv = S.inv || emptyInv();
-  const iss = issuedTotals();
-  const lines = [
-    ['פריט', 'מלאי פתיחה', 'אצל חיילים', 'נותר במחסן', 'סטטוס'].map(csvCell).join(','),
-  ];
-  for (const item of ITEMS) {
-    const open = Number(inv.open[item.id]) || 0;
-    const held = iss[item.id].t - iss[item.id].r;
-    const left = open - held;
-    lines.push([
-      item.name, open, held, left,
-      left < 0 ? 'חוסר' : left === 0 ? 'אזל' : 'תקין',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-stock.csv');
-}
-
-function exportInvExtraCsv() {
-  const rows = (S.inv && S.inv.extra) || [];
-  if (!rows.length) { toast('אין פריטים נוספים לייצוא', true); return; }
-  const lines = [['פריט', 'סה״כ', 'בשימוש', 'נותר', 'סטטוס'].map(csvCell).join(',')];
-  for (const x of rows) {
-    const open = Number(x.open) || 0;
-    const out = Number(x.out) || 0;
-    lines.push([
-      x.name, open, out, open - out, open - out < 0 ? 'חוסר' : 'תקין',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-stock-extra.csv');
-}
-
-function exportFuelCsv() {
-  const rows = (S.inv && S.inv.fuel) || [];
-  if (!rows.length) { toast('אין כרטיסים לייצוא', true); return; }
-  const lines = [
-    ['סוג כרטיס', 'מספר כרטיס', 'ליטרים שנותרו', 'סטטוס', 'אצל מי',
-      'שימושים', 'ליטרים שנוצלו', 'שימוש אחרון', 'מספר קבלות', 'זוכה אצל קצין רכב']
-      .map(csvCell).join(','),
-  ];
-  for (const x of rows) {
-    const used = x.uses.reduce((s, u) => s + u.litres, 0);
-    lines.push([
-      nameOf(FUEL_KINDS, x.kind), x.no, x.litres,
-      x.litres < FUEL_LOW ? 'מלאי נמוך' : 'תקין', x.holder || '',
-      x.uses.length, used, x.uses[0] ? fmtDate(x.uses[0].t) : '',
-      x.receipts.length, x.credited ? `כן — ${fmtDate(x.creditedAt)}` : 'לא',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-fuel.csv');
-}
-
-// Flat movement log across every card, so "who used what, when" is one export.
-function exportFuelUsesCsv() {
-  const rows = (S.inv && S.inv.fuel) || [];
-  const uses = rows.flatMap((c) => c.uses.map((u) => ({ ...u, card: c })));
-  if (!uses.length) { toast('לא נרשמו שימושים', true); return; }
-  uses.sort((a, b) => b.t - a.t);
-  const lines = [
-    ['תאריך', 'מספר כרטיס', 'סוג דלק', 'מי השתמש', 'ליטרים', 'מספר רכב'].map(csvCell).join(','),
-  ];
-  for (const u of uses) {
-    lines.push([
-      fmtDate(u.t), u.card.no, nameOf(FUEL_KINDS, u.card.kind), u.who, u.litres, u.plate || '',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-fuel-uses.csv');
-}
-
 /* ── Armoury / ammunition / vehicle actions ───────────────────────── */
 
 const logPush = (key, entry) => {
@@ -3932,126 +4175,7 @@ function ammoMove(i, issue) {
 
 /* — exports — */
 
-function exportArmonCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [
-    ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה', 'תאריך הוספה'].map(csvCell).join(','),
-  ];
-  for (const x of S.inv.armon || []) {
-    lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
-      x.loc === 'mission' ? (x.mission || '(ללא שם)') : '',
-      x.addedAt ? fmtDate(x.addedAt) : ''].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-armon.csv');
-}
-
-function exportArmLogCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'יעד', 'הערה'].map(csvCell).join(',')];
-  for (const e of S.inv.armonLog || []) {
-    lines.push([fmtDate(e.t), e.action === 'add' ? 'הוספה' : 'הסרה', nameOf(ARM_KINDS, e.kind),
-      e.name, e.serial, e.owner, e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-armon-log.csv');
-}
-
-function exportTzelemCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [
-    ['דו״ח צלם', fmtDate(Date.now())].map(csvCell).join(','),
-    '',
-    ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה'].map(csvCell).join(','),
-  ];
-  for (const x of tzelemScope()) {
-    lines.push([nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
-      x.loc === 'mission' ? (x.mission || '(ללא שם)') : ''].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-tzelem.csv');
-}
-
-function exportAmmoCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [['פריט', 'כמות'].map(csvCell).join(',')];
-  for (const x of S.inv.ammo || []) lines.push([x.name, x.qty].map(csvCell).join(','));
-  downloadCsv(lines, 'tzayad-ammo.csv');
-}
-
-function exportAmmoLogCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const lines = [['תאריך', 'פעולה', 'פריט', 'כמות', 'יעד', 'למי'].map(csvCell).join(',')];
-  for (const e of S.inv.ammoLog || []) {
-    lines.push([fmtDate(e.t), e.action === 'add' ? 'כניסה' : 'הוצאה', e.name, e.qty,
-      e.dest ? nameOf(AMMO_DESTS, e.dest) : '', e.who].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-ammo-log.csv');
-}
-
-function exportVehCsv() {
-  if (!window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
-  const today = new Date().toISOString().slice(0, 10);
-  const lines = [
-    ['מספר רכב', 'חברת השכרה', 'ק״מ עדכני', 'מועד טיפול', 'קוד קודן', 'קוד דלקן',
-      ...VEH_KIT.map((k) => k.name), 'סטטוס'].map(csvCell).join(','),
-  ];
-  for (const v of S.inv.vehicles || []) {
-    const late = v.service && v.service < today;
-    const missing = VEH_KIT.filter((k) => !v[k.id]);
-    lines.push([
-      v.plate, v.company, v.km, v.service ? fmtDay(v.service) : '', v.code || '', v.fuelCode || '',
-      ...VEH_KIT.map((k) => (v[k.id] ? 'כן' : 'לא')),
-      late ? 'טיפול עבר' : missing.length ? `חסר: ${missing.map((k) => k.name).join(', ')}` : 'תקין',
-    ].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-vehicles.csv');
-}
-
 /* — Tzelem PDF + WhatsApp summary — */
-
-// No PDF library can be loaded under this CSP, and Hebrew needs font embedding,
-// so the report is laid out for print and the browser's "Save as PDF" makes the
-// actual file. That keeps it dependency-free and renders Hebrew correctly.
-function tzelemPdf() {
-  const rows = tzelemScope();
-  if (!rows.length) { toast('אין פריטים להפקה', true); return; }
-  const host = document.createElement('section');
-  host.className = 'printdoc';
-  host.innerHTML = `
-    <header class="pd-head">
-      <img class="pd-logo" src="/logo.png" alt="">
-      <div>
-        <h1 class="pd-title">דו״ח צלם — מסייעת 951</h1>
-        <p class="pd-date">הופק ${esc(fmtDate(Date.now()))} · ${rows.length} פריטים</p>
-      </div>
-    </header>
-    <table class="pd-tbl">
-      <thead><tr><th>#</th><th>סוג</th><th>פריט</th><th>מספר סידורי</th><th>בעלים</th><th>מיקום</th><th>משימה</th></tr></thead>
-      <tbody>
-        ${rows.map((x, i) => `<tr>
-          <td>${i + 1}</td>
-          <td>${esc(nameOf(ARM_KINDS, x.kind))}</td>
-          <td>${esc(x.name)}</td>
-          <td>${esc(x.serial)}</td>
-          <td>${esc(x.owner)}</td>
-          <td>${esc(nameOf(ARM_LOCS, x.loc))}</td>
-          <td>${x.loc === 'mission' ? esc(x.mission || '(ללא שם)') : '—'}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
-    <footer class="pd-foot">
-      ${ARM_LOCS.map((l) => `${l.name}: ${rows.filter((x) => x.loc === l.id).length}`).join(' · ')}
-      <span class="pd-sign">חתימת אחראי: ____________________</span>
-    </footer>`;
-  document.body.appendChild(host);
-  document.body.classList.add('printing');
-  const cleanup = () => {
-    document.body.classList.remove('printing');
-    host.remove();
-    window.removeEventListener('afterprint', cleanup);
-  };
-  window.addEventListener('afterprint', cleanup);
-  window.print();
-  setTimeout(cleanup, 60000);   // belt and braces if afterprint never fires
-}
 
 function tzelemWa() {
   const rows = tzelemScope();
@@ -4301,7 +4425,7 @@ function renderFaultsTab() {
       <div class="filters">${filters}</div>
       ${cards || '<p class="empty">אין תקלות שתואמות את החיפוש והסינון.</p>'}
       ${pager('faults', p)}
-      ${all.length ? '<button class="btn ghost wide mt" data-act="flt-export">ייצוא התקלות ל-CSV</button>' : ''}
+      ${all.length ? reportButtons('faults') : ''}
     </section>`;
 }
 
@@ -4323,108 +4447,6 @@ const fltSetState = (id, next) =>
       : next === 'partial' ? 'סומן כהועבר לטיפול'
       : 'הוחזר למצב פתוח');
   });
-
-function exportFaultsCsv() {
-  const rows = faultReports();
-  if (!rows.length) { toast('אין תקלות לייצוא', true); return; }
-  if (!window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const lines = [
-    ['דווח', 'שם המדווח', 'טלפון', 'סטטוס', 'תיאור התקלה'].map(csvCell).join(','),
-  ];
-  for (const r of rows) {
-    const d = r.data;
-    const st = r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open';
-    lines.push([fmtDate(d.createdAt), d.name, d.phone, FLT_LABEL[st], d.text].map(csvCell).join(','));
-  }
-  downloadCsv(lines, 'tzayad-faults.csv');
-}
-
-// Users. Every account carries its own copy of the private key, wrapped under
-// its own password — which is why an account can only be created while an
-// admin is signed in and holding the unwrapped key in memory.
-function usersPanel() {
-  const rows = S.users.map((u) => {
-    const isMe = u.username === S.me;
-    const screens = u.role === 'admin'
-      ? '<span class="ok">כל המסכים</span>'
-      : tabsLabel(u.tabs);
-    return `<tr>
-      <td class="lg-name">${esc(u.username)}${isMe ? ' <span class="tagi">אתם</span>' : ''}</td>
-      <td><span class="state ${u.role === 'admin' ? 'done' : 'wait'}">${u.role === 'admin' ? 'מנהל' : 'צפייה בלבד'}</span></td>
-      <td class="screens">${screens}</td>
-      <td class="num">${u.last_seen ? esc(fmtDate(u.last_seen)) : '—'}</td>
-      <td class="nowrap">
-        ${u.role === 'viewer'
-          ? `<button class="btn ghost small" data-act="user-screens" data-u="${esc(u.username)}">שינוי מסכים</button>`
-          : ''}
-        <button class="btn ghost small" data-act="user-pw" data-u="${esc(u.username)}">החלפת סיסמה</button>
-        ${isMe ? '' : `<button class="linkbtn danger-link" data-act="user-del" data-u="${esc(u.username)}">מחיקה</button>`}
-      </td>
-    </tr>`;
-  }).join('');
-
-  const picks = TABS.filter((t) => !t.adminOnly).map((t) => `
-    <label class="screenpick ${S.userTabs.has(t.id) ? 'on' : ''}">
-      <input type="checkbox" class="kitbox" data-act="utab" data-t="${t.id}"
-             ${S.userTabs.has(t.id) ? 'checked' : ''}>
-      <span>${esc(t.name)}</span>
-    </label>`).join('');
-
-  return `
-    <section class="panel">
-      <h2 class="panel-title">משתמשים</h2>
-      <p class="panel-sub">מנהל רואה ועושה הכול. משתמש צפייה רואה רק את המסכים שסימנתם לו, ואינו יכול לאשר, לערוך או למחוק דבר.</p>
-      <div class="tbl-scroll">
-        <table class="tbl">
-          <thead><tr><th>שם משתמש</th><th>הרשאה</th><th>מסכים</th><th class="num">כניסה אחרונה</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2 class="panel-title">הוספת משתמש</h2>
-      <p class="panel-sub">שם משתמש באותיות אנגליות קטנות, ספרות, נקודה, מקף או קו תחתון. סמנו אילו מסכים המשתמש יראה.</p>
-      <form data-form="user-add" novalidate>
-        <div class="grid2">
-          <label class="field">
-            <span class="field-label">שם משתמש <span class="req">*</span></span>
-            <input class="input" name="username" maxlength="31" spellcheck="false"
-                   placeholder="sagan.a" required>
-          </label>
-          <label class="field">
-            <span class="field-label">סיסמה (10 תווים לפחות) <span class="req">*</span></span>
-            <input class="input" type="password" name="pw" autocomplete="new-password" required>
-          </label>
-        </div>
-        <fieldset class="lic-set">
-          <legend class="field-label">מסכים מותרים <span class="req">*</span></legend>
-          <div class="screenpicks">${picks}</div>
-          <div class="rec-actions mt">
-            <button class="btn ghost small" type="button" data-act="utab-all">סימון הכול</button>
-            <button class="btn ghost small" type="button" data-act="utab-none">ניקוי</button>
-          </div>
-          <span class="field-hint">שימו לב: מסך הסקירה מציג נתונים מכל המקורות, ולכן סימונו נותן גישה לכל המידע.</span>
-        </fieldset>
-        <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">יצירת משתמש צפייה</button>
-      </form>
-    </section>
-
-    <div class="callout risk">
-      <p class="callout-title">מה הרשאת הצפייה כן עושה ומה לא</p>
-      <p>המערכת מוצפנת מקצה לקצה, ולכן לכל משתמש יש עותק משלו של מפתח הפענוח. במסכים שהוא כן רואה — הוא רואה <strong>הכול</strong>: שמות, טלפונים, מספרים אישיים וצילומי רישיונות.</p>
-      <p class="mb0">מה שהוא לא יכול: <strong>לשנות שום דבר</strong>, ולא למשוך נתונים ממסכים שלא סומנו לו — השרת דוחה גם את בקשות הכתיבה וגם את בקשות המידע שמחוץ להרשאה, לא רק מסתיר כפתורים. מסכים שחולקים מקור מידע אחד אינם ניתנים להפרדה עדינה יותר.</p>
-    </div>`;
-}
-
-function tabsLabel(tabs) {
-  if (tabs === '*') return '<span class="ok">כל המסכים</span>';
-  let list = [];
-  try { list = JSON.parse(tabs) || []; } catch { list = []; }
-  if (!list.length) return '<span class="bad">ללא מסכים</span>';
-  return list.map((t) => `<span class="chip">${esc(tabName(t))}</span>`).join(' ');
-}
 
 function renderSecurityTab() {
   return `
@@ -5243,41 +5265,6 @@ const adminWipe = () =>
 
 /* — CSV export — */
 
-function exportCsv() {
-  if (!window.confirm('שימו לב: קובץ הייצוא אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  const q = csvCell;
-  const head = [
-    'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
-    ...ITEMS.flatMap((i) => [`${i.name} נלקח`, `${i.name} הוחזר`]),
-    'רישיון אזרחי', 'רישיון צבאי',
-    'סטטוס', 'נשלח', 'אושר',
-  ];
-  const licCell = (d, kind) => {
-    const l = (d.lic || {})[kind];
-    if (!l || !l.has) return '';
-    return l.doc ? 'כן (עם צילום)' : 'כן';
-  };
-  const lines = [head.map(q).join(',')];
-  for (const rec of S.recs) {
-    if (rec.damaged) continue;
-    const d = rec.data;
-    lines.push(
-      [
-        d.pn, d.name, d.phone, deptName(d.dept), d.weapon || '', d.amral || '', d.scope || '',
-        ...ITEMS.flatMap((i) => {
-          const it = d.items[i.id];
-          return it ? [it.t, it.r || 0] : ['', ''];
-        }),
-        licCell(d, 'civil'), licCell(d, 'military'),
-        rec.status === 'approved' ? 'מאושר' : 'ממתין',
-        fmtDate(d.createdAt),
-        d.approvedAt ? fmtDate(d.approvedAt) : '',
-      ].map(q).join(',')
-    );
-  }
-  downloadCsv(lines, 'tzayad-export.csv');
-}
-
 /* ── Event delegation ──────────────────────────────────────────────── */
 
 $app.addEventListener('click', (e) => {
@@ -5440,6 +5427,9 @@ function dispatch(act, el) {
     // admin console
     case 'tab': S.tab = el.dataset.tab; renderConsole(); break;
     case 'filter': S.filter = el.dataset.filter; S.page = {}; renderConsole(); break;
+    // reports — one definition, two outputs
+    case 'rep-csv': reportCsv(el.dataset.r); break;
+    case 'rep-pdf': reportPdf(el.dataset.r); break;
     case 'refresh': adminRefresh(); break;
     case 'lock': lock(); break;
     case 'reveal':
@@ -5452,10 +5442,6 @@ function dispatch(act, el) {
     case 'credit': adminCredit(rid, item, d); break;
     case 'creditall': adminCreditAll(rid); break;
     case 'del': adminDelete(rid); break;
-    case 'export': exportCsv(); break;
-    case 'export-weapons': exportWeaponsCsv(); break;
-    case 'export-lic': exportLicCsv(); break;
-    case 'export-ledger': exportLedgerCsv(); break;
     case 'wipe': adminWipe(); break;
     // search & grouping
     case 'dept': S.dept = el.dataset.dept; S.page = {}; renderConsole(); break;
@@ -5485,22 +5471,16 @@ function dispatch(act, el) {
     // armoury
     case 'arm-kind': S.armKind = el.dataset.k; S.page = {}; renderConsole(); break;
     case 'arm-remove': armRemove(+el.dataset.i); break;
-    case 'arm-export': exportArmonCsv(); break;
-    case 'arm-log-export': exportArmLogCsv(); break;
     case 'arm-qclear': S.regQ = { ...S.regQ, armon: '' }; S.page = {}; renderConsole(); break;
     // tzelem report
     case 'tz-qclear': S.regQ = { ...S.regQ, tzelem: '' }; renderConsole(); break;
-    case 'tz-pdf': tzelemPdf(); break;
     case 'tz-wa': tzelemWa(); break;
-    case 'tz-export': exportTzelemCsv(); break;
     // ammunition
     case 'ammo-issue': ammoMove(+el.dataset.i, true); break;
     case 'ammo-add-qty': ammoMove(+el.dataset.i, false); break;
     case 'ammo-del':
       if (window.confirm('למחוק את הפריט מהמלאי?')) { S.inv.ammo.splice(+el.dataset.i, 1); invSave(); }
       break;
-    case 'ammo-export': exportAmmoCsv(); break;
-    case 'ammo-log-export': exportAmmoLogCsv(); break;
     case 'ammo-qclear': S.regQ = { ...S.regQ, ammo: '' }; renderConsole(); break;
     // vehicles
     case 'veh-add':
@@ -5516,7 +5496,6 @@ function dispatch(act, el) {
       S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked;
       renderConsole();
       break;
-    case 'veh-export': exportVehCsv(); break;
     case 'veh-qclear': S.regQ = { ...S.regQ, veh: '' }; renderConsole(); break;
     // fuel cards
     case 'fuel-add':
@@ -5549,10 +5528,6 @@ function dispatch(act, el) {
       renderConsole();
       break;
     }
-    case 'fuel-export': exportFuelCsv(); break;
-    case 'fuel-uses-export': exportFuelUsesCsv(); break;
-    case 'inv-export': exportInvCsv(); break;
-    case 'inv-xexport': exportInvExtraCsv(); break;
     case 'fuel-qclear': S.regQ = { ...S.regQ, fuel: '' }; renderConsole(); break;
     case 'page':
       S.page = { ...S.page, [el.dataset.key]: parseInt(el.dataset.page, 10) };
@@ -5617,12 +5592,10 @@ function dispatch(act, el) {
     case 'dep-again': S.depSent = false; S.dep = null; renderDeposit(); break;
     case 'dep-filter': S.depFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'dep-approve': depApprove(el.dataset.id); break;
-    case 'dep-export': exportDepCsv(); break;
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
-    case 'flt-export': exportFaultsCsv(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;

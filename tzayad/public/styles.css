@@ -548,6 +548,12 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .console { display: block; }
 .cmain { min-width: 0; }
 
+/* A wide table scrolls inside its own .tbl-scroll box. In RTL that overflow
+   still extends the document's scrollable area leftwards, which drags the
+   whole page sideways on a phone. `clip` stops it propagating without making
+   a scroll container, so sticky positioning inside still works. */
+.panel, .cmain, .console { overflow-x: clip; }
+
 /* mobile: nav is a horizontal rail that scrolls */
 .side { margin-bottom: 14px; }
 .navlist {
@@ -1408,7 +1414,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .kitbox { width: 20px; height: 20px; accent-color: var(--pine); cursor: pointer; }
 
-/* ── Print document (Tzelem report → Save as PDF) ──────────────────── */
+/* ── Print document (any report → Save as PDF) ─────────────────────── */
 .printdoc { display: none; }
 
 @media print {
@@ -1421,7 +1427,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
     color: #000;
     font-size: 11pt;
   }
-  @page { size: A4; margin: 14mm; }
+  @page { size: A4 landscape; margin: 12mm; }
 
   .pd-head {
     display: flex;
@@ -1432,30 +1438,49 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
     margin-bottom: 12px;
   }
   .pd-logo { width: 54px; height: 54px; border-radius: 50%; }
+  .pd-headtxt { flex: 1; }
   .pd-title { font-size: 17pt; font-weight: 800; margin: 0; }
   .pd-date { font-size: 10pt; margin: 2px 0 0; }
 
-  .pd-tbl { width: 100%; border-collapse: collapse; }
+  .pd-tbl { width: 100%; border-collapse: collapse; table-layout: auto; }
   .pd-tbl th, .pd-tbl td {
     border: 1px solid #666;
-    padding: 5px 7px;
+    padding: 4px 6px;
     text-align: right;
-    font-size: 10pt;
+    font-size: 9pt;
+    word-break: break-word;
   }
   .pd-tbl thead th { background: #e8e8e8; font-weight: 700; }
   .pd-tbl thead { display: table-header-group; }   /* repeat header per page */
   .pd-tbl tr { break-inside: avoid; }
+  .pd-tbl tbody tr:nth-child(even) td { background: #f4f4f4; }
+  .pd-n { width: 32px; text-align: center; color: #444; }
 
-  .pd-foot {
-    margin-top: 14px;
-    padding-top: 8px;
-    border-top: 1px solid #666;
+  .pd-summary {
+    margin-top: 10px;
+    padding: 6px 8px;
+    border: 1px solid #666;
+    background: #f0f0f0;
     font-size: 10pt;
-    display: flex;
-    justify-content: space-between;
-    gap: 20px;
+    font-weight: 700;
   }
-  .pd-sign { white-space: nowrap; }
+
+  /* Signature block: kept whole on one page, so a report never ends with a
+     dangling signature line on a sheet of its own. */
+  .pd-foot {
+    margin-top: 20px;
+    padding-top: 10px;
+    border-top: 1px solid #666;
+    break-inside: avoid;
+  }
+  .pd-sigs {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 18px;
+  }
+  .pd-sig { flex: 1; }
+  .pd-sig-l { display: block; font-size: 9pt; margin-bottom: 20px; }
+  .pd-sig-line { display: block; border-bottom: 1px solid #000; height: 0; }
 }
 
 /* ── Users & screen permissions ────────────────────────────────────── */
