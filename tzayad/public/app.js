@@ -328,6 +328,7 @@ const cleanAmmoLog = (x) => ({
   action: (x && x.action) === 'issue' ? 'issue' : 'add',
   name: asText(x && x.name, 60),
   qty: asCount(x && x.qty),
+  note: asText(x && x.note, 120),
   dest: asText(x && x.dest, 20),
   who: asText(x && x.who, 60),
 });
@@ -561,6 +562,8 @@ const S = {
   audit: null,                  // admin action log, loaded on demand
   userTabs: new Set(),          // screens ticked in the new-user form
   userRole: 'editor',           // permission chosen in the new-user form
+  userEdit: null,               // username whose inline editor is open
+  userEditDraft: null,          // that editor's pending changes
   priv: null,                   // CryptoKey (RSA private)
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
@@ -582,6 +585,8 @@ const S = {
   revealed: new Set(),          // rids with phone shown
   fuelOpen: new Set(),          // fuel card ids with their detail row expanded
   ammoDraft: {},                // per-row movement being composed in the ammo table
+  fuelDraft: {},                // per-row refuelling being composed in the fuel table
+  armDraft: {},                 // per-row removal being composed in the armoury table
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
@@ -625,6 +630,8 @@ function lock() {
   S.users = [];
   S.trash = null;
   S.audit = null;
+  S.userEdit = null;
+  S.userEditDraft = null;
   S.revealed.clear();
   S.fuelOpen.clear();
   S.expanded.clear();
@@ -2696,10 +2703,10 @@ const REPORTS = {
   ammoLog: {
     name: 'יומן תנועות תחמושת', file: 'tzayad-ammo-log',
     build: () => ({
-      head: ['תאריך', 'פעולה', 'פריט', 'כמות', 'יעד', 'למי'],
+      head: ['תאריך', 'פעולה', 'פריט', 'כמות', 'יעד', 'למי', 'הערה'],
       rows: ((S.inv && S.inv.ammoLog) || []).map((e) => [
         fmtDate(e.t), e.action === 'add' ? 'כניסה' : 'הוצאה', e.name, e.qty,
-        e.dest ? nameOf(AMMO_DESTS, e.dest) : '', e.who,
+        e.dest ? nameOf(AMMO_DESTS, e.dest) : '', e.who, e.note || '',
       ]),
     }),
   },
@@ -3567,7 +3574,17 @@ function renderArmonTab() {
           : ''}
       </td>
       <td class="num">${x.addedAt ? esc(fmtDay(new Date(x.addedAt).toISOString().slice(0, 10))) : '—'}</td>
-      <td><button class="btn danger small" data-act="arm-remove" data-i="${i}">הסרה</button></td>
+      <td>
+        <select class="input mini select-mini" data-act="arm-dest" data-id="${esc(x.id)}" aria-label="לאן מועבר">
+          <option value="">להסרה — לאן?</option>
+          ${ARM_DESTS.map((dd) => `<option value="${dd.id}"${(S.armDraft[x.id] || {}).dest === dd.id ? ' selected' : ''}>${esc(dd.name)}</option>`).join('')}
+        </select>
+        ${(S.armDraft[x.id] || {}).dest ? `
+          <input class="input mini mt-xs" type="text" maxlength="120"
+                 value="${esc((S.armDraft[x.id] || {}).note || '')}"
+                 data-act="arm-note" data-id="${esc(x.id)}" placeholder="הערה (רשות)" aria-label="הערה">
+          <button class="btn danger small mt-xs" data-act="arm-remove" data-i="${i}">אישור הסרה</button>` : ''}
+      </td>
     </tr>`;
   const rows = p.slice.map(armRow).join('');
   const rowsOut = pOut.slice.map(armRow).join('');
@@ -3803,6 +3820,10 @@ function renderAmmoTab() {
                value="${esc(draft.who)}" data-act="ammo-who" data-id="${esc(x.id)}"
                placeholder="${dest.id === 'soldier' ? 'שם החייל' : 'שם המשימה'}" aria-label="למי">`}
       </td>
+      <td>
+        <input class="input mini" type="text" maxlength="120" value="${esc(draft.note || '')}"
+               data-act="ammo-note" data-id="${esc(x.id)}" placeholder="הערה חופשית" aria-label="הערה">
+      </td>
       <td class="num">
         <input class="input mini num" type="text" inputmode="numeric" maxlength="6"
                value="${esc(draft.qty)}" data-act="ammo-qty" data-id="${esc(x.id)}"
@@ -3824,6 +3845,7 @@ function renderAmmoTab() {
       <td class="num">${e.qty}</td>
       <td>${e.dest ? esc(nameOf(AMMO_DESTS, e.dest)) : '—'}</td>
       <td>${esc(e.who || '')}</td>
+      <td>${esc(e.note || '')}</td>
     </tr>`).join('');
 
   return `
@@ -3863,7 +3885,7 @@ function renderAmmoTab() {
              <table class="tbl">
                <thead><tr>
                  <th>פריט</th><th class="num">כמות התחלתית</th><th class="num">כמות נוכחית</th>
-                 <th class="num">נוצל</th><th>יעד</th><th class="num">כמות</th><th></th>
+                 <th class="num">נוצל</th><th>יעד</th><th>הערה</th><th class="num">כמות</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -3877,7 +3899,7 @@ function renderAmmoTab() {
       ${log.length
         ? `<div class="tbl-scroll">
              <table class="tbl">
-               <thead><tr><th class="num">תאריך</th><th>פעולה</th><th>פריט</th><th class="num">כמות</th><th>יעד</th><th>למי</th></tr></thead>
+               <thead><tr><th class="num">תאריך</th><th>פעולה</th><th>פריט</th><th class="num">כמות</th><th>יעד</th><th>למי</th><th>הערה</th></tr></thead>
                <tbody>${logRows}</tbody>
              </table>
            </div>
@@ -3984,6 +4006,7 @@ function fuelPanel() {
 
   const rows = p.slice.map(({ x, i }) => {
     const open = S.fuelOpen.has(x.id);
+    const draft = S.fuelDraft[x.id] || {};
     const n = x.receipts.length;
     return `<tr${x.litres < FUEL_LOW ? ' class="row-short"' : ''}>
       <td>
@@ -4001,11 +4024,20 @@ function fuelPanel() {
       <td><input class="input mini num" type="text" inputmode="numeric" maxlength="5" value="${x.litres}"
                  data-act="fuel-litres" data-i="${i}" aria-label="ליטרים שנותרו"></td>
       <td class="${x.litres < FUEL_LOW ? 'bad' : 'ok'}">${x.litres < FUEL_LOW ? '⚠ מלאי נמוך' : '✓ תקין'}</td>
-      <td class="nowrap">
-        <button class="btn ghost small" data-act="fuel-use" data-i="${i}">+ רישום שימוש</button>
+      <td>
+        <input class="input mini" type="text" maxlength="60" value="${esc(draft.who || '')}"
+               data-act="fuel-use-who" data-id="${esc(x.id)}" placeholder="מי השתמש" aria-label="מי השתמש">
+        <div class="cellrow mt-xs">
+          <input class="input mini num" type="text" inputmode="numeric" maxlength="5"
+                 value="${esc(draft.litres || '')}" data-act="fuel-use-litres" data-id="${esc(x.id)}"
+                 placeholder="ליטר" aria-label="ליטרים">
+          <input class="input mini num" type="text" maxlength="20" value="${esc(draft.plate || '')}"
+                 data-act="fuel-use-plate" data-id="${esc(x.id)}" placeholder="רכב" aria-label="מספר רכב">
+        </div>
+        <button class="btn ghost small mt-xs" data-act="fuel-use" data-i="${i}">רישום שימוש</button>
         ${x.uses.length
           ? `<button class="linkbtn" data-act="fuel-open" data-id="${esc(x.id)}">${open ? 'סגירה' : `${x.uses.length} שימושים`}</button>`
-          : '<span class="muted-txt">טרם נעשה שימוש</span>'}
+          : ''}
       </td>
       <td class="nowrap">
         <label class="linkbtn">📷 צילום
@@ -4251,21 +4283,23 @@ const fuelDownloadAll = (i) =>
     toast(`${card.receipts.length} קבלות הורדו`);
   });
 
-// Who took the card out and how much they burned. Deducting the litres here is
-// what keeps the remaining balance honest without a second manual edit.
+// Who took the card out and how much they burned. The details are typed into
+// the row itself, so recording a refuelling is one line of the table rather
+// than a chain of dialogs.
 function fuelUse(i) {
   const card = (S.inv.fuel || [])[i];
   if (!card) return;
-  const who = window.prompt('מי השתמש בכרטיס? (שם מלא)', card.holder === FUEL_OFFICE ? '' : card.holder);
-  if (who === null) return;
-  if (who.trim().length < 2) { toast('נא למלא שם', true); return; }
-  const raw = window.prompt('כמה ליטרים תודלקו?', '');
-  if (raw === null) return;
-  const litres = Math.max(0, Math.min(99999, parseInt(String(raw).replace(/\D/g, ''), 10) || 0));
+  const d = S.fuelDraft[card.id] || {};
+  const who = (d.who || '').trim();
+  const litres = Math.max(0, Math.min(99999, parseInt(String(d.litres || '').replace(/\D/g, ''), 10) || 0));
+  if (who.length < 2) { toast('נא למלא מי השתמש בכרטיס', true); return; }
   if (!litres) { toast('נא למלא כמות ליטרים', true); return; }
-  const plate = (window.prompt('מספר רכב (רשות):', '') || '').trim().slice(0, 20);
-  card.uses = [{ t: Date.now(), who: who.trim().slice(0, 60), litres, plate }, ...card.uses].slice(0, 300);
+  if (litres > card.litres) { toast(`בכרטיס יש ${card.litres} ליטר בלבד`, true); return; }
+  card.uses = [{
+    t: Date.now(), who: who.slice(0, 60), litres, plate: (d.plate || '').trim().slice(0, 20),
+  }, ...card.uses].slice(0, 300);
   card.litres = Math.max(0, card.litres - litres);
+  S.fuelDraft[card.id] = {};
   S.fuelOpen.add(card.id);
   invSave();
 }
@@ -4315,20 +4349,22 @@ function armAdd(form) {
   invSave();
 }
 
+// Removing an item from the register needs to say where it went. The
+// destination and the note are chosen in the row, next to the item they
+// describe, so the answer is given before the button is pressed rather than
+// after it in a dialog.
 function armRemove(i) {
   const it = (S.inv.armon || [])[i];
   if (!it) return;
-  const opts = ARM_DESTS.map((d, n) => `${n + 1} — ${d.name}`).join('\n');
-  const pick = window.prompt(`לאן מועבר "${it.name}" (${it.serial})?\n${opts}`, '1');
-  if (pick === null) return;
-  const dest = ARM_DESTS[parseInt(pick, 10) - 1];
-  if (!dest) { toast('בחירה לא תקינה — לא בוצעה הסרה', true); return; }
-  const note = window.prompt('הערה (רשות):', '') || '';
+  const d = S.armDraft[it.id] || {};
+  const dest = ARM_DESTS.find((x) => x.id === d.dest);
+  if (!dest) { toast('נא לבחור לאן הפריט מועבר', true); return; }
   S.inv.armon = S.inv.armon.filter((_, n) => n !== i);
   logPush('armonLog', {
     t: Date.now(), action: 'remove', kind: it.kind, name: it.name,
-    serial: it.serial, owner: it.owner, dest: dest.id, note: note.slice(0, 120),
+    serial: it.serial, owner: it.owner, dest: dest.id, note: (d.note || '').slice(0, 120),
   });
+  delete S.armDraft[it.id];
   invSave();
 }
 
@@ -4346,7 +4382,7 @@ function ammoAdd(form) {
   } else {
     S.inv.ammo = [...(S.inv.ammo || []), { id: rndId(), name, open: qty, qty }];
   }
-  logPush('ammoLog', { t: now, action: 'add', name, qty, dest: '', who: '' });
+  logPush('ammoLog', { t: now, action: 'add', name, qty, dest: '', who: '', note: '' });
   invSave();
 }
 
@@ -4372,8 +4408,11 @@ function ammoMove(i, issue) {
   it.qty = Math.max(0, Math.min(999999, it.qty + (issue ? -n : n)));
   // adding stock raises the baseline too, so "used" stays a true difference
   if (!issue) it.open = Math.max(0, Math.min(999999, it.open + n));
-  logPush('ammoLog', { t: Date.now(), action: issue ? 'issue' : 'add', name: it.name, qty: n, dest, who });
-  S.ammoDraft[it.id] = { ...draft, qty: '' };
+  logPush('ammoLog', {
+    t: Date.now(), action: issue ? 'issue' : 'add', name: it.name, qty: n, dest, who,
+    note: (draft.note || '').trim().slice(0, 120),
+  });
+  S.ammoDraft[it.id] = { ...draft, qty: '', note: '' };
   invSave();
 }
 
@@ -4740,13 +4779,13 @@ function usersPanel() {
       <td class="screens">${screens}</td>
       <td class="num">${u.last_seen ? esc(fmtDate(u.last_seen)) : '—'}</td>
       <td class="nowrap">
-        ${u.role !== 'admin'
-          ? `<button class="btn ghost small" data-act="user-screens" data-u="${esc(u.username)}">שינוי מסכים והרשאה</button>`
-          : ''}
-        <button class="btn ghost small" data-act="user-pw" data-u="${esc(u.username)}">החלפת סיסמה</button>
+        <button class="btn ghost small" data-act="uedit-open" data-u="${esc(u.username)}">
+          ${S.userEdit === u.username ? 'סגירה' : 'עריכה'}
+        </button>
         ${isMe ? '' : `<button class="linkbtn danger-link" data-act="user-del" data-u="${esc(u.username)}">מחיקה</button>`}
       </td>
-    </tr>`;
+    </tr>
+    ${S.userEdit === u.username ? `<tr class="sub"><td colspan="5">${userEditRow(u)}</td></tr>` : ''}`;
   }).join('');
 
   const picks = TABS.filter((t) => !t.adminOnly).map((t) => `
@@ -5725,69 +5764,96 @@ async function userAddSubmit(form) {
   });
 }
 
-const userSetPassword = (username) =>
+// Password change and permission change both edit one user, so they share one
+// inline editor that opens under the row — no dialog, and the screens are
+// tick boxes rather than numbers typed into a prompt.
+const userSave = (username) =>
   withBusy(async () => {
     const u = S.users.find((x) => x.username === username);
-    if (!u) return;
-    if (!S.pkcs8) { toast('המפתח אינו זמין — התחברו מחדש', true); return; }
-    const pw = window.prompt(`סיסמה חדשה עבור ${username} (10 תווים לפחות):`, '');
-    if (pw === null) return;
-    if (pw.length < 10) { toast('הסיסמה חייבת להכיל 10 תווים לפחות', true); return; }
-    let tabs = [];
-    if (u.role === 'viewer') {
-      try { tabs = JSON.parse(u.tabs) || []; } catch { tabs = []; }
-      if (u.tabs === '*') tabs = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
+    const d = S.userEditDraft;
+    if (!u || !d) return;
+    const changingPw = !!d.pw;
+    if (changingPw && d.pw.length < 10) { toast('הסיסמה חייבת להכיל 10 תווים לפחות', true); return; }
+    if (changingPw && d.pw !== d.pw2) { toast('הסיסמאות אינן תואמות', true); return; }
+
+    const role = u.role === 'admin' ? 'admin' : d.role;
+    const tabs = role === 'admin' ? [] : [...d.tabs];
+    if (role !== 'admin' && !tabs.length) { toast('נא לסמן לפחות מסך אחד', true); return; }
+
+    if (changingPw) {
+      if (!S.pkcs8) { toast('המפתח אינו זמין — התחברו מחדש', true); return; }
+      await api(`/admin/users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        body: { role, tabs, ...(await wrapKeyFor(d.pw)) },
+      });
+    } else {
+      await api(`/admin/users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        body: { role, tabs, tabsOnly: true },
+      });
     }
-    await api(`/admin/users/${encodeURIComponent(username)}`, {
-      method: 'PUT',
-      body: { role: u.role, tabs, ...(await wrapKeyFor(pw)) },
-    });
+    S.userEdit = null;
+    S.userEditDraft = null;
     await loadUsers();
     renderConsole();
-    toast(
-      username === S.me
-        ? 'הסיסמה הוחלפה — התחברו מחדש בפעם הבאה'
-        : `הסיסמה של ${username} הוחלפה — הוא נותק מכל המכשירים`
-    );
+    toast(changingPw
+      ? `הסיסמה של ${username} הוחלפה — הוא נותק מכל המכשירים`
+      : `ההרשאה של ${username} עודכנה`);
   });
 
-// Changing screens does not touch the password, so the user stays signed in
-// with their permissions updated underneath them.
-const userSetScreens = (username) =>
-  withBusy(async () => {
-    const u = S.users.find((x) => x.username === username);
-    if (!u || u.role === 'admin') return;
-    let current = [];
-    try { current = JSON.parse(u.tabs) || []; } catch { current = []; }
-    if (u.tabs === '*') current = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
-    const menu = TABS.filter((t) => !t.adminOnly)
-      .map((t, n) => `${n + 1} — ${t.name}${current.includes(t.id) ? ' ✓' : ''}`)
-      .join('\n');
-    const lvl = window.prompt(
-      `הרשאה עבור ${username}:\n1 — קריאה ועריכה\n2 — צפייה בלבד`,
-      u.role === 'editor' ? '1' : '2'
-    );
-    if (lvl === null) return;
-    const role = String(lvl).trim() === '1' ? 'editor' : 'viewer';
-    const raw = window.prompt(
-      `אילו מסכים ${username} יראה?\nהקלידו מספרים מופרדים בפסיק.\n\n${menu}`,
-      current.map((id) => TABS.filter((t) => !t.adminOnly).findIndex((t) => t.id === id) + 1)
-        .filter((n) => n > 0).join(',')
-    );
-    if (raw === null) return;
-    const pickable = TABS.filter((t) => !t.adminOnly);
-    const tabs = [...new Set(
-      raw.split(/[,\s]+/).map((x) => parseInt(x, 10)).filter((n) => n >= 1 && n <= pickable.length)
-    )].map((n) => pickable[n - 1].id);
-    if (!tabs.length) { toast('נא לבחור לפחות מסך אחד', true); return; }
-    await api(`/admin/users/${encodeURIComponent(username)}`, {
-      method: 'PUT',
-      body: { role, tabs, tabsOnly: true },
-    });
-    await loadUsers();
-    renderConsole();
-    toast(`ההרשאה של ${username} עודכנה — ${roleName(role)}, ${tabs.length} מסכים`);
-  });
+function userEditRow(u) {
+  const d = S.userEditDraft || {};
+  return `
+    <div class="useredit">
+      ${u.role === 'admin'
+        ? '<p class="muted-txt">למנהל יש גישה לכל המסכים — אפשר להחליף רק סיסמה.</p>'
+        : `
+        <fieldset class="lic-set">
+          <legend class="field-label">סוג הרשאה</legend>
+          <div class="rolepicks">
+            ${ROLES.map((r) => `
+              <label class="rolepick ${d.role === r.id ? 'on' : ''}">
+                <input type="radio" name="erole-${esc(u.username)}" value="${r.id}" class="kitbox"
+                       data-act="uedit-role" ${d.role === r.id ? 'checked' : ''}>
+                <span>
+                  <span class="rolepick-t">${esc(r.name)}</span>
+                  <span class="rolepick-s">${esc(r.hint)}</span>
+                </span>
+              </label>`).join('')}
+          </div>
+        </fieldset>
+        <fieldset class="lic-set">
+          <legend class="field-label">מסכים מותרים</legend>
+          <div class="screenpicks">
+            ${TABS.filter((t) => !t.adminOnly).map((t) => `
+              <label class="screenpick ${d.tabs && d.tabs.has(t.id) ? 'on' : ''}">
+                <input type="checkbox" class="kitbox" data-act="uedit-tab" data-t="${t.id}"
+                       ${d.tabs && d.tabs.has(t.id) ? 'checked' : ''}>
+                <span>${esc(t.name)}</span>
+              </label>`).join('')}
+          </div>
+        </fieldset>`}
+      <fieldset class="lic-set">
+        <legend class="field-label">סיסמה חדשה <span class="opt-tag">רשות — השאירו ריק כדי לא לשנות</span></legend>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">סיסמה (10 תווים לפחות)</span>
+            <input class="input" type="password" autocomplete="new-password"
+                   value="${esc(d.pw || '')}" data-act="uedit-pw">
+          </label>
+          <label class="field">
+            <span class="field-label">אימות סיסמה</span>
+            <input class="input" type="password" autocomplete="new-password"
+                   value="${esc(d.pw2 || '')}" data-act="uedit-pw2">
+          </label>
+        </div>
+      </fieldset>
+      <div class="rec-actions">
+        <button class="btn primary" data-act="uedit-save" data-u="${esc(u.username)}">שמירה</button>
+        <button class="btn ghost" data-act="uedit-cancel">ביטול</button>
+      </div>
+    </div>`;
+}
 
 const userDelete = (username) =>
   withBusy(async () => {
@@ -5913,6 +5979,23 @@ $app.addEventListener('input', (e) => {
     case 'ammo-who':
       S.ammoDraft[el.dataset.id] = { ...(S.ammoDraft[el.dataset.id] || { dest: 'used' }), who: el.value };
       break;
+    case 'uedit-pw':  S.userEditDraft = { ...S.userEditDraft, pw: el.value }; break;
+    case 'uedit-pw2': S.userEditDraft = { ...S.userEditDraft, pw2: el.value }; break;
+    case 'ammo-note':
+      S.ammoDraft[el.dataset.id] = { ...(S.ammoDraft[el.dataset.id] || { dest: 'used' }), note: el.value };
+      break;
+    case 'fuel-use-who':
+      S.fuelDraft[el.dataset.id] = { ...(S.fuelDraft[el.dataset.id] || {}), who: el.value };
+      break;
+    case 'fuel-use-litres':
+      S.fuelDraft[el.dataset.id] = { ...(S.fuelDraft[el.dataset.id] || {}), litres: el.value };
+      break;
+    case 'fuel-use-plate':
+      S.fuelDraft[el.dataset.id] = { ...(S.fuelDraft[el.dataset.id] || {}), plate: el.value };
+      break;
+    case 'arm-note':
+      S.armDraft[el.dataset.id] = { ...(S.armDraft[el.dataset.id] || {}), note: el.value };
+      break;
     case 'ammo-open':
       S.inv.ammo[+el.dataset.i].open =
         Math.max(0, Math.min(999999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
@@ -5946,6 +6029,24 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'veh-service') { S.inv.vehicles[+el.dataset.i].service = el.value; renderConsole(); return; }
   if (el.dataset.act === 'veh-kit') { S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked; renderConsole(); return; }
   if (el.dataset.act === 'urole') { S.userRole = el.value; renderConsole(); return; }
+  if (el.dataset.act === 'uedit-role') {
+    S.userEditDraft = { ...S.userEditDraft, role: el.value };
+    renderConsole();
+    return;
+  }
+  if (el.dataset.act === 'uedit-tab') {
+    const t = el.dataset.t;
+    if (el.checked) S.userEditDraft.tabs.add(t);
+    else S.userEditDraft.tabs.delete(t);
+    renderConsole();
+    return;
+  }
+  if (el.dataset.act === 'arm-dest') {
+    const id = el.dataset.id;
+    S.armDraft[id] = { ...(S.armDraft[id] || {}), dest: el.value };
+    renderConsole();
+    return;
+  }
   if (el.dataset.act === 'ammo-dest') {
     const id = el.dataset.id;
     S.ammoDraft[id] = { ...(S.ammoDraft[id] || {}), dest: el.value };
@@ -6140,8 +6241,25 @@ function dispatch(act, el) {
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;
     case 'user-del': userDelete(el.dataset.u); break;
-    case 'user-pw': userSetPassword(el.dataset.u); break;
-    case 'user-screens': userSetScreens(el.dataset.u); break;
+    case 'uedit-open': {
+      const name = el.dataset.u;
+      if (S.userEdit === name) { S.userEdit = null; S.userEditDraft = null; }
+      else {
+        const u = S.users.find((x) => x.username === name);
+        let tabs = [];
+        try { tabs = JSON.parse(u.tabs) || []; } catch { tabs = []; }
+        if (u.tabs === '*') tabs = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
+        S.userEdit = name;
+        S.userEditDraft = {
+          role: u.role === 'admin' ? 'admin' : u.role,
+          tabs: new Set(tabs), pw: '', pw2: '',
+        };
+      }
+      renderConsole();
+      break;
+    }
+    case 'uedit-cancel': S.userEdit = null; S.userEditDraft = null; renderConsole(); break;
+    case 'uedit-save': userSave(el.dataset.u); break;
     case 'utab-all':
       S.userTabs = new Set(TABS.filter((t) => !t.adminOnly).map((t) => t.id));
       renderConsole();
