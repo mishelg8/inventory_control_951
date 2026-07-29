@@ -1541,68 +1541,102 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .serial-lbl { font-size: 14px; font-weight: 600; }
 .serial-val { font-size: 26px; font-weight: 800; letter-spacing: 0.08em; }
 
-/* ── Stacked tables ────────────────────────────────────────────────────
-   Applied by measurement (see fitTables) when a table cannot fit its
-   container. Each row becomes a card and each cell carries its column
-   heading, so nothing is hidden off to the side. */
-.tbl-scroll.stacked { overflow-x: visible; }
-/* Drop table layout entirely: with the headings moved onto each cell, the
-   column algorithm is what was still forcing a minimum width. */
-.tbl-scroll.stacked table { display: block; width: 100%; }
-.tbl-scroll.stacked thead { display: none; }
-.tbl-scroll.stacked tbody { display: block; }
-/* nothing inside a card should refuse to wrap — that is what pushed it wide */
-.tbl-scroll.stacked .nowrap { white-space: normal; }
-.tbl-scroll.stacked tbody td > * { min-width: 0; }
+/* ── Compact tables ────────────────────────────────────────────────────
+   The columns are what make a register readable, so tables stay tables. What
+   was making them overflow was slack: generous cell padding, inputs sized for
+   a form rather than a cell, and headings that refused to wrap. Tightened,
+   the wide registers fit the screen instead of hiding half of themselves
+   behind a scrollbar. */
 
-.tbl-scroll.stacked tbody tr {
-  display: block;
-  margin-bottom: 10px;
-  padding: 4px 12px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  box-shadow: var(--sh-1);
+.tbl { font-size: 13.5px; }
+.tbl th, .tbl td { padding: 6px 7px; }
+.tbl th {
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: normal;      /* a two-word heading stacks instead of widening */
+  word-break: break-word;
 }
-.tbl-scroll.stacked tbody tr:last-child { margin-bottom: 0; }
-.tbl-scroll.stacked tbody tr.row-short { border-color: var(--bad-fill); background: var(--bad-tint); }
-.tbl-scroll.stacked tbody tr.is-open { border-color: var(--pine); background: var(--pine-tint); }
 
-.tbl-scroll.stacked tbody td {
+/* Fields inside a cell are sized to their content, not to a form column. */
+.tbl .input.mini { padding: 4px 6px; font-size: 13px; }
+.tbl td .input { width: 100%; min-width: 0; }
+.tbl td .input.num { min-width: 4.5em; }
+.tbl td .select-mini { min-width: 6.5em; }
+.tbl .btn.small { padding: 4px 8px; font-size: 12.5px; }
+.tbl .linkbtn { font-size: 12.5px; }
+.tbl .kitbox { width: 17px; height: 17px; }
+
+/* Action cells hold several controls; let them wrap rather than stretch. */
+.tbl td.nowrap { white-space: normal; }
+.tbl td .rec-actions { gap: 4px; }
+
+/* Numeric columns need only their digits. */
+.tbl td.num, .tbl th.num { width: 1%; white-space: nowrap; }
+.tbl .chips { max-width: 260px; gap: 3px; }
+.tbl .chip { font-size: 11.5px; padding: 1px 6px; }
+
+/* Below a phone-sized viewport the heading moves above its value, which is
+   narrower than placing them side by side. */
+@media (max-width: 560px) {
+  .tbl th, .tbl td { padding: 5px 5px; }
+  .tbl td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .tbl thead { display: none; }
+  .tbl td.num, .tbl th.num { width: auto; }
+}
+
+/* A checkbox column needs only the width of its box. */
+.tbl th.kit-col, .tbl td.kit-col { width: 1%; padding-inline: 4px; }
+.tbl th.kit-col .lg-h { font-size: 11px; }
+
+/* Columns whose natural width is larger than their usefulness. */
+.tbl .lg-name { max-width: 118px; }
+.tbl .rowlink { white-space: normal; word-break: break-word; line-height: 1.3; }
+.tbl .chips { max-width: 100px; }
+.tbl td.nowrap .btn.small { padding: 3px 6px; font-size: 12px; }
+
+/* A native date control reserves room for a full locale format; at this size
+   it still shows the whole date but stops claiming a quarter of the table. */
+.tbl .input[type="date"] {
+  font-size: 12px;
+  padding: 4px 4px;
+  min-width: 0;
+  width: 100%;
+}
+.tbl td .input[type="text"].mini { min-width: 3.5em; }
+
+/* Auto table layout asks each column for the width its content wants, and the
+   sum is what overflowed. A fixed layout divides the space available instead,
+   so every column stays on screen and long values wrap inside their own cell
+   rather than pushing the table off the side. */
+.tbl { table-layout: fixed; width: 100%; }
+.tbl th, .tbl td { overflow-wrap: anywhere; }
+/* columns that must not be squeezed to nothing */
+.tbl th.num, .tbl td.num { width: auto; white-space: normal; }
+.tbl .lg-name { max-width: none; }
+
+/* The progress bar was sized in pixels while its column is now share-based. */
+.tbl .minibar { width: 100%; max-width: 74px; min-width: 26px; }
+
+/* ── Permission picker ─────────────────────────────────────────────── */
+.rolepicks { display: grid; gap: 8px; margin-top: 6px; }
+.rolepick {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  width: auto;
-  padding: 7px 0;
-  border: 0;
-  border-bottom: 1px solid var(--line-soft);
-  text-align: start;
-}
-.tbl-scroll.stacked tbody td:last-child { border-bottom: 0; }
-
-/* the column heading, restored beside the value it belongs to */
-.tbl-scroll.stacked tbody td[data-label]::before {
-  content: attr(data-label);
-  flex: none;
-  min-width: 96px;
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--muted);
-}
-/* cells with no heading (actions, checkboxes) simply fill the row */
-.tbl-scroll.stacked tbody td:not([data-label]) { justify-content: flex-start; gap: 8px; }
-.tbl-scroll.stacked tbody td:empty { display: none; }
-
-/* inputs inside a stacked cell take the space the column used to give them */
-.tbl-scroll.stacked tbody td .input { flex: 1; min-width: 0; max-width: 60%; }
-.tbl-scroll.stacked tbody td .chips { justify-content: flex-end; }
-
-/* a detail row keeps the full width of the card */
-.tbl-scroll.stacked tbody tr.sub {
-  border-color: var(--line);
-  background: var(--bg);
+  align-items: flex-start;
+  gap: 10px;
   padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  cursor: pointer;
 }
-.tbl-scroll.stacked tbody tr.sub td { display: block; padding: 0; }
+.rolepick:hover { border-color: var(--line-hard); }
+.rolepick.on { border-color: var(--pine); background: var(--pine-tint); }
+.rolepick-t { display: block; font-size: 14.5px; font-weight: 700; }
+.rolepick-s { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }

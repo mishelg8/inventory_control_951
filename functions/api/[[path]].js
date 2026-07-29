@@ -91,6 +91,12 @@ async function sweepThrottle(db, now) {
   }
 }
 
+// admin  — everything, including users, audit and the trash
+// editor  — may read AND change, but only on the screens granted to them
+// viewer  — may read only, and only on the screens granted to them
+const ROLES = ['admin', 'editor', 'viewer'];
+const isRestricted = (role) => role === 'editor' || role === 'viewer';
+
 const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first();
 
 const TRASH_MS = 30 * 24 * 60 * 60 * 1000;   // deleted rows stay recoverable for 30 days
@@ -196,7 +202,7 @@ async function getSession(db, request, now) {
   // column default for sessions created before the role existed.
   return {
     token: row.token,
-    role: row.role === 'viewer' ? 'viewer' : 'admin',
+    role: ROLES.includes(row.role) ? row.role : 'admin',
     username: row.username || null,
     tabs: row.tabs || '*',
   };
@@ -461,7 +467,7 @@ export async function onRequest(context) {
           return err(401, 'שם משתמש או סיסמה שגויים');
         }
 
-        const role = cred.role === 'viewer' ? 'viewer' : 'admin';
+        const role = ROLES.includes(cred.role) ? cred.role : 'admin';
         const tabs = role === 'admin' ? '*' : (cred.tabs || '*');
         const token = randomToken();
         await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
@@ -492,9 +498,10 @@ export async function onRequest(context) {
       }
 
       // Screen permissions, enforced where they can actually be enforced: at
-      // the three data sources. A user with no screen that reads records
-      // cannot fetch records, however the console is manipulated.
-      if (session.role === 'viewer') {
+      // the three data sources. This binds editors as much as viewers — an
+      // editor may write, but only within the screens they were given, so the
+      // same scope check gates their writes as well as their reads.
+      if (isRestricted(session.role)) {
         const scopes = scopesFor(session.tabs);
         const wants =
           seg[1] === 'records' ? 'records'
@@ -503,8 +510,10 @@ export async function onRequest(context) {
                 : seg[1] === 'reports' ? 'reports'
                   : null;
         if (wants && !scopes.has(wants)) return err(403, 'אין הרשאה לנתונים אלה');
-        if (seg[1] === 'users' || seg[1] === 'audit' || seg[1] === 'trash') {
-          return err(403, 'אין הרשאה לאזור זה');
+        // User management, the audit trail, the trash, password rotation and
+        // the wipe stay with the administrator whatever screens were granted.
+        if (['users', 'audit', 'trash', 'rotate', 'wipe'].includes(seg[1])) {
+          return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
         }
       }
 
@@ -533,9 +542,9 @@ export async function onRequest(context) {
         if (method === 'PUT') {
           const b = await readBody(request);
           if (!b) return err(400, 'בקשה לא תקינה');
-          const role = b.role === 'admin' ? 'admin' : 'viewer';
+          const role = ROLES.includes(b.role) ? b.role : 'viewer';
           let tabs = '*';
-          if (role === 'viewer') {
+          if (isRestricted(role)) {
             if (!Array.isArray(b.tabs) || !b.tabs.length) return err(400, 'נא לבחור לפחות מסך אחד');
             const clean = [...new Set(b.tabs)].filter((t) => Object.prototype.hasOwnProperty.call(TAB_NEEDS, t) && t !== 'sec');
             if (!clean.length) return err(400, 'נא לבחור לפחות מסך אחד');
@@ -547,12 +556,12 @@ export async function onRequest(context) {
           if (existing && b.tabsOnly) {
             if (existing.role === 'admin') return err(400, 'למנהל יש גישה לכל המסכים');
             await db
-              .prepare('UPDATE users SET tabs = ?1 WHERE username = ?2')
-              .bind(tabs, username)
+              .prepare('UPDATE users SET tabs = ?1, role = ?2 WHERE username = ?3')
+              .bind(tabs, role, username)
               .run();
             await db
-              .prepare('UPDATE sessions SET tabs = ?1 WHERE username = ?2')
-              .bind(tabs, username)
+              .prepare('UPDATE sessions SET tabs = ?1, role = ?2 WHERE username = ?3')
+              .bind(tabs, role, username)
               .run();
             return json({ ok: true });
           }
@@ -693,9 +702,15 @@ export async function onRequest(context) {
           }
           // Optimistic concurrency: the client sends the updated_at it loaded.
           // If the stored one moved, someone else saved in between and blindly
-          // overwriting would silently destroy their work.
+          // overwriting would silently destroy their work. The version is
+          // required, not optional — an omitted one was a way to skip the
+          // check and clobber the vault, which is exactly what it exists to
+          // prevent.
           const cur = await db.prepare('SELECT updated_at FROM vault WHERE id = 1').first();
-          if (cur && b.baseVersion !== undefined && Number(b.baseVersion) !== cur.updated_at) {
+          if (cur && b.baseVersion === undefined) {
+            return err(400, 'חסרה גרסת בסיס — רעננו לפני השמירה');
+          }
+          if (cur && Number(b.baseVersion) !== cur.updated_at) {
             return json(
               { error: 'המלאי עודכן בינתיים על ידי מנהל אחר — רעננו לפני השמירה', current: cur.updated_at },
               409

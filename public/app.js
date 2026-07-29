@@ -270,10 +270,14 @@ const kindLocs = (kind) => {
   return ARM_LOCS.filter((l) => (k ? k.locs : ['armon', 'soldier']).includes(l.id));
 };
 // where an item goes when it leaves the armoury for good
+// 'used' is consumption: a gas or stun grenade that was thrown went nowhere
+// and to nobody, so it needs no recipient — which is why it stops being a
+// free-text field and becomes a choice.
 const AMMO_DESTS = [
+  { id: 'used', name: 'שומש', noWho: true },
   { id: 'mission', name: 'משימה' },
   { id: 'soldier', name: 'חייל' },
-  { id: 'credit', name: 'זיכוי' },
+  { id: 'credit', name: 'זיכוי', noWho: true },
 ];
 const ARM_DESTS = [
   { id: 'soldier', name: 'חייל' },
@@ -315,7 +319,8 @@ const cleanArmLog = (x) => ({
 const cleanAmmo = (x) => ({
   id: asText(x && x.id, 40) || rndId(),
   name: asText(x && x.name, 60),
-  qty: asCount(x && x.qty),
+  open: asCount(x && x.open),      // what came in — the baseline to count against
+  qty: asCount(x && x.qty),        // what is on the shelf now
 });
 
 const cleanAmmoLog = (x) => ({
@@ -327,11 +332,14 @@ const cleanAmmoLog = (x) => ({
   who: asText(x && x.who, 60),
 });
 
+// `short` is what the column header shows — the full name stays as the title
+// and the accessible label, so a checkbox column costs a few characters
+// instead of an inch of table.
 const VEH_KIT = [
-  { id: 'jack', name: 'ג׳ק' },
-  { id: 'wrench', name: 'מפתח גלגלים' },
-  { id: 'vest', name: 'אפודה זוהרת' },
-  { id: 'triangle', name: 'משולש' },
+  { id: 'jack', name: 'ג׳ק', short: 'ג׳ק' },
+  { id: 'wrench', name: 'מפתח גלגלים', short: 'מפתח' },
+  { id: 'vest', name: 'אפודה זוהרת', short: 'אפודה' },
+  { id: 'triangle', name: 'משולש', short: 'משולש' },
 ];
 
 const cleanVehicle = (x) => {
@@ -552,6 +560,7 @@ const S = {
   trash: null,                  // soft-deleted rows, loaded on demand
   audit: null,                  // admin action log, loaded on demand
   userTabs: new Set(),          // screens ticked in the new-user form
+  userRole: 'editor',           // permission chosen in the new-user form
   priv: null,                   // CryptoKey (RSA private)
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
@@ -572,6 +581,7 @@ const S = {
   page: {},                     // list key -> current page index (0-based)
   revealed: new Set(),          // rids with phone shown
   fuelOpen: new Set(),          // fuel card ids with their detail row expanded
+  ammoDraft: {},                // per-row movement being composed in the ammo table
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
@@ -691,46 +701,27 @@ const render = (html, focusKey) => {
     el.style.width = `${el.dataset.w}%`;
   }
 
-  fitTables();
+  labelCells();
 };
 
-/* ── Tables that do not fit ────────────────────────────────────────────
-   A sideways scrollbar hides data: whatever is off to the side is invisible
-   until you think to drag for it, and on a phone most of the row is off to
-   the side. So a table that cannot fit its column stops being a table and
-   becomes one labelled card per row, where every field is visible at once.
-   Each table decides for itself by measurement rather than by breakpoint,
-   because they range from two columns to twenty-three. */
+/* ── Column labels for narrow screens ──────────────────────────────────
+   Tables stay tables — the columns are what make a register readable. Each
+   cell still carries its heading so the compact layout can show it above the
+   value when the column gets tight, rather than pushing the table wider. */
 
-function fitTables() {
+function labelCells() {
   for (const box of $app.querySelectorAll('.tbl-scroll')) {
     const table = box.querySelector('table');
-    if (!table || !table.tHead) continue;
-
-    // Carry the column heading onto every cell, so a stacked row can label
-    // its own fields. Done once per render, from the live header.
+    if (!table || !table.tHead || !table.tBodies[0]) continue;
     const heads = [...table.tHead.rows[0].cells].map((c) => c.textContent.trim());
-    for (const row of table.tBodies[0] ? table.tBodies[0].rows : []) {
+    for (const row of table.tBodies[0].rows) {
       if (row.cells.length === 1 && row.cells[0].colSpan > 1) continue;   // detail row
       [...row.cells].forEach((cell, i) => {
         if (heads[i]) cell.dataset.label = heads[i];
-        else cell.removeAttribute('data-label');
       });
     }
-
-    // Measure against the unstacked layout, then switch if it overflows.
-    box.classList.remove('stacked');
-    if (table.scrollWidth > box.clientWidth + 1) box.classList.add('stacked');
   }
 }
-
-// Re-measure when the window changes: a table that fits in landscape may not
-// fit in portrait, and the reverse.
-let fitTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(fitTimer);
-  fitTimer = setTimeout(fitTables, 120);
-}, { passive: true });
 
 function renderRoute() {
   // the console needs a wide column for tables; soldier pages stay narrow
@@ -1523,8 +1514,18 @@ const TABS = [
 
 const tabName = (id) => (TABS.find((t) => t.id === id) || {}).name || id;
 
+// admin  — everything; editor — read and change, on granted screens only;
+// viewer — read only, on granted screens only.
+const ROLES = [
+  { id: 'editor', name: 'קריאה ועריכה', hint: 'רואה ומשנה — אך רק במסכים שסימנתם' },
+  { id: 'viewer', name: 'צפייה בלבד', hint: 'רואה בלבד, בלי לאשר, לערוך או למחוק' },
+];
+const roleName = (r) => r === 'admin' ? 'מנהל' : (ROLES.find((x) => x.id === r) || {}).name || r;
+const canEdit = () => S.role !== 'viewer';
+
 function allowedTabs() {
   if (S.role === 'admin') return TABS.map((t) => t.id);
+  // editors and viewers alike see only what they were granted, never 'sec'
   let list = [];
   if (S.tabs === '*') list = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
   else { try { list = JSON.parse(S.tabs) || []; } catch { list = []; } }
@@ -1591,15 +1592,19 @@ function renderConsole() {
       <span class="conbar-title">${esc(title)}</span>
       <div class="conbar-actions">
         <span class="who-tag">${esc(S.me || '')}</span>
-        ${S.role === 'viewer' ? '<span class="ro-tag">צפייה בלבד</span>' : ''}
+        ${S.role !== 'admin' ? `<span class="ro-tag">${esc(roleName(S.role))}</span>` : ''}
         <button class="btn ghost small" data-act="refresh">רענון</button>
         <button class="btn ghost small" data-act="lock">נעילה</button>
       </div>
     </div>
-    ${S.role === 'viewer'
-      ? `<div class="callout"><p class="mb0">אתם מחוברים כ<strong>משתמש צפייה</strong> (${esc(S.me)}) עם גישה ל${
+    ${S.role !== 'admin'
+      ? `<div class="callout"><p class="mb0">אתם מחוברים כ<strong>${esc(roleName(S.role))}</strong> (${esc(S.me)}) עם גישה ל${
           allowedTabs().length === 1 ? 'מסך ' : `-${allowedTabs().length} מסכים: `
-        }<strong>${allowedTabs().map((t) => esc(tabName(t))).join(', ')}</strong>. אי אפשר לאשר, לערוך או למחוק — השרת דוחה כל ניסיון שינוי וכל בקשת מידע ממסך שאינו מורשה.</p></div>`
+        }<strong>${allowedTabs().map((t) => esc(tabName(t))).join(', ')}</strong>. ${
+          S.role === 'viewer'
+            ? 'אי אפשר לאשר, לערוך או למחוק'
+            : 'אפשר לערוך במסכים האלה בלבד'
+        } — השרת דוחה כל בקשה מחוץ להרשאה, לרבות ניהול משתמשים ואבטחה.</p></div>`
       : ''}
     ${c.damaged
       ? `<div class="callout risk"><p class="mb0"><strong class="num">${c.damaged}</strong> רשומות פגומות — הפענוח נכשל (חשד לשיבוש נתונים בשרת).</p></div>`
@@ -1682,6 +1687,13 @@ function phoneRow(rec) {
     <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>
   </div>`;
 }
+
+// Dense tables show the day only — the clock time is in the expanded row.
+const fmtShort = (ms) => {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  return `${d.getDate()}.${d.getMonth() + 1}.${String(d.getFullYear()).slice(2)}`;
+};
 
 const itemsText = (d) =>
   ITEMS.filter((i) => d.items[i.id])
@@ -2023,19 +2035,14 @@ function renderPendingTab() {
         </td>
         <td class="num">${esc(d.pn)}</td>
         <td>${esc(deptName(d.dept))}</td>
-        <td class="num">
-          ${esc(S.revealed.has(rec.rid) ? d.phone : maskPhone(d.phone))}
-          <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${S.revealed.has(rec.rid) ? 'הסתרה' : 'הצגה'}</button>
-        </td>
         <td class="chips">${itemChips(d, 'pending') || '<span class="dim">—</span>'}</td>
-        <td class="num">${d.weapon ? esc(d.weapon) : '<span class="dim">—</span>'}</td>
-        <td class="num">${esc(fmtDate(d.createdAt))}</td>
+        <td class="num">${esc(fmtShort(d.createdAt))}</td>
         <td class="nowrap">
           <button class="btn primary small" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
           <button class="linkbtn danger-link" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
         </td>
       </tr>
-      ${open ? `<tr class="sub"><td colspan="9">${pendingDetail(rec)}</td></tr>` : ''}`;
+      ${open ? `<tr class="sub"><td colspan="7">${pendingDetail(rec)}</td></tr>` : ''}`;
   }).join('');
 
   return `
@@ -2065,9 +2072,7 @@ function renderPendingTab() {
                  ${sortTh('name', 'שם')}
                  ${sortTh('pn', 'מ״א', 'num')}
                  ${sortTh('dept', 'מחלקה')}
-                 <th class="num">טלפון</th>
                  ${sortTh('items', 'ציוד')}
-                 <th class="num">נשק</th>
                  ${sortTh('date', 'נשלח', 'num')}
                  <th></th>
                </tr></thead>
@@ -2106,6 +2111,8 @@ function pendingDetail(rec) {
       ${d.supp
         ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
         : ''}
+      <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
+      ${phoneRow(rec)}
       ${extrasRow(rec)}
       <ul>${rows}</ul>
       ${fpStrip(rec.rid)}
@@ -2149,17 +2156,10 @@ function renderTrackTab() {
         </td>
         <td class="num">${esc(d.pn)}</td>
         <td>${esc(deptName(d.dept))}</td>
-        <td class="num">
-          ${esc(S.revealed.has(rec.rid) ? d.phone : maskPhone(d.phone))}
-          <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${S.revealed.has(rec.rid) ? 'הסתרה' : 'הצגה'}</button>
-        </td>
         <td class="chips">${itemChips(d, 'track') || '<span class="dim">—</span>'}</td>
         <td class="num ${out > 0 ? 'warn' : 'ok'}">${out > 0 ? out : '✓'}</td>
-        <td class="num">${d.weapon ? esc(d.weapon) : '<span class="dim">—</span>'}</td>
-        <td class="num">${esc(fmtDate(d.approvedAt))}</td>
-        <td>${d.notified
-          ? '<span class="sent">✓ נשלחה</span>'
-          : '<span class="unsent">טרם נשלחה</span>'}</td>
+        <td class="num">${esc(fmtShort(d.approvedAt))}</td>
+        <td class="num">${d.notified ? '<span class="sent">✓</span>' : '<span class="unsent">—</span>'}</td>
         <td class="nowrap">
           ${out > 0
             ? `<button class="btn ghost small" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
@@ -2168,7 +2168,7 @@ function renderTrackTab() {
              data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>
         </td>
       </tr>
-      ${open ? `<tr class="sub"><td colspan="10">${trackDetail(rec)}</td></tr>` : ''}`;
+      ${open ? `<tr class="sub"><td colspan="8">${trackDetail(rec)}</td></tr>` : ''}`;
   }).join('');
 
   return `
@@ -2185,12 +2185,10 @@ function renderTrackTab() {
                  ${sortTh('name', 'שם')}
                  ${sortTh('pn', 'מ״א', 'num')}
                  ${sortTh('dept', 'מחלקה')}
-                 <th class="num">טלפון</th>
-                 <th>ציוד — אצלו כעת / הוחתם</th>
+                 <th>ציוד — אצלו / הוחתם</th>
                  ${sortTh('out', 'בחוץ', 'num')}
-                 <th class="num">נשק</th>
                  ${sortTh('approved', 'אושר', 'num')}
-                 <th>הודעה</th>
+                 <th class="num" title="הודעה נשלחה">הודעה</th>
                  <th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
@@ -2228,6 +2226,8 @@ function trackDetail(rec) {
   const anyBack = d.items && Object.values(d.items).some((it) => (it.r || 0) > 0);
   return `
     <div class="rowdetail">
+      <div class="rec-meta">אושר ${esc(fmtDate(d.approvedAt))}</div>
+      ${phoneRow(rec)}
       <div class="rec-meta">${d.notified
         ? '<span class="sent">✓ הודעת רישום נשלחה</span>'
         : '<span class="unsent">הודעת רישום טרם נשלחה</span>'}${
@@ -2681,9 +2681,14 @@ const REPORTS = {
     build() {
       const all = (S.inv && S.inv.ammo) || [];
       return {
-        head: ['פריט', 'כמות'],
-        rows: all.map((x) => [x.name, x.qty]),
-        summary: `${all.length} סוגים · ${all.reduce((s, x) => s + x.qty, 0)} יחידות סה״כ`,
+        head: ['פריט', 'כמות התחלתית', 'כמות נוכחית', 'נוצל', 'סטטוס'],
+        rows: all.map((x) => [
+          x.name, x.open, x.qty, Math.max(0, x.open - x.qty),
+          x.qty === 0 ? 'אזל' : 'תקין',
+        ]),
+        summary: `${all.length} סוגים · התחלתי ${all.reduce((s, x) => s + x.open, 0)} · ` +
+          `נוכחי ${all.reduce((s, x) => s + x.qty, 0)} · ` +
+          `נוצל ${all.reduce((s, x) => s + Math.max(0, x.open - x.qty), 0)}`,
       };
     },
   },
@@ -3775,16 +3780,41 @@ function renderAmmoTab() {
   const vis = all.map((x, i) => ({ x, i })).filter(({ x }) => !q || (x.name || '').toLowerCase().includes(q));
   const total = all.reduce((n, x) => n + x.qty, 0);
 
-  const rows = vis.map(({ x, i }) => `
-    <tr${x.qty === 0 ? ' class="row-short"' : ''}>
+  // Everything a movement needs sits in the row: how much, where it went and
+  // for whom. No dialog chain — you read the shelf count and act on the same
+  // line, which is what someone standing at the shelf actually does.
+  const rows = vis.map(({ x, i }) => {
+    const draft = S.ammoDraft[x.id] || { dest: 'used', qty: '', who: '' };
+    const dest = AMMO_DESTS.find((d) => d.id === draft.dest) || AMMO_DESTS[0];
+    const usedUp = Math.max(0, x.open - x.qty);
+    return `<tr${x.qty === 0 ? ' class="row-short"' : ''}>
       <td>${esc(x.name)}</td>
-      <td class="num ${x.qty === 0 ? 'bad' : 'ok'}">${x.qty}</td>
+      <td class="num">
+        <input class="input mini num" type="text" inputmode="numeric" maxlength="6"
+               value="${x.open}" data-act="ammo-open" data-i="${i}" aria-label="כמות התחלתית ${esc(x.name)}">
+      </td>
+      <td class="num ${x.qty === 0 ? 'bad' : 'ok'}"><strong>${x.qty}</strong></td>
+      <td class="num ${usedUp ? 'warn' : ''}">${usedUp || '—'}</td>
       <td>
-        <button class="btn ghost small" data-act="ammo-issue" data-i="${i}" ${x.qty === 0 ? 'disabled' : ''}>הוצאה</button>
-        <button class="btn ghost small" data-act="ammo-add-qty" data-i="${i}">הוספה</button>
+        <select class="input mini select-mini" data-act="ammo-dest" data-id="${esc(x.id)}" aria-label="יעד">
+          ${AMMO_DESTS.map((d) => `<option value="${d.id}"${draft.dest === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+        </select>
+        ${dest.noWho ? '' : `<input class="input mini mt-xs" type="text" maxlength="60"
+               value="${esc(draft.who)}" data-act="ammo-who" data-id="${esc(x.id)}"
+               placeholder="${dest.id === 'soldier' ? 'שם החייל' : 'שם המשימה'}" aria-label="למי">`}
+      </td>
+      <td class="num">
+        <input class="input mini num" type="text" inputmode="numeric" maxlength="6"
+               value="${esc(draft.qty)}" data-act="ammo-qty" data-id="${esc(x.id)}"
+               placeholder="0" aria-label="כמות לתנועה">
+      </td>
+      <td class="nowrap">
+        <button class="btn ghost small" data-act="ammo-issue" data-i="${i}" ${x.qty === 0 ? 'disabled' : ''}>− הוצאה</button>
+        <button class="btn ghost small" data-act="ammo-add-qty" data-i="${i}">+ הוספה</button>
         <button class="linkbtn danger-link" data-act="ammo-del" data-i="${i}">✕</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const logRows = log.slice(0, 200).map((e) => `
     <tr>
@@ -3820,7 +3850,9 @@ function renderAmmoTab() {
       <h2 class="panel-title">מלאי תחמושת ואלפא</h2>
       <div class="kpis">
         ${kpi(all.length, 'סוגי פריטים')}
-        ${kpi(total, 'סה״כ יחידות')}
+        ${kpi(all.reduce((n, x) => n + x.open, 0), 'כמות התחלתית')}
+        ${kpi(total, 'כמות נוכחית')}
+        ${kpi(all.reduce((n, x) => n + Math.max(0, x.open - x.qty), 0), 'נוצל')}
         ${kpi(all.filter((x) => x.qty === 0).length, 'אזלו מהמלאי', all.some((x) => x.qty === 0) ? 'bad' : 'ok')}
       </div>
       ${all.length > 4
@@ -3829,7 +3861,10 @@ function renderAmmoTab() {
       ${vis.length
         ? `<div class="tbl-scroll">
              <table class="tbl">
-               <thead><tr><th>פריט</th><th class="num">כמות</th><th></th></tr></thead>
+               <thead><tr>
+                 <th>פריט</th><th class="num">כמות התחלתית</th><th class="num">כמות נוכחית</th>
+                 <th class="num">נוצל</th><th>יעד</th><th class="num">כמות</th><th></th>
+               </tr></thead>
                <tbody>${rows}</tbody>
              </table>
            </div>
@@ -3909,7 +3944,7 @@ function renderVehTab() {
                <thead><tr>
                  <th class="num">מספר רכב</th><th>חברת השכרה</th><th class="num">ק״מ</th><th class="num">טיפול</th>
                  <th class="num">קוד קודן</th><th class="num">קוד דלקן</th>
-                 ${VEH_KIT.map((k) => `<th class="num lg-col"><span class="lg-h">${esc(k.name)}</span></th>`).join('')}
+                 ${VEH_KIT.map((k) => `<th class="num kit-col" title="${esc(k.name)}"><span class="lg-h">${esc(k.short)}</span></th>`).join('')}
                  <th>סטטוס</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
@@ -4305,30 +4340,40 @@ function ammoAdd(form) {
   setFormErr(form, '');
   const now = Date.now();
   const existing = (S.inv.ammo || []).find((x) => x.name.toLowerCase() === name.toLowerCase());
-  if (existing) existing.qty = Math.min(999999, existing.qty + qty);
-  else S.inv.ammo = [...(S.inv.ammo || []), { id: rndId(), name, qty }];
+  if (existing) {
+    existing.qty = Math.min(999999, existing.qty + qty);
+    existing.open = Math.min(999999, existing.open + qty);
+  } else {
+    S.inv.ammo = [...(S.inv.ammo || []), { id: rndId(), name, open: qty, qty }];
+  }
   logPush('ammoLog', { t: now, action: 'add', name, qty, dest: '', who: '' });
   invSave();
 }
 
+// Reads the row's own fields rather than asking a chain of questions.
 function ammoMove(i, issue) {
   const it = (S.inv.ammo || [])[i];
   if (!it) return;
-  const n = parseInt(window.prompt(`${issue ? 'הוצאה' : 'הוספה'} — ${it.name} (במלאי: ${it.qty})\nכמות:`, '1'), 10);
-  if (!Number.isFinite(n) || n < 1) return;
+  const draft = S.ammoDraft[it.id] || {};
+  const n = Math.max(0, parseInt(String(draft.qty || '').replace(/\D/g, ''), 10) || 0);
+  if (!n) { toast('נא למלא כמות בשורה', true); return; }
   if (issue && n > it.qty) { toast(`אין מספיק במלאי — יש ${it.qty}`, true); return; }
+
   let dest = '', who = '';
   if (issue) {
-    const opts = AMMO_DESTS.map((d, k) => `${k + 1} — ${d.name}`).join('\n');
-    const pick = window.prompt(`לאן?\n${opts}`, '1');
-    if (pick === null) return;
-    const d = AMMO_DESTS[parseInt(pick, 10) - 1];
-    if (!d) { toast('בחירה לא תקינה', true); return; }
+    const d = AMMO_DESTS.find((x) => x.id === draft.dest) || AMMO_DESTS[0];
     dest = d.id;
-    who = (window.prompt('שם מלא / פרטי המשימה (רשות):', '') || '').slice(0, 60);
+    who = d.noWho ? '' : (draft.who || '').trim().slice(0, 60);
+    if (!d.noWho && who.length < 2) {
+      toast(d.id === 'soldier' ? 'נא למלא שם חייל' : 'נא למלא שם משימה', true);
+      return;
+    }
   }
   it.qty = Math.max(0, Math.min(999999, it.qty + (issue ? -n : n)));
+  // adding stock raises the baseline too, so "used" stays a true difference
+  if (!issue) it.open = Math.max(0, Math.min(999999, it.open + n));
   logPush('ammoLog', { t: Date.now(), action: issue ? 'issue' : 'add', name: it.name, qty: n, dest, who });
+  S.ammoDraft[it.id] = { ...draft, qty: '' };
   invSave();
 }
 
@@ -4678,6 +4723,108 @@ const AUDIT_LABEL = {
   'restore-report': 'שחזור דיווח', vault: 'שמירת מלאי', 'user-create': 'יצירת משתמש',
   'user-update': 'עדכון משתמש', 'user-delete': 'מחיקת משתמש',
 };
+
+// Users. Every account carries its own copy of the private key, wrapped under
+// its own password — which is why an account can only be created while an
+// admin is signed in and holding the unwrapped key in memory.
+function usersPanel() {
+  const rows = S.users.map((u) => {
+    const isMe = u.username === S.me;
+    const screens = u.role === 'admin'
+      ? '<span class="ok">כל המסכים</span>'
+      : tabsLabel(u.tabs);
+    const tone = u.role === 'admin' ? 'done' : u.role === 'editor' ? 'live' : 'wait';
+    return `<tr>
+      <td class="lg-name">${esc(u.username)}${isMe ? ' <span class="tagi">אתם</span>' : ''}</td>
+      <td><span class="state ${tone}">${esc(roleName(u.role))}</span></td>
+      <td class="screens">${screens}</td>
+      <td class="num">${u.last_seen ? esc(fmtDate(u.last_seen)) : '—'}</td>
+      <td class="nowrap">
+        ${u.role !== 'admin'
+          ? `<button class="btn ghost small" data-act="user-screens" data-u="${esc(u.username)}">שינוי מסכים והרשאה</button>`
+          : ''}
+        <button class="btn ghost small" data-act="user-pw" data-u="${esc(u.username)}">החלפת סיסמה</button>
+        ${isMe ? '' : `<button class="linkbtn danger-link" data-act="user-del" data-u="${esc(u.username)}">מחיקה</button>`}
+      </td>
+    </tr>`;
+  }).join('');
+
+  const picks = TABS.filter((t) => !t.adminOnly).map((t) => `
+    <label class="screenpick ${S.userTabs.has(t.id) ? 'on' : ''}">
+      <input type="checkbox" class="kitbox" data-act="utab" data-t="${t.id}"
+             ${S.userTabs.has(t.id) ? 'checked' : ''}>
+      <span>${esc(t.name)}</span>
+    </label>`).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">משתמשים</h2>
+      <p class="panel-sub">מנהל רואה ועושה הכול. <strong>קריאה ועריכה</strong> — רואה ומשנה, אך רק במסכים שסימנתם. <strong>צפייה בלבד</strong> — רואה את אותם מסכים בלי לשנות דבר. ניהול משתמשים, יומן הפעולות והאבטחה נשארים אצל המנהל בלבד.</p>
+      <div class="tbl-scroll">
+        <table class="tbl">
+          <thead><tr><th>שם משתמש</th><th>הרשאה</th><th>מסכים</th><th class="num">כניסה אחרונה</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">הוספת משתמש</h2>
+      <p class="panel-sub">שם משתמש באותיות אנגליות קטנות, ספרות, נקודה, מקף או קו תחתון. סמנו אילו מסכים המשתמש יראה.</p>
+      <form data-form="user-add" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">שם משתמש <span class="req">*</span></span>
+            <input class="input" name="username" maxlength="31" spellcheck="false"
+                   placeholder="sagan.a" required>
+          </label>
+          <label class="field">
+            <span class="field-label">סיסמה (10 תווים לפחות) <span class="req">*</span></span>
+            <input class="input" type="password" name="pw" autocomplete="new-password" required>
+          </label>
+        </div>
+        <fieldset class="lic-set">
+          <legend class="field-label">סוג הרשאה <span class="req">*</span></legend>
+          <div class="rolepicks">
+            ${ROLES.map((r) => `
+              <label class="rolepick ${S.userRole === r.id ? 'on' : ''}">
+                <input type="radio" name="role" value="${r.id}" class="kitbox"
+                       data-act="urole" ${S.userRole === r.id ? 'checked' : ''}>
+                <span>
+                  <span class="rolepick-t">${esc(r.name)}</span>
+                  <span class="rolepick-s">${esc(r.hint)}</span>
+                </span>
+              </label>`).join('')}
+          </div>
+        </fieldset>
+        <fieldset class="lic-set">
+          <legend class="field-label">מסכים מותרים <span class="req">*</span></legend>
+          <div class="screenpicks">${picks}</div>
+          <div class="rec-actions mt">
+            <button class="btn ghost small" type="button" data-act="utab-all">סימון הכול</button>
+            <button class="btn ghost small" type="button" data-act="utab-none">ניקוי</button>
+          </div>
+          <span class="field-hint">שימו לב: מסך הסקירה מציג נתונים מכל המקורות, ולכן סימונו נותן גישה לכל המידע.</span>
+        </fieldset>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">יצירת משתמש</button>
+      </form>
+    </section>
+
+    <div class="callout risk">
+      <p class="callout-title">מה הרשאת הצפייה כן עושה ומה לא</p>
+      <p>המערכת מוצפנת מקצה לקצה, ולכן לכל משתמש יש עותק משלו של מפתח הפענוח. במסכים שהוא כן רואה — הוא רואה <strong>הכול</strong>: שמות, טלפונים, מספרים אישיים וצילומי רישיונות.</p>
+      <p class="mb0">מה שהוא לא יכול: <strong>לשנות שום דבר</strong>, ולא למשוך נתונים ממסכים שלא סומנו לו — השרת דוחה גם את בקשות הכתיבה וגם את בקשות המידע שמחוץ להרשאה, לא רק מסתיר כפתורים. מסכים שחולקים מקור מידע אחד אינם ניתנים להפרדה עדינה יותר.</p>
+    </div>`;
+}
+
+function tabsLabel(tabs) {
+  if (tabs === '*') return '<span class="ok">כל המסכים</span>';
+  let list = [];
+  try { list = JSON.parse(tabs) || []; } catch { list = []; }
+  if (!list.length) return '<span class="bad">ללא מסכים</span>';
+  return list.map((t) => `<span class="chip">${esc(tabName(t))}</span>`).join(' ');
+}
 
 function trashPanel() {
   const t = S.trash;
@@ -5194,7 +5341,10 @@ async function loginSubmit(form) {
       const { kek, verifier } = await deriveAuth(pw, salt);
       const res = await api('/admin/login', { body: { verifier, username } });
       const { keyIv, wrappedKey } = res;
-      S.role = res.role === 'viewer' ? 'viewer' : 'admin';
+      // Take the role the server assigned. Collapsing anything-but-viewer to
+      // 'admin' made an editor request screens they have no right to, and the
+      // login died on the 403 that correctly came back.
+      S.role = ['admin', 'editor', 'viewer'].includes(res.role) ? res.role : 'viewer';
       S.me = res.username || username;
       S.tabs = res.tabs || '*';
       const pkcs8 = new Uint8Array(
@@ -5566,7 +5716,7 @@ async function userAddSubmit(form) {
   await withBusy(async () => {
     await api(`/admin/users/${encodeURIComponent(username)}`, {
       method: 'PUT',
-      body: { role: 'viewer', tabs: [...S.userTabs], ...(await wrapKeyFor(pw)) },
+      body: { role: S.userRole, tabs: [...S.userTabs], ...(await wrapKeyFor(pw)) },
     });
     S.userTabs.clear();
     await loadUsers();
@@ -5613,6 +5763,12 @@ const userSetScreens = (username) =>
     const menu = TABS.filter((t) => !t.adminOnly)
       .map((t, n) => `${n + 1} — ${t.name}${current.includes(t.id) ? ' ✓' : ''}`)
       .join('\n');
+    const lvl = window.prompt(
+      `הרשאה עבור ${username}:\n1 — קריאה ועריכה\n2 — צפייה בלבד`,
+      u.role === 'editor' ? '1' : '2'
+    );
+    if (lvl === null) return;
+    const role = String(lvl).trim() === '1' ? 'editor' : 'viewer';
     const raw = window.prompt(
       `אילו מסכים ${username} יראה?\nהקלידו מספרים מופרדים בפסיק.\n\n${menu}`,
       current.map((id) => TABS.filter((t) => !t.adminOnly).findIndex((t) => t.id === id) + 1)
@@ -5626,11 +5782,11 @@ const userSetScreens = (username) =>
     if (!tabs.length) { toast('נא לבחור לפחות מסך אחד', true); return; }
     await api(`/admin/users/${encodeURIComponent(username)}`, {
       method: 'PUT',
-      body: { role: 'viewer', tabs, tabsOnly: true },
+      body: { role, tabs, tabsOnly: true },
     });
     await loadUsers();
     renderConsole();
-    toast(`המסכים של ${username} עודכנו`);
+    toast(`ההרשאה של ${username} עודכנה — ${roleName(role)}, ${tabs.length} מסכים`);
   });
 
 const userDelete = (username) =>
@@ -5699,7 +5855,7 @@ $app.addEventListener('keydown', (e) => {
 });
 
 // Number inputs whose derived columns are recomputed when the field is left.
-const NUM_COMMIT = new Set(['inv-open', 'inv-xopen', 'inv-xout', 'veh-km', 'fuel-litres']);
+const NUM_COMMIT = new Set(['inv-open', 'inv-xopen', 'inv-xout', 'veh-km', 'fuel-litres', 'ammo-open']);
 
 // Live-typed fields: search and the inventory grid. Re-rendering on each
 // keystroke would drop focus, so the caret is restored afterwards.
@@ -5751,6 +5907,16 @@ $app.addEventListener('input', (e) => {
     case 'veh-code':     S.inv.vehicles[+el.dataset.i].code = el.value; break;
     case 'veh-fuelcode': S.inv.vehicles[+el.dataset.i].fuelCode = el.value; break;
     case 'fuel-search':  S.regQ = { ...S.regQ, fuel: el.value }; S.page = {}; rerenderKeepFocus(el); break;
+    case 'ammo-qty':
+      S.ammoDraft[el.dataset.id] = { ...(S.ammoDraft[el.dataset.id] || { dest: 'used' }), qty: el.value };
+      break;
+    case 'ammo-who':
+      S.ammoDraft[el.dataset.id] = { ...(S.ammoDraft[el.dataset.id] || { dest: 'used' }), who: el.value };
+      break;
+    case 'ammo-open':
+      S.inv.ammo[+el.dataset.i].open =
+        Math.max(0, Math.min(999999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
+      break;
     case 'fuel-no':      S.inv.fuel[+el.dataset.i].no = el.value; break;
     case 'fuel-holder':  S.inv.fuel[+el.dataset.i].holder = el.value; break;
     case 'fuel-litres':
@@ -5779,6 +5945,13 @@ $app.addEventListener('change', (e) => {
   }
   if (el.dataset.act === 'veh-service') { S.inv.vehicles[+el.dataset.i].service = el.value; renderConsole(); return; }
   if (el.dataset.act === 'veh-kit') { S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked; renderConsole(); return; }
+  if (el.dataset.act === 'urole') { S.userRole = el.value; renderConsole(); return; }
+  if (el.dataset.act === 'ammo-dest') {
+    const id = el.dataset.id;
+    S.ammoDraft[id] = { ...(S.ammoDraft[id] || {}), dest: el.value };
+    renderConsole();
+    return;
+  }
   if (el.dataset.act === 'utab') {
     if (el.checked) S.userTabs.add(el.dataset.t);
     else S.userTabs.delete(el.dataset.t);
