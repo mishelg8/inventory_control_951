@@ -537,8 +537,10 @@ const S = {
   // admin
   adminView: 'login',           // 'setup' | 'login' | 'console'
   role: 'admin',                // 'admin' | 'viewer' — viewer cannot write
-  loginRole: 'admin',           // which credential the login form is aimed at
-  viewerInfo: null,             // { createdAt } when a viewer credential exists
+  me: '',                       // username of the signed-in user
+  tabs: '*',                    // '*' or the list of screens this user may see
+  users: [],                    // roster, admin only
+  userTabs: new Set(),          // screens ticked in the new-user form
   priv: null,                   // CryptoKey (RSA private)
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
@@ -595,7 +597,9 @@ function lock() {
   S.invQ = '';
   S.regQ = {};
   S.role = 'admin';
-  S.viewerInfo = null;
+  S.me = '';
+  S.tabs = '*';
+  S.users = [];
   S.revealed.clear();
   S.fuelOpen.clear();
   S.expanded.clear();
@@ -1362,28 +1366,25 @@ function renderSetup() {
 
 function renderLogin() {
   $app.classList.remove('wide');
-  const viewer = S.loginRole === 'viewer';
   render(`
     <section class="panel">
-      <h1 class="panel-title">${viewer ? 'כניסת צפייה' : 'כניסת מנהל'}</h1>
+      <h1 class="panel-title">כניסה למערכת</h1>
       <p class="panel-sub">הסיסמה פותחת את מפתח ההצפנה בדפדפן — היא לעולם לא נשלחת לשרת.</p>
-      <div class="filters">
-        <button class="filter" aria-pressed="${!viewer}" data-act="login-role" data-r="admin">מנהל</button>
-        <button class="filter" aria-pressed="${viewer}" data-act="login-role" data-r="viewer">צפייה בלבד</button>
-      </div>
       <form data-form="login" novalidate>
-        <input type="hidden" name="role" value="${viewer ? 'viewer' : 'admin'}">
         <label class="field">
-          <span class="field-label">${viewer ? 'סיסמת צפייה' : 'סיסמת מנהל'}</span>
+          <span class="field-label">שם משתמש</span>
+          <input class="input" type="text" name="username" autocomplete="username"
+                 inputmode="email" spellcheck="false" maxlength="31"
+                 placeholder="admin.951" required>
+        </label>
+        <label class="field">
+          <span class="field-label">סיסמה</span>
           <input class="input" type="password" name="pw" autocomplete="current-password" required>
         </label>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">כניסה</button>
       </form>
-      ${viewer
-        ? '<p class="field-hint mt mb0 center">משתמש צפייה רואה את כל הנתונים אך אינו יכול לאשר, לערוך או למחוק דבר.</p>'
-        : ''}
-    </section>`, `login-${S.loginRole}`);
+    </section>`, 'login');
 }
 
 /* — console — */
@@ -1398,10 +1399,50 @@ function counts() {
   return { pending, approved, damaged };
 }
 
+/* ── Screens & permissions ─────────────────────────────────────────── */
+
+// Mirrors TAB_NEEDS in the Worker. `needs` is what the screen reads, and the
+// server denies those endpoints to a user whose screens do not include them —
+// which is why screens sharing a source cannot be separated any finer.
+const TABS = [
+  { id: 'over',    name: 'סקירה',        needs: ['records', 'vault', 'reports'] },
+  { id: 'pending', name: 'ממתין לאישור', needs: ['records'] },
+  { id: 'track',   name: 'מעקב ציוד',    needs: ['records'] },
+  { id: 'reports', name: 'בקשות חוסר',   needs: ['reports'] },
+  { id: 'faults',  name: 'תקלות בינוי',  needs: ['reports'] },
+  { id: 'inv',     name: 'מלאי',         needs: ['records', 'vault'] },
+  { id: 'armon',   name: 'ארמון',        needs: ['vault', 'reports'] },
+  { id: 'tzelem',  name: 'דו״ח צלם',     needs: ['vault'] },
+  { id: 'ammo',    name: 'תחמושת ואלפא', needs: ['vault'] },
+  { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
+  { id: 'sum',     name: 'דוחות',        needs: ['records'] },
+  { id: 'sec',     name: 'אבטחה',        needs: [], adminOnly: true },
+];
+
+const tabName = (id) => (TABS.find((t) => t.id === id) || {}).name || id;
+
+function allowedTabs() {
+  if (S.role === 'admin') return TABS.map((t) => t.id);
+  let list = [];
+  if (S.tabs === '*') list = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
+  else { try { list = JSON.parse(S.tabs) || []; } catch { list = []; } }
+  return TABS.filter((t) => !t.adminOnly && list.includes(t.id)).map((t) => t.id);
+}
+
+function allowedScopes() {
+  const out = new Set();
+  for (const id of allowedTabs()) {
+    for (const n of (TABS.find((t) => t.id === id) || { needs: [] }).needs) out.add(n);
+  }
+  return out;
+}
+
 function renderConsole() {
   $app.classList.add('wide');
   const c = counts();
   const openReps = openReports();
+  const permitted = new Set(allowedTabs());
+  if (!permitted.has(S.tab)) S.tab = allowedTabs()[0] || 'over';
   const SECTIONS = [
     ['over',    'סקירה',        null],
     ['pending', 'ממתין לאישור', c.pending],
@@ -1418,7 +1459,7 @@ function renderConsole() {
     ['sec',     'אבטחה',        null],
   ];
 
-  const nav = SECTIONS.map(
+  const nav = SECTIONS.filter(([id]) => permitted.has(id)).map(
     ([id, label, count, hot]) => `
       <button class="nav-item" role="tab" aria-selected="${S.tab === id}"
               data-act="tab" data-tab="${id}">
@@ -1447,13 +1488,16 @@ function renderConsole() {
     <div class="conbar">
       <span class="conbar-title">${esc(title)}</span>
       <div class="conbar-actions">
+        <span class="who-tag">${esc(S.me || '')}</span>
         ${S.role === 'viewer' ? '<span class="ro-tag">צפייה בלבד</span>' : ''}
         <button class="btn ghost small" data-act="refresh">רענון</button>
         <button class="btn ghost small" data-act="lock">נעילה</button>
       </div>
     </div>
     ${S.role === 'viewer'
-      ? '<div class="callout"><p class="mb0">אתם מחוברים כ<strong>משתמש צפייה</strong>. כל הנתונים גלויים, אך אי אפשר לאשר, לערוך או למחוק. השרת דוחה כל ניסיון שינוי.</p></div>'
+      ? `<div class="callout"><p class="mb0">אתם מחוברים כ<strong>משתמש צפייה</strong> (${esc(S.me)}) עם גישה ל${
+          allowedTabs().length === 1 ? 'מסך ' : `-${allowedTabs().length} מסכים: `
+        }<strong>${allowedTabs().map((t) => esc(tabName(t))).join(', ')}</strong>. אי אפשר לאשר, לערוך או למחוק — השרת דוחה כל ניסיון שינוי וכל בקשת מידע ממסך שאינו מורשה.</p></div>`
       : ''}
     ${c.damaged
       ? `<div class="callout risk"><p class="mb0"><strong class="num">${c.damaged}</strong> רשומות פגומות — הפענוח נכשל (חשד לשיבוש נתונים בשרת).</p></div>`
@@ -1476,7 +1520,7 @@ const READ_ACTS = new Set([
   'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
   'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
-  'tz-pdf', 'tz-wa', 'login-role',
+  'tz-pdf', 'tz-wa',
 ]);
 
 function stripWriteControls() {
@@ -4296,40 +4340,91 @@ function exportFaultsCsv() {
   downloadCsv(lines, 'tzayad-faults.csv');
 }
 
-// The read-only credential. Setting it wraps a second copy of the private key
-// under a password of its own — which is why it can only be created while the
-// admin is signed in and holding the key in memory.
-function viewerPanel() {
-  const has = !!S.viewerInfo;
+// Users. Every account carries its own copy of the private key, wrapped under
+// its own password — which is why an account can only be created while an
+// admin is signed in and holding the unwrapped key in memory.
+function usersPanel() {
+  const rows = S.users.map((u) => {
+    const isMe = u.username === S.me;
+    const screens = u.role === 'admin'
+      ? '<span class="ok">כל המסכים</span>'
+      : tabsLabel(u.tabs);
+    return `<tr>
+      <td class="lg-name">${esc(u.username)}${isMe ? ' <span class="tagi">אתם</span>' : ''}</td>
+      <td><span class="state ${u.role === 'admin' ? 'done' : 'wait'}">${u.role === 'admin' ? 'מנהל' : 'צפייה בלבד'}</span></td>
+      <td class="screens">${screens}</td>
+      <td class="num">${u.last_seen ? esc(fmtDate(u.last_seen)) : '—'}</td>
+      <td class="nowrap">
+        ${u.role === 'viewer'
+          ? `<button class="btn ghost small" data-act="user-screens" data-u="${esc(u.username)}">שינוי מסכים</button>`
+          : ''}
+        <button class="btn ghost small" data-act="user-pw" data-u="${esc(u.username)}">החלפת סיסמה</button>
+        ${isMe ? '' : `<button class="linkbtn danger-link" data-act="user-del" data-u="${esc(u.username)}">מחיקה</button>`}
+      </td>
+    </tr>`;
+  }).join('');
+
+  const picks = TABS.filter((t) => !t.adminOnly).map((t) => `
+    <label class="screenpick ${S.userTabs.has(t.id) ? 'on' : ''}">
+      <input type="checkbox" class="kitbox" data-act="utab" data-t="${t.id}"
+             ${S.userTabs.has(t.id) ? 'checked' : ''}>
+      <span>${esc(t.name)}</span>
+    </label>`).join('');
+
   return `
     <section class="panel">
-      <h2 class="panel-title">משתמש צפייה בלבד</h2>
-      <p class="panel-sub">
-        ${has
-          ? `קיים משתמש צפייה מאז <strong>${esc(fmtDate(S.viewerInfo.createdAt))}</strong>. הגדרת סיסמה חדשה מחליפה את הקודמת ומנתקת מיד כל מי שמחובר בה.`
-          : 'הגדרת סיסמה נפרדת שמאפשרת לצפות בכל הנתונים בלי אפשרות לאשר, לערוך או למחוק.'}
-      </p>
-      <div class="callout risk">
-        <p class="callout-title">מה זה כן ומה זה לא</p>
-        <p>המערכת מוצפנת מקצה לקצה, ולכן משתמש צפייה מחזיק עותק משלו של מפתח הפענוח — הוא <strong>רואה הכול</strong>: שמות, טלפונים, מספרים אישיים וצילומי רישיונות. אין דרך להראות לו חלק מהנתונים בלבד.</p>
-        <p class="mb0">מה שהוא לא יכול: <strong>לשנות שום דבר</strong>. השרת דוחה כל בקשת כתיבה מהסשן שלו — לא רק שהכפתורים מוסתרים. תנו את הסיסמה הזו רק למי שממילא מורשה לראות את המידע.</p>
+      <h2 class="panel-title">משתמשים</h2>
+      <p class="panel-sub">מנהל רואה ועושה הכול. משתמש צפייה רואה רק את המסכים שסימנתם לו, ואינו יכול לאשר, לערוך או למחוק דבר.</p>
+      <div class="tbl-scroll">
+        <table class="tbl">
+          <thead><tr><th>שם משתמש</th><th>הרשאה</th><th>מסכים</th><th class="num">כניסה אחרונה</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
-      <form data-form="viewer" novalidate>
-        <label class="field">
-          <span class="field-label">${has ? 'סיסמת צפייה חדשה' : 'סיסמת צפייה'} (10 תווים לפחות)</span>
-          <input class="input" type="password" name="pw" autocomplete="new-password" required>
-        </label>
-        <label class="field">
-          <span class="field-label">אימות סיסמה</span>
-          <input class="input" type="password" name="pw2" autocomplete="new-password" required>
-        </label>
-        <p class="form-err" data-err></p>
-        <div class="rec-actions">
-          <button class="btn primary" type="submit">${has ? 'החלפת סיסמת הצפייה' : 'יצירת משתמש צפייה'}</button>
-          ${has ? '<button class="btn danger" type="button" data-act="viewer-del">ביטול משתמש הצפייה</button>' : ''}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">הוספת משתמש</h2>
+      <p class="panel-sub">שם משתמש באותיות אנגליות קטנות, ספרות, נקודה, מקף או קו תחתון. סמנו אילו מסכים המשתמש יראה.</p>
+      <form data-form="user-add" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">שם משתמש <span class="req">*</span></span>
+            <input class="input" name="username" maxlength="31" spellcheck="false"
+                   placeholder="sagan.a" required>
+          </label>
+          <label class="field">
+            <span class="field-label">סיסמה (10 תווים לפחות) <span class="req">*</span></span>
+            <input class="input" type="password" name="pw" autocomplete="new-password" required>
+          </label>
         </div>
+        <fieldset class="lic-set">
+          <legend class="field-label">מסכים מותרים <span class="req">*</span></legend>
+          <div class="screenpicks">${picks}</div>
+          <div class="rec-actions mt">
+            <button class="btn ghost small" type="button" data-act="utab-all">סימון הכול</button>
+            <button class="btn ghost small" type="button" data-act="utab-none">ניקוי</button>
+          </div>
+          <span class="field-hint">שימו לב: מסך הסקירה מציג נתונים מכל המקורות, ולכן סימונו נותן גישה לכל המידע.</span>
+        </fieldset>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">יצירת משתמש צפייה</button>
       </form>
-    </section>`;
+    </section>
+
+    <div class="callout risk">
+      <p class="callout-title">מה הרשאת הצפייה כן עושה ומה לא</p>
+      <p>המערכת מוצפנת מקצה לקצה, ולכן לכל משתמש יש עותק משלו של מפתח הפענוח. במסכים שהוא כן רואה — הוא רואה <strong>הכול</strong>: שמות, טלפונים, מספרים אישיים וצילומי רישיונות.</p>
+      <p class="mb0">מה שהוא לא יכול: <strong>לשנות שום דבר</strong>, ולא למשוך נתונים ממסכים שלא סומנו לו — השרת דוחה גם את בקשות הכתיבה וגם את בקשות המידע שמחוץ להרשאה, לא רק מסתיר כפתורים. מסכים שחולקים מקור מידע אחד אינם ניתנים להפרדה עדינה יותר.</p>
+    </div>`;
+}
+
+function tabsLabel(tabs) {
+  if (tabs === '*') return '<span class="ok">כל המסכים</span>';
+  let list = [];
+  try { list = JSON.parse(tabs) || []; } catch { list = []; }
+  if (!list.length) return '<span class="bad">ללא מסכים</span>';
+  return list.map((t) => `<span class="chip">${esc(tabName(t))}</span>`).join(' ');
 }
 
 function renderSecurityTab() {
@@ -4347,7 +4442,7 @@ function renderSecurityTab() {
       <p class="callout-title">אין שחזור סיסמה</p>
       <p class="mb0">איבוד הסיסמה משמעו איבוד כל הנתונים. הדרך היחידה להמשיך היא מחיקה מלאה והתחלה מחדש.</p>
     </div>
-    ${viewerPanel()}
+    ${usersPanel()}
 
     <section class="panel">
       <h2 class="panel-title">החלפת סיסמה</h2>
@@ -4731,18 +4826,22 @@ async function setupSubmit(form) {
 
 async function loginSubmit(form) {
   const pw = form.pw.value;
+  const username = (form.username ? form.username.value : '').trim().toLowerCase();
+  if (!username) return setFormErr(form, 'נא להזין שם משתמש');
   if (!pw) return setFormErr(form, 'נא להזין סיסמה');
   setFormErr(form, '');
-  const role = form.role && form.role.value === 'viewer' ? 'viewer' : 'admin';
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'מתחבר…';
   await withBusy(async () => {
     try {
-      const { salt } = await api(`/admin/challenge${role === 'viewer' ? '?role=viewer' : ''}`);
+      const { salt } = await api(`/admin/challenge?u=${encodeURIComponent(username)}`);
       const { kek, verifier } = await deriveAuth(pw, salt);
-      const { keyIv, wrappedKey } = await api('/admin/login', { body: { verifier, role } });
-      S.role = role;
+      const res = await api('/admin/login', { body: { verifier, username } });
+      const { keyIv, wrappedKey } = res;
+      S.role = res.role === 'viewer' ? 'viewer' : 'admin';
+      S.me = res.username || username;
+      S.tabs = res.tabs || '*';
       const pkcs8 = new Uint8Array(
         await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(keyIv) }, kek, ub64(wrappedKey))
       );
@@ -4751,15 +4850,18 @@ async function loginSubmit(form) {
       );
       S.pkcs8 = pkcs8;
       S.pubKey = await importPubKey(S.config.pub);
-      await loadRecords();
-      await loadInv();
-      await loadReports();
-      if (role === 'admin') await loadViewerInfo();
-      S.tab = 'over';
+      // only fetch what this user's screens actually need — the server
+      // refuses the rest anyway, and a 403 must not break the login
+      const scopes = allowedScopes();
+      if (scopes.has('records')) await loadRecords();
+      if (scopes.has('vault')) await loadInv();
+      if (scopes.has('reports')) await loadReports();
+      if (S.role === 'admin') await loadUsers();
+      S.tab = allowedTabs()[0] || 'over';
       armIdle();
       renderConsole();
     } catch (e) {
-      setFormErr(form, e.status === 401 ? 'סיסמה שגויה' : e.message);
+      setFormErr(form, e.status === 401 ? 'שם משתמש או סיסמה שגויים' : e.message);
     }
   });
   if (!S.priv) {
@@ -4939,9 +5041,11 @@ const adminDelete = (rid) =>
 
 const adminRefresh = () =>
   withBusy(async () => {
-    await loadRecords();
-    await loadInv();
-    await loadReports();
+    const scopes = allowedScopes();
+    if (scopes.has('records')) await loadRecords();
+    if (scopes.has('vault')) await loadInv();
+    if (scopes.has('reports')) await loadReports();
+    if (S.role === 'admin') await loadUsers();
     renderConsole();
     toast('עודכן');
   });
@@ -5001,45 +5105,115 @@ async function rotateSubmit(form) {
   });
 }
 
-// Wraps the very same private key under a second password. Only possible while
-// the admin is signed in, because the unwrapped key lives in memory only then.
-async function viewerSubmit(form) {
+// Wraps the very same private key under another password. Only possible while
+// an admin is signed in, because the unwrapped key lives in memory only then.
+async function wrapKeyFor(pw) {
+  const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+  const keyIv = crypto.getRandomValues(new Uint8Array(12));
+  const { kek, verifier } = await deriveAuth(pw, salt);
+  const wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: keyIv }, kek, S.pkcs8);
+  return { salt, verifier, keyIv: b64(keyIv), wrappedKey: b64(wrapped) };
+}
+
+async function userAddSubmit(form) {
+  const username = form.username.value.trim().toLowerCase();
   const pw = form.pw.value;
-  const pw2 = form.pw2.value;
+  if (!/^[a-z0-9][a-z0-9._-]{1,30}$/.test(username)) {
+    return setFormErr(form, 'שם משתמש: אותיות אנגליות קטנות, ספרות, נקודה, מקף או קו תחתון (2–31 תווים)');
+  }
+  if (S.users.some((u) => u.username === username)) {
+    return setFormErr(form, `שם המשתמש ${username} כבר קיים`);
+  }
   if (pw.length < 10) return setFormErr(form, 'הסיסמה חייבת להכיל 10 תווים לפחות');
-  if (pw !== pw2) return setFormErr(form, 'הסיסמאות אינן תואמות');
+  if (!S.userTabs.size) return setFormErr(form, 'נא לסמן לפחות מסך אחד');
   if (!S.pkcs8) return setFormErr(form, 'המפתח אינו זמין — התחברו מחדש');
   setFormErr(form, '');
   await withBusy(async () => {
-    const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
-    const keyIv = crypto.getRandomValues(new Uint8Array(12));
-    const { kek, verifier } = await deriveAuth(pw, salt);
-    const wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: keyIv }, kek, S.pkcs8);
-    await api('/admin/viewer', {
+    await api(`/admin/users/${encodeURIComponent(username)}`, {
       method: 'PUT',
-      body: { salt, verifier, keyIv: b64(keyIv), wrappedKey: b64(wrapped) },
+      body: { role: 'viewer', tabs: [...S.userTabs], ...(await wrapKeyFor(pw)) },
     });
-    await loadViewerInfo();
+    S.userTabs.clear();
+    await loadUsers();
     renderConsole();
-    toast('סיסמת הצפייה נשמרה');
+    toast(`המשתמש ${username} נוצר`);
   });
 }
 
-const viewerDelete = () =>
+const userSetPassword = (username) =>
   withBusy(async () => {
-    if (!window.confirm('לבטל את משתמש הצפייה? מי שמחובר בו ינותק מיד.')) return;
-    await api('/admin/viewer', { method: 'DELETE' });
-    S.viewerInfo = null;
+    const u = S.users.find((x) => x.username === username);
+    if (!u) return;
+    if (!S.pkcs8) { toast('המפתח אינו זמין — התחברו מחדש', true); return; }
+    const pw = window.prompt(`סיסמה חדשה עבור ${username} (10 תווים לפחות):`, '');
+    if (pw === null) return;
+    if (pw.length < 10) { toast('הסיסמה חייבת להכיל 10 תווים לפחות', true); return; }
+    let tabs = [];
+    if (u.role === 'viewer') {
+      try { tabs = JSON.parse(u.tabs) || []; } catch { tabs = []; }
+      if (u.tabs === '*') tabs = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
+    }
+    await api(`/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PUT',
+      body: { role: u.role, tabs, ...(await wrapKeyFor(pw)) },
+    });
+    await loadUsers();
     renderConsole();
-    toast('משתמש הצפייה בוטל');
+    toast(
+      username === S.me
+        ? 'הסיסמה הוחלפה — התחברו מחדש בפעם הבאה'
+        : `הסיסמה של ${username} הוחלפה — הוא נותק מכל המכשירים`
+    );
   });
 
-async function loadViewerInfo() {
+// Changing screens does not touch the password, so the user stays signed in
+// with their permissions updated underneath them.
+const userSetScreens = (username) =>
+  withBusy(async () => {
+    const u = S.users.find((x) => x.username === username);
+    if (!u || u.role === 'admin') return;
+    let current = [];
+    try { current = JSON.parse(u.tabs) || []; } catch { current = []; }
+    if (u.tabs === '*') current = TABS.filter((t) => !t.adminOnly).map((t) => t.id);
+    const menu = TABS.filter((t) => !t.adminOnly)
+      .map((t, n) => `${n + 1} — ${t.name}${current.includes(t.id) ? ' ✓' : ''}`)
+      .join('\n');
+    const raw = window.prompt(
+      `אילו מסכים ${username} יראה?\nהקלידו מספרים מופרדים בפסיק.\n\n${menu}`,
+      current.map((id) => TABS.filter((t) => !t.adminOnly).findIndex((t) => t.id === id) + 1)
+        .filter((n) => n > 0).join(',')
+    );
+    if (raw === null) return;
+    const pickable = TABS.filter((t) => !t.adminOnly);
+    const tabs = [...new Set(
+      raw.split(/[,\s]+/).map((x) => parseInt(x, 10)).filter((n) => n >= 1 && n <= pickable.length)
+    )].map((n) => pickable[n - 1].id);
+    if (!tabs.length) { toast('נא לבחור לפחות מסך אחד', true); return; }
+    await api(`/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PUT',
+      body: { role: 'viewer', tabs, tabsOnly: true },
+    });
+    await loadUsers();
+    renderConsole();
+    toast(`המסכים של ${username} עודכנו`);
+  });
+
+const userDelete = (username) =>
+  withBusy(async () => {
+    if (!window.confirm(`למחוק את המשתמש ${username}? הוא ינותק מיד ולא יוכל להתחבר.`)) return;
+    await api(`/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+    await loadUsers();
+    renderConsole();
+    toast(`המשתמש ${username} נמחק`);
+  });
+
+async function loadUsers() {
   try {
-    const { viewer } = await api('/admin/viewer');
-    S.viewerInfo = viewer;
+    const { users, me } = await api('/admin/users');
+    S.users = users || [];
+    if (me) S.me = me;
   } catch {
-    S.viewerInfo = null;                  // older deployment without the table
+    S.users = [];                          // older deployment without the table
   }
 }
 
@@ -5205,6 +5379,12 @@ $app.addEventListener('change', (e) => {
   }
   if (el.dataset.act === 'veh-service') { S.inv.vehicles[+el.dataset.i].service = el.value; renderConsole(); return; }
   if (el.dataset.act === 'veh-kit') { S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked; renderConsole(); return; }
+  if (el.dataset.act === 'utab') {
+    if (el.checked) S.userTabs.add(el.dataset.t);
+    else S.userTabs.delete(el.dataset.t);
+    renderConsole();
+    return;
+  }
   if (el.dataset.act === 'fuel-kind') { S.inv.fuel[+el.dataset.i].kind = el.value; renderConsole(); return; }
   if (el.dataset.act === 'fuel-file') { fuelFile(+el.dataset.i, el); return; }
   if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
@@ -5222,7 +5402,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'setup') setupSubmit(form);
   else if (kind === 'login') loginSubmit(form);
   else if (kind === 'rotate') rotateSubmit(form);
-  else if (kind === 'viewer') viewerSubmit(form);
+  else if (kind === 'user-add') userAddSubmit(form);
   else if (kind === 'report') reportSubmit(form);
   else if (kind === 'deposit') depositSubmit(form);
   else if (kind === 'fault') faultSubmit(form);
@@ -5392,8 +5572,15 @@ function dispatch(act, el) {
       renderConsole();
       break;
     }
-    case 'login-role': S.loginRole = el.dataset.r; renderLogin(); break;
-    case 'viewer-del': viewerDelete(); break;
+    // users
+    case 'user-del': userDelete(el.dataset.u); break;
+    case 'user-pw': userSetPassword(el.dataset.u); break;
+    case 'user-screens': userSetScreens(el.dataset.u); break;
+    case 'utab-all':
+      S.userTabs = new Set(TABS.filter((t) => !t.adminOnly).map((t) => t.id));
+      renderConsole();
+      break;
+    case 'utab-none': S.userTabs.clear(); renderConsole(); break;
     // roster tables
     case 'sort': {
       const k = el.dataset.k;
