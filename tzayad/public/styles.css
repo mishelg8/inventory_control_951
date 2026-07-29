@@ -241,6 +241,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   font-weight: 700;
 }
 .pill.bad { background: var(--bad-fill); color: #fff; }
+.pill.ok  { background: var(--ok-fill);  color: #fff; }
 .nowrap { white-space: nowrap; }
 .mt-xs { margin-top: 4px; }
 .ro-tag {

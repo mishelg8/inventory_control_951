@@ -3397,11 +3397,15 @@ const depApprove = (id) =>
     toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון`);
   });
 
-function armonVisible() {
+// `where` splits the register into what is physically on the shelf and what has
+// gone out. The true index is carried through so edits still target the right
+// entry after filtering.
+function armonVisible(where) {
   const rows = (S.inv && S.inv.armon) || [];
   const q = (S.regQ.armon || '').trim().toLowerCase();
   return rows
     .map((x, i) => ({ x, i }))
+    .filter(({ x }) => (where === 'here' ? x.loc === 'armon' : x.loc !== 'armon'))
     .filter(({ x }) => S.armKind === 'all' || x.kind === S.armKind)
     .filter(({ x }) =>
       !q ||
@@ -3414,8 +3418,10 @@ function armonVisible() {
 function renderArmonTab() {
   const all = (S.inv && S.inv.armon) || [];
   const log = (S.inv && S.inv.armonLog) || [];
-  const vis = armonVisible();
+  const vis = armonVisible('here');
   const p = paged('armon', vis);
+  const visOut = armonVisible('out');
+  const pOut = paged('armonOut', visOut);
   const here = all.filter((x) => x.loc === 'armon');
   const out = all.filter((x) => x.loc !== 'armon');
   const byKind = ARM_KINDS.map((k) => ({
@@ -3430,7 +3436,7 @@ function renderArmonTab() {
       `<button class="filter" aria-pressed="${S.armKind === id}" data-act="arm-kind" data-k="${id}">${esc(label)}</button>`)
     .join('');
 
-  const rows = p.slice.map(({ x, i }) => `
+  const armRow = ({ x, i }) => `
     <tr>
       <td>${esc(nameOf(ARM_KINDS, x.kind))}</td>
       <td>${esc(x.name)}</td>
@@ -3447,7 +3453,9 @@ function renderArmonTab() {
       </td>
       <td class="num">${x.addedAt ? esc(fmtDay(new Date(x.addedAt).toISOString().slice(0, 10))) : '—'}</td>
       <td><button class="btn danger small" data-act="arm-remove" data-i="${i}">הסרה</button></td>
-    </tr>`).join('');
+    </tr>`;
+  const rows = p.slice.map(armRow).join('');
+  const rowsOut = pOut.slice.map(armRow).join('');
 
   const logRows = log.slice(0, 200).map((e) => `
     <tr>
@@ -3494,8 +3502,8 @@ function renderArmonTab() {
     </section>
 
     <section class="panel">
-      <h2 class="panel-title">פריטים בארמון</h2>
-      <p class="panel-sub">כל הפריטים הרשומים בארמון. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".</p>
+      <h2 class="panel-title">מלאי הארמון <span class="pill ok num">${here.length}</span></h2>
+      <p class="panel-sub">רק מה שנמצא פיזית בארמון עכשיו. ברגע שמסמנים פריט "אצל חייל" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".</p>
       <div class="kpis">
         ${kpi(here.length, 'נמצאים בארמון', 'ok', `${all.length} רשומים · ${out.length} בחוץ`)}
         ${byKind.map((k) => kpi(k.here, k.name, k.out ? 'warn' : null, k.out ? `${k.out} בחוץ` : 'הכול בארמון')).join('')}
@@ -3505,7 +3513,7 @@ function renderArmonTab() {
         : ''}
       ${all.length > 4
         ? plainSearch('arm-search', 'arm-qclear', S.regQ.armon || '',
-                      'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length)
+                      'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length + visOut.length)
         : ''}
       <div class="filters">${kindChips}</div>
       ${vis.length
@@ -3518,14 +3526,35 @@ function renderArmonTab() {
                <tbody>${rows}</tbody>
              </table>
            </div>
-           ${pager('armon', p)}
+           ${pager('armon', p)}`
+        : `<p class="empty">${here.length ? 'אין פריט בארמון שתואם את החיפוש.' : all.length ? 'אין פריטים בארמון — כולם בחוץ.' : 'הארמון ריק. הוסיפו פריט למעלה.'}</p>`}
+      <div class="rec-actions mt">
+        <button class="btn ghost" data-act="rep-csv" data-r="armon">ייצוא ל-CSV</button>
+        <button class="btn ghost" data-act="rep-pdf" data-r="armon">הפקת PDF</button>
+        <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
+      </div>
+    </section>
+
+    ${out.length ? `
+    <section class="panel">
+      <h2 class="panel-title">פריטים שאינם בארמון <span class="pill bad num">${out.length}</span></h2>
+      <p class="panel-sub">פריטים שיצאו מהארמון ורשומים על מישהו. הם אינם נספרים במלאי הארמון, אך נשארים ברישום. החזרת המיקום ל"ארמון" מחזירה אותם לרשימה למעלה.</p>
+      ${visOut.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl">
+               <thead><tr>
+                 <th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>אצל מי</th>
+                 <th>מיקום</th><th class="num">נוסף</th><th></th>
+               </tr></thead>
+               <tbody>${rowsOut}</tbody>
+             </table>
+           </div>
+           ${pager('armonOut', pOut)}
            <div class="rec-actions mt">
-             <button class="btn ghost" data-act="rep-csv" data-r="armon">ייצוא ל-CSV</button>
-             <button class="btn ghost" data-act="rep-pdf" data-r="armon">הפקת PDF</button>
              <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
            </div>`
-        : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'הארמון ריק. הוסיפו פריט למעלה.'}</p>`}
-    </section>
+        : '<p class="empty">אין פריט בחוץ שתואם את החיפוש.</p>'}
+    </section>` : ''}
 
     <section class="panel">
       <h2 class="panel-title">יומן פעולות</h2>
