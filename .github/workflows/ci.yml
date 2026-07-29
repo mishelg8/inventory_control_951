@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # No build step and no runtime dependencies by design, so the checks are
+      # syntax, the unit suite, and the invariants that have actually broken
+      # before: CSP compliance and the schema/migration pairing.
+      - name: Syntax
+        run: |
+          node --check tzayad/public/app.js
+          node --check "tzayad/functions/api/[[path]].js"
+
+      - name: Unit tests
+        run: node --test "tzayad/test/*.test.mjs"
+
+      - name: No inline styles or scripts (strict CSP)
+        run: node tzayad/test/csp-check.mjs
+
+      - name: Every migration is registered
+        run: node tzayad/test/migrations-check.mjs

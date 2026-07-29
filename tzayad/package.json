@@ -7,7 +7,11 @@
     "dev": "wrangler pages dev",
     "db:init:local": "wrangler d1 execute tzayad --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute tzayad --remote --file=./schema.sql",
-    "deploy": "wrangler pages deploy public"
+    "deploy": "wrangler pages deploy public",
+    "test": "node --test \"test/*.test.mjs\" && node test/csp-check.mjs && node test/migrations-check.mjs",
+    "db:migrate:local": "for f in migrations/*.sql; do npx wrangler d1 execute tzayad --local --file=\"$f\" || true; done",
+    "db:migrate:remote": "for f in migrations/*.sql; do npx wrangler d1 execute tzayad --remote --file=\"$f\" || true; done",
+    "db:backup": "npx wrangler d1 export tzayad --remote --output \"backup-$(date +%Y-%m-%d).sql\""
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

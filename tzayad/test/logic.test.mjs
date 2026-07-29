@@ -1,0 +1,87 @@
+// Unit tests for the pure logic that carries real consequences: serial-number
+// safety, permission scoping, and the CSV encoding Excel needs. These are the
+// parts where a silent regression means a lost weapon or a leaked screen.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const app = readFileSync(join(root, 'public/app.js'), 'utf8');
+const api = readFileSync(join(root, 'functions/api/[[path]].js'), 'utf8');
+
+// Lift a named function out of the bundle and evaluate it in isolation. The
+// app has no build step and no module system, so this is how a pure helper
+// gets tested without loading a browser.
+function lift(src, name, deps = '') {
+  const start = src.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} not found`);
+  let depth = 0, i = src.indexOf('{', start), end = -1;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
+  }
+  return new Function(`${deps}\n${src.slice(start, end)}\nreturn ${name};`)();
+}
+
+test('editDistance flags a single mistyped digit', () => {
+  const d = lift(app, 'editDistance');
+  assert.equal(d('7145732', '7145732'), 0);
+  assert.equal(d('7145732', '7145733'), 1);   // last digit wrong
+  assert.equal(d('7145732', '714573'), 1);    // digit dropped
+  assert.equal(d('7145732', '7145723'), 2);   // transposed — two edits
+  assert.ok(d('7145732', '9000001') >= 2);
+});
+
+test('scopesFor grants only what the listed screens read', () => {
+  const scopesFor = lift(api, 'scopesFor', `
+    const TAB_NEEDS = ${api.match(/const TAB_NEEDS = \{[\s\S]*?\n\};/)[0].replace('const TAB_NEEDS = ', '')}
+  `);
+  assert.deepEqual([...scopesFor('["veh"]')], ['vault']);
+  assert.deepEqual([...scopesFor('["pending"]')], ['records']);
+  assert.deepEqual([...scopesFor('["faults"]')], ['reports']);
+  // the overview reads everything, so granting it grants everything
+  assert.equal(scopesFor('["over"]').size, 3);
+  assert.equal(scopesFor('*').size, 3);
+  // malformed input must fail closed, not open
+  assert.equal(scopesFor('not json').size, 0);
+  assert.equal(scopesFor('[]').size, 0);
+});
+
+test('csvCell quotes and escapes for Excel', () => {
+  const csvCell = new Function(`return ${app.match(/const csvCell = [^;]+;/)[0].replace('const csvCell = ', '').replace(/;$/, '')}`)();
+  assert.equal(csvCell('abc'), '"abc"');
+  assert.equal(csvCell('a"b'), '"a""b"');       // embedded quote doubled
+  assert.equal(csvCell('a,b'), '"a,b"');        // comma stays inside quotes
+  assert.equal(csvCell(null), '""');
+  assert.equal(csvCell(0), '"0"');              // zero is not empty
+});
+
+test('isUsername rejects anything that could become a wildcard', () => {
+  const isUsername = new Function(`return ${api.match(/const isUsername = [^;]+;/)[0].replace('const isUsername = ', '').replace(/;$/, '')}`)();
+  assert.ok(isUsername('admin.951'));
+  assert.ok(isUsername('sagan_a-1'));
+  assert.ok(!isUsername('*'));
+  assert.ok(!isUsername('Admin'));          // uppercase would break comparison
+  assert.ok(!isUsername('a'));              // too short
+  assert.ok(!isUsername('a'.repeat(32)));   // too long
+  assert.ok(!isUsername("bob'; DROP--"));
+});
+
+test('every mutating admin route is behind the viewer guard', () => {
+  // The guard is a single check before the routes; if it ever moves below one,
+  // that route becomes writable by a read-only account.
+  const guard = api.indexOf("session.role === 'viewer' && method !== 'GET'");
+  assert.notEqual(guard, -1, 'viewer write guard missing');
+  for (const route of ["seg[1] === 'vault'", "seg[1] === 'records'", "seg[1] === 'users'"]) {
+    assert.ok(api.indexOf(route) > guard, `${route} is routed before the viewer guard`);
+  }
+});
+
+test('soldier submissions all spend a ticket', () => {
+  // Four public write paths; each must present a ticket or the endpoint is
+  // open to scripted injection.
+  assert.equal((app.match(/ticket: await getTicket\(\)/g) || []).length, 4);
+  assert.ok(api.includes('spendTicket(db, b.ticket, now)'));
+});

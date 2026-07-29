@@ -93,6 +93,45 @@ async function sweepThrottle(db, now) {
 
 const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first();
 
+const TRASH_MS = 30 * 24 * 60 * 60 * 1000;   // deleted rows stay recoverable for 30 days
+const TICKET_MS = 30 * 60 * 1000;         // a ticket is good for half an hour
+const TICKET_LIMIT = 60;                  // tickets per IP per hour
+
+// A submission ticket. The public key is public by design, so anyone could
+// craft a valid encrypted payload; requiring a ticket means a writer must
+// first fetch one, and each ticket is worth exactly one write. It is not
+// identity — it is a cost, and it caps how fast a script can inject.
+async function issueTicket(db, now) {
+  const id = randomToken().slice(0, 32);
+  await db.prepare('DELETE FROM tickets WHERE expires <= ?1').bind(now).run();
+  await db
+    .prepare('INSERT INTO tickets (id, expires) VALUES (?1, ?2)')
+    .bind(id, now + TICKET_MS)
+    .run();
+  return { ticket: id, expires: now + TICKET_MS };
+}
+
+// Spends a ticket. Returns false when it is unknown, expired or already used —
+// the UPDATE itself is the check, so two concurrent requests cannot both win.
+async function spendTicket(db, id, now) {
+  if (!isHex(id, HEX32)) return false;
+  const r = await db
+    .prepare('UPDATE tickets SET used_at = ?1 WHERE id = ?2 AND used_at IS NULL AND expires > ?1')
+    .bind(now, id)
+    .run();
+  return !!(r.meta && r.meta.changes);
+}
+
+// Append-only trail of admin actions. Never records anything identifying —
+// the console is encrypted and the audit log is not.
+async function audit(db, now, session, action, target, detail) {
+  await db
+    .prepare('INSERT INTO audit (at, username, action, target, detail) VALUES (?1, ?2, ?3, ?4, ?5)')
+    .bind(now, (session && session.username) || null, action, target || null, detail || null)
+    .run()
+    .catch(() => {});   // a failed audit write must never block the action
+}
+
 // Returns null rather than throwing when the table predates the users feature.
 const getUser = (db, username) =>
   db.prepare('SELECT * FROM users WHERE username = ?1').bind(username).first().catch(() => null);
@@ -205,6 +244,15 @@ export async function onRequest(context) {
       return json({ ready: true, pub: JSON.parse(cfg.pub), idSalt: cfg.id_salt });
     }
 
+    // ── GET /api/ticket ──────────────────────────────────────────────
+    // A one-shot permit to submit. Cheap to get, but it has to be got.
+    if (seg[0] === 'ticket' && seg.length === 1 && method === 'GET') {
+      if (!(await allow(db, `tkt:${ip}`, TICKET_LIMIT, SUB_WINDOW_MS, now))) {
+        return err(429, 'יותר מדי בקשות, נסו שוב מאוחר יותר');
+      }
+      return json(await issueTicket(db, now));
+    }
+
     // ── POST /api/setup ──────────────────────────────────────────────
     if (seg[0] === 'setup' && seg.length === 1 && method === 'POST') {
       if (env.SETUP_TOKEN && request.headers.get('X-Setup-Token') !== env.SETUP_TOKEN) {
@@ -278,6 +326,9 @@ export async function onRequest(context) {
       if (!isHex(rid, HEX32) || !isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 8000)) {
         return err(400, 'בקשה לא תקינה');
       }
+      if (!(await spendTicket(db, b.ticket, now))) {
+        return err(403, 'ההרשאה לשליחה פגה — רעננו את הדף ונסו שוב');
+      }
       const existing = await db
         .prepare('SELECT status FROM records WHERE rid = ?1')
         .bind(rid)
@@ -314,6 +365,9 @@ export async function onRequest(context) {
       const { id, ek, iv, ct } = b;
       if (!isHex(id, HEX32) || !isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 12000)) {
         return err(400, 'בקשה לא תקינה');
+      }
+      if (!(await spendTicket(db, b.ticket, now))) {
+        return err(403, 'ההרשאה לשליחה פגה — רעננו את הדף ונסו שוב');
       }
       const clash = await db.prepare('SELECT id FROM reports WHERE id = ?1').bind(id).first();
       if (clash) return err(409, 'מזהה כפול — נסו שוב');
@@ -388,6 +442,11 @@ export async function onRequest(context) {
         const b = await readBody(request);
         if (!b || !isHex(b.verifier, HEX64)) return err(400, 'בקשה לא תקינה');
         const username = (b.username || '').toLowerCase();
+        // Per-IP alone lets a distributed attacker grind one account. The
+        // account itself also has a budget.
+        if (username && !(await allow(db, `luser:${username}`, LOGIN_LIMIT, LOGIN_WINDOW_MS, now))) {
+          return err(429, 'החשבון ננעל זמנית לאחר ניסיונות כושלים — נסו בעוד 10 דקות');
+        }
 
         let cred = null;
         if (username) {
@@ -444,7 +503,9 @@ export async function onRequest(context) {
                 : seg[1] === 'reports' ? 'reports'
                   : null;
         if (wants && !scopes.has(wants)) return err(403, 'אין הרשאה לנתונים אלה');
-        if (seg[1] === 'users') return err(403, 'אין הרשאה לניהול משתמשים');
+        if (seg[1] === 'users' || seg[1] === 'audit' || seg[1] === 'trash') {
+          return err(403, 'אין הרשאה לאזור זה');
+        }
       }
 
       // POST /api/admin/logout
@@ -513,6 +574,7 @@ export async function onRequest(context) {
             )
             .bind(username, role, b.salt, b.verifier, b.keyIv, b.wrappedKey, tabs, now)
             .run();
+          await audit(db, now, session, existing ? 'user-update' : 'user-create', username, role);
           // a password change signs that user out everywhere
           await db.prepare('DELETE FROM sessions WHERE username = ?1').bind(username).run();
           return json({ ok: true });
@@ -530,6 +592,7 @@ export async function onRequest(context) {
             db.prepare('DELETE FROM users WHERE username = ?1').bind(username),
             db.prepare('DELETE FROM sessions WHERE username = ?1').bind(username),
           ]);
+          await audit(db, now, session, 'user-delete', username, null);
           return json({ ok: true });
         }
       }
@@ -538,7 +601,7 @@ export async function onRequest(context) {
       if (seg[1] === 'reports' && seg.length === 2 && method === 'GET') {
         const { results } = await db
           .prepare(
-            'SELECT id, ek, iv, ct, status, created_at, updated_at FROM reports ORDER BY created_at DESC'
+            'SELECT id, ek, iv, ct, status, created_at, updated_at FROM reports WHERE deleted_at IS NULL ORDER BY created_at DESC'
           )
           .all();
         return json({ reports: results });
@@ -563,8 +626,12 @@ export async function onRequest(context) {
         }
 
         if (method === 'DELETE') {
-          const r = await db.prepare('DELETE FROM reports WHERE id = ?1').bind(id).run();
+          const r = await db
+            .prepare('UPDATE reports SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL')
+            .bind(now, id)
+            .run();
           if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+          await audit(db, now, session, 'delete-report', id, null);
           return json({ ok: true });
         }
       }
@@ -624,6 +691,16 @@ export async function onRequest(context) {
           if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, VAULT_MAX_B64)) {
             return err(400, 'בקשה לא תקינה');
           }
+          // Optimistic concurrency: the client sends the updated_at it loaded.
+          // If the stored one moved, someone else saved in between and blindly
+          // overwriting would silently destroy their work.
+          const cur = await db.prepare('SELECT updated_at FROM vault WHERE id = 1').first();
+          if (cur && b.baseVersion !== undefined && Number(b.baseVersion) !== cur.updated_at) {
+            return json(
+              { error: 'המלאי עודכן בינתיים על ידי מנהל אחר — רעננו לפני השמירה', current: cur.updated_at },
+              409
+            );
+          }
           await db
             .prepare(
               `INSERT INTO vault (id, ek, iv, ct, updated_at) VALUES (1, ?1, ?2, ?3, ?4)
@@ -631,7 +708,8 @@ export async function onRequest(context) {
             )
             .bind(ek, iv, ct, now)
             .run();
-          return json({ ok: true });
+          await audit(db, now, session, 'vault', null, `${ct.length} תווים`);
+          return json({ ok: true, updatedAt: now });
         }
       }
 
@@ -639,7 +717,7 @@ export async function onRequest(context) {
       if (seg[1] === 'records' && seg.length === 2 && method === 'GET') {
         const { results } = await db
           .prepare(
-            'SELECT rid, ek, iv, ct, status, created_at, updated_at FROM records ORDER BY created_at'
+            'SELECT rid, ek, iv, ct, status, created_at, updated_at FROM records WHERE deleted_at IS NULL ORDER BY created_at'
           )
           .all();
         return json({ records: results });
@@ -737,18 +815,62 @@ export async function onRequest(context) {
             .bind(ek, iv, ct, status, now, rid)
             .run();
           if (!r.meta.changes) return err(404, 'הרשומה לא נמצאה');
+          await audit(db, now, session, status === 'approved' ? 'approve' : 'update', rid, null);
           return json({ ok: true });
         }
 
+        // Soft delete. The row leaves the console but survives for 30 days,
+        // photos included, so one mis-click is recoverable.
         if (method === 'DELETE') {
-          // licence photos belong to the record — they go with it
-          const [r] = await db.batch([
-            db.prepare('DELETE FROM records WHERE rid = ?1').bind(rid),
-            db.prepare('DELETE FROM docs WHERE rid = ?1').bind(rid),
-          ]);
+          const r = await db
+            .prepare('UPDATE records SET deleted_at = ?1 WHERE rid = ?2 AND deleted_at IS NULL')
+            .bind(now, rid)
+            .run();
           if (!r.meta.changes) return err(404, 'הרשומה לא נמצאה');
+          await audit(db, now, session, 'delete-record', rid, null);
           return json({ ok: true });
         }
+      }
+
+      // GET /api/admin/trash — what is recoverable, and for how long
+      if (seg[1] === 'trash' && seg.length === 2 && method === 'GET') {
+        const cutoff = now - TRASH_MS;
+        await db.batch([
+          db.prepare('DELETE FROM records WHERE deleted_at IS NOT NULL AND deleted_at < ?1').bind(cutoff),
+          db.prepare('DELETE FROM reports WHERE deleted_at IS NOT NULL AND deleted_at < ?1').bind(cutoff),
+        ]);
+        const recs = await db
+          .prepare('SELECT rid, ek, iv, ct, status, created_at, deleted_at FROM records WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC')
+          .all();
+        const reps = await db
+          .prepare('SELECT id, ek, iv, ct, status, created_at, deleted_at FROM reports WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC')
+          .all();
+        return json({ records: recs.results, reports: reps.results, keepMs: TRASH_MS });
+      }
+
+      // POST /api/admin/trash/:kind/:id — put it back
+      if (seg[1] === 'trash' && seg.length === 4 && method === 'POST') {
+        const [, , kind, id] = seg;
+        if (!isHex(id, HEX32) || (kind !== 'record' && kind !== 'report')) {
+          return err(400, 'בקשה לא תקינה');
+        }
+        const table = kind === 'record' ? 'records' : 'reports';
+        const col = kind === 'record' ? 'rid' : 'id';
+        const r = await db
+          .prepare(`UPDATE ${table} SET deleted_at = NULL WHERE ${col} = ?1 AND deleted_at IS NOT NULL`)
+          .bind(id)
+          .run();
+        if (!r.meta.changes) return err(404, 'הפריט לא נמצא בסל');
+        await audit(db, now, session, `restore-${kind}`, id, null);
+        return json({ ok: true });
+      }
+
+      // GET /api/admin/audit — the admin action trail
+      if (seg[1] === 'audit' && seg.length === 2 && method === 'GET') {
+        const { results } = await db
+          .prepare('SELECT at, username, action, target, detail FROM audit ORDER BY at DESC LIMIT 500')
+          .all();
+        return json({ audit: results });
       }
 
       // POST /api/admin/rotate
