@@ -1457,3 +1457,34 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   }
   .pd-sign { white-space: nowrap; }
 }
+
+/* ── Users & screen permissions ────────────────────────────────────── */
+.who-tag {
+  align-self: center;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.screens { max-width: 380px; }
+.screens .chip { margin: 1px 0; }
+
+.screenpicks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+.screenpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 14px;
+  cursor: pointer;
+}
+.screenpick:hover { border-color: var(--line-hard); }
+.screenpick.on { border-color: var(--pine); background: var(--pine-tint); font-weight: 600; }

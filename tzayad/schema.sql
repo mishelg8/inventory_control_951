@@ -61,24 +61,31 @@ CREATE TABLE IF NOT EXISTS vault (
   updated_at  INTEGER NOT NULL
 );
 
--- A second, read-only credential. It holds its own copy of the same private
--- key, wrapped under the viewer's own password — decryption happens in the
--- browser, so there is no way to show the data without handing over a key.
--- What makes it read-only is the server: every mutating endpoint refuses a
--- session whose role is 'viewer'.
-CREATE TABLE IF NOT EXISTS viewer (
-  id           INTEGER PRIMARY KEY CHECK (id = 1),
-  salt         TEXT    NOT NULL,   -- PBKDF2 salt for the viewer KEK + verifier
-  verifier     TEXT    NOT NULL,
-  key_iv       TEXT    NOT NULL,
-  wrapped_key  TEXT    NOT NULL,   -- private key encrypted under the viewer KEK
-  created_at   INTEGER NOT NULL
+-- Logins. Decryption happens in the browser, so every user needs their own
+-- copy of the RSA private key, wrapped under a KEK derived from their own
+-- password — there is no way to show the data without handing over a key.
+-- What makes a viewer read-only is the server: it refuses any non-GET from a
+-- session whose role is 'viewer'. `tabs` narrows what they see; the endpoint
+-- guard turns that into a real boundary at the granularity of the three data
+-- sources (records, vault, reports).
+CREATE TABLE IF NOT EXISTS users (
+  username     TEXT PRIMARY KEY,       -- 'admin.951', 'sagan.a', …
+  role         TEXT NOT NULL DEFAULT 'viewer',   -- 'admin' | 'viewer'
+  salt         TEXT NOT NULL,          -- PBKDF2 salt for this user's KEK
+  verifier     TEXT NOT NULL,
+  key_iv       TEXT NOT NULL,
+  wrapped_key  TEXT NOT NULL,
+  tabs         TEXT NOT NULL DEFAULT '*',   -- '*' or a JSON array of tab ids
+  created_at   INTEGER NOT NULL,
+  last_seen    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-  token   TEXT PRIMARY KEY,        -- 64 hex chars
-  expires INTEGER NOT NULL,
-  role    TEXT NOT NULL DEFAULT 'admin'   -- 'admin' | 'viewer'
+  token    TEXT PRIMARY KEY,       -- 64 hex chars
+  expires  INTEGER NOT NULL,
+  role     TEXT NOT NULL DEFAULT 'admin',   -- 'admin' | 'viewer'
+  username TEXT,
+  tabs     TEXT NOT NULL DEFAULT '*'
 );
 
 CREATE TABLE IF NOT EXISTS throttle (

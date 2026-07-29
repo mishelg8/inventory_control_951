@@ -93,16 +93,59 @@ async function sweepThrottle(db, now) {
 
 const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first();
 
-// Returns null rather than throwing when the table predates the viewer feature.
-const getViewer = (db) =>
-  db.prepare('SELECT * FROM viewer WHERE id = 1').first().catch(() => null);
+// Returns null rather than throwing when the table predates the users feature.
+const getUser = (db, username) =>
+  db.prepare('SELECT * FROM users WHERE username = ?1').bind(username).first().catch(() => null);
+
+// Usernames are a small, fixed alphabet so they can be compared and stored
+// without escaping surprises, and so a typo cannot become a wildcard.
+const isUsername = (v) => typeof v === 'string' && /^[a-z0-9][a-z0-9._-]{1,30}$/.test(v);
+
+// Which data sources each console screen actually reads. The tab list a user
+// is given is turned into this set, and the endpoint guard below enforces it —
+// screens that share a source cannot be separated any finer than the source.
+const TAB_NEEDS = {
+  over: ['records', 'vault', 'reports'],
+  pending: ['records'],
+  track: ['records'],
+  reports: ['reports'],
+  faults: ['reports'],
+  inv: ['records', 'vault'],
+  armon: ['vault', 'reports'],
+  tzelem: ['vault'],
+  ammo: ['vault'],
+  veh: ['vault'],
+  sum: ['records'],
+  sec: [],
+};
+
+function scopesFor(tabs) {
+  if (tabs === '*') return new Set(['records', 'vault', 'reports']);
+  let list;
+  try { list = JSON.parse(tabs); } catch { return new Set(); }
+  const out = new Set();
+  for (const t of Array.isArray(list) ? list : []) {
+    for (const need of TAB_NEEDS[t] || []) out.add(need);
+  }
+  return out;
+}
+
+// A stable decoy salt for names that do not exist, so the challenge endpoint
+// cannot be used to enumerate usernames — an unknown user fails at the
+// verifier instead, exactly like a wrong password.
+async function decoySalt(db, username) {
+  const cfg = await getConfig(db);
+  const seed = new TextEncoder().encode(`decoy:${(cfg && cfg.id_salt) || ''}:${username}`);
+  const hash = await crypto.subtle.digest('SHA-256', seed);
+  return btoa(String.fromCharCode(...new Uint8Array(hash).slice(0, 16)));
+}
 
 async function getSession(db, request, now) {
   const cookie = request.headers.get('Cookie') || '';
   const m = cookie.match(/(?:^|;\s*)sid=([0-9a-f]{64})(?:;|$)/);
   if (!m) return null;
   const row = await db
-    .prepare('SELECT token, expires, role FROM sessions WHERE token = ?1')
+    .prepare('SELECT token, expires, role, username, tabs FROM sessions WHERE token = ?1')
     .bind(m[1])
     .first();
   if (!row || row.expires <= now) return null;
@@ -112,7 +155,12 @@ async function getSession(db, request, now) {
     .run();
   // Anything but an explicit 'viewer' is treated as an admin, matching the
   // column default for sessions created before the role existed.
-  return { token: row.token, role: row.role === 'viewer' ? 'viewer' : 'admin' };
+  return {
+    token: row.token,
+    role: row.role === 'viewer' ? 'viewer' : 'admin',
+    username: row.username || null,
+    tabs: row.tabs || '*',
+  };
 }
 
 const sessionCookie = (token) =>
@@ -192,6 +240,14 @@ export async function onRequest(context) {
               'VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)'
           )
           .bind(pub, salt, idSalt, verifier, keyIv, wrappedKey, now)
+          .run();
+        // the first administrator, under the name the console logs in with
+        await db
+          .prepare(
+            `INSERT OR IGNORE INTO users (username, role, salt, verifier, key_iv, wrapped_key, tabs, created_at)
+             VALUES ('admin.951', 'admin', ?1, ?2, ?3, ?4, '*', ?5)`
+          )
+          .bind(salt, verifier, keyIv, wrappedKey, now)
           .run();
       } catch {
         // lost the race against a concurrent setup — the other one owns it
@@ -311,37 +367,56 @@ export async function onRequest(context) {
 
     // ── /api/admin/* ─────────────────────────────────────────────────
     if (seg[0] === 'admin') {
-      // GET /api/admin/challenge[?role=viewer] — the salt to derive the KEK from
+      // GET /api/admin/challenge?u=<username> — the salt to derive that
+      // user's KEK from. Unknown names get a stable decoy so the endpoint
+      // cannot be used to discover who exists.
       if (seg[1] === 'challenge' && seg.length === 2 && method === 'GET') {
-        if (url.searchParams.get('role') === 'viewer') {
-          const v = await getViewer(db);
-          if (!v) return err(404, 'לא הוגדר משתמש צפייה');
-          return json({ salt: v.salt });
-        }
         const cfg = await getConfig(db);
         if (!cfg) return err(404, 'המערכת עדיין לא הוגדרה');
-        return json({ salt: cfg.salt });
+        const username = (url.searchParams.get('u') || '').toLowerCase();
+        if (!username) return json({ salt: cfg.salt });          // legacy client
+        if (!isUsername(username)) return json({ salt: await decoySalt(db, username) });
+        const u = await getUser(db, username);
+        return json({ salt: u ? u.salt : await decoySalt(db, username) });
       }
 
-      // POST /api/admin/login — { verifier, role? }
+      // POST /api/admin/login — { username, verifier }
       if (seg[1] === 'login' && seg.length === 2 && method === 'POST') {
         if (!(await allow(db, `login:${ip}`, LOGIN_LIMIT, LOGIN_WINDOW_MS, now))) {
           return err(429, 'יותר מדי ניסיונות התחברות — נעילה של 10 דקות');
         }
         const b = await readBody(request);
         if (!b || !isHex(b.verifier, HEX64)) return err(400, 'בקשה לא תקינה');
-        const role = b.role === 'viewer' ? 'viewer' : 'admin';
-        const cred = role === 'viewer' ? await getViewer(db) : await getConfig(db);
-        if (!cred) return err(404, role === 'viewer' ? 'לא הוגדר משתמש צפייה' : 'המערכת עדיין לא הוגדרה');
-        if (!tsEqual(b.verifier, cred.verifier)) return err(401, 'סיסמה שגויה');
+        const username = (b.username || '').toLowerCase();
+
+        let cred = null;
+        if (username) {
+          if (!isUsername(username)) return err(401, 'שם משתמש או סיסמה שגויים');
+          cred = await getUser(db, username);
+        } else {
+          // no username: the pre-users client, which only ever had the admin
+          const cfg = await getConfig(db);
+          if (cfg) cred = { ...cfg, username: 'admin.951', role: 'admin', tabs: '*' };
+        }
+        if (!cred || !tsEqual(b.verifier, cred.verifier)) {
+          return err(401, 'שם משתמש או סיסמה שגויים');
+        }
+
+        const role = cred.role === 'viewer' ? 'viewer' : 'admin';
+        const tabs = role === 'admin' ? '*' : (cred.tabs || '*');
         const token = randomToken();
         await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
         await db
-          .prepare('INSERT INTO sessions (token, expires, role) VALUES (?1, ?2, ?3)')
-          .bind(token, now + SESSION_MS, role)
+          .prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?1, ?2, ?3, ?4, ?5)')
+          .bind(token, now + SESSION_MS, role, cred.username || username || null, tabs)
           .run();
+        await db
+          .prepare('UPDATE users SET last_seen = ?1 WHERE username = ?2')
+          .bind(now, cred.username || username || '')
+          .run()
+          .catch(() => {});
         return json(
-          { keyIv: cred.key_iv, wrappedKey: cred.wrapped_key, role },
+          { keyIv: cred.key_iv, wrappedKey: cred.wrapped_key, role, tabs, username: cred.username || username },
           200,
           { 'Set-Cookie': sessionCookie(token) }
         );
@@ -357,24 +432,71 @@ export async function onRequest(context) {
         return err(403, 'משתמש צפייה בלבד — אין הרשאת עריכה');
       }
 
+      // Screen permissions, enforced where they can actually be enforced: at
+      // the three data sources. A user with no screen that reads records
+      // cannot fetch records, however the console is manipulated.
+      if (session.role === 'viewer') {
+        const scopes = scopesFor(session.tabs);
+        const wants =
+          seg[1] === 'records' ? 'records'
+            : seg[1] === 'docs' ? 'records'
+              : seg[1] === 'vault' ? 'vault'
+                : seg[1] === 'reports' ? 'reports'
+                  : null;
+        if (wants && !scopes.has(wants)) return err(403, 'אין הרשאה לנתונים אלה');
+        if (seg[1] === 'users') return err(403, 'אין הרשאה לניהול משתמשים');
+      }
+
       // POST /api/admin/logout
       if (seg[1] === 'logout' && seg.length === 2 && method === 'POST') {
         await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session.token).run();
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
       }
 
-      // GET | PUT | DELETE /api/admin/viewer — manage the read-only credential.
-      // The client wraps the same private key under the viewer's password; the
-      // server only ever stores the wrapped blob and the verifier.
-      if (seg[1] === 'viewer' && seg.length === 2) {
-        if (method === 'GET') {
-          const v = await getViewer(db);
-          return json({ viewer: v ? { createdAt: v.created_at } : null });
-        }
+      // GET /api/admin/users — the roster, never the credentials themselves
+      if (seg[1] === 'users' && seg.length === 2 && method === 'GET') {
+        const { results } = await db
+          .prepare('SELECT username, role, tabs, created_at, last_seen FROM users ORDER BY role DESC, username')
+          .all();
+        return json({ users: results, me: session.username });
+      }
+
+      // PUT | DELETE /api/admin/users/:username
+      // The client wraps the same private key under the new user's password;
+      // the server only ever stores the wrapped blob, the verifier and the
+      // screen list.
+      if (seg[1] === 'users' && seg.length === 3) {
+        const username = decodeURIComponent(seg[2]).toLowerCase();
+        if (!isUsername(username)) return err(400, 'שם משתמש לא תקין');
+
         if (method === 'PUT') {
           const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const role = b.role === 'admin' ? 'admin' : 'viewer';
+          let tabs = '*';
+          if (role === 'viewer') {
+            if (!Array.isArray(b.tabs) || !b.tabs.length) return err(400, 'נא לבחור לפחות מסך אחד');
+            const clean = [...new Set(b.tabs)].filter((t) => Object.prototype.hasOwnProperty.call(TAB_NEEDS, t) && t !== 'sec');
+            if (!clean.length) return err(400, 'נא לבחור לפחות מסך אחד');
+            tabs = JSON.stringify(clean);
+          }
+
+          const existing = await getUser(db, username);
+          // Changing only the screens: keep the password already in place.
+          if (existing && b.tabsOnly) {
+            if (existing.role === 'admin') return err(400, 'למנהל יש גישה לכל המסכים');
+            await db
+              .prepare('UPDATE users SET tabs = ?1 WHERE username = ?2')
+              .bind(tabs, username)
+              .run();
+            await db
+              .prepare('UPDATE sessions SET tabs = ?1 WHERE username = ?2')
+              .bind(tabs, username)
+              .run();
+            return json({ ok: true });
+          }
+
           if (
-            !b ||
             !isB64(b.salt, 64) ||
             !isHex(b.verifier, HEX64) ||
             !isB64(b.keyIv, 64) ||
@@ -384,21 +506,29 @@ export async function onRequest(context) {
           }
           await db
             .prepare(
-              `INSERT INTO viewer (id, salt, verifier, key_iv, wrapped_key, created_at)
-               VALUES (1, ?1, ?2, ?3, ?4, ?5)
-               ON CONFLICT(id) DO UPDATE SET salt = ?1, verifier = ?2, key_iv = ?3,
-                                             wrapped_key = ?4, created_at = ?5`
+              `INSERT INTO users (username, role, salt, verifier, key_iv, wrapped_key, tabs, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               ON CONFLICT(username) DO UPDATE SET role = ?2, salt = ?3, verifier = ?4,
+                                                   key_iv = ?5, wrapped_key = ?6, tabs = ?7`
             )
-            .bind(b.salt, b.verifier, b.keyIv, b.wrappedKey, now)
+            .bind(username, role, b.salt, b.verifier, b.keyIv, b.wrappedKey, tabs, now)
             .run();
-          // any viewer already signed in loses access immediately
-          await db.prepare("DELETE FROM sessions WHERE role = 'viewer'").run();
+          // a password change signs that user out everywhere
+          await db.prepare('DELETE FROM sessions WHERE username = ?1').bind(username).run();
           return json({ ok: true });
         }
+
         if (method === 'DELETE') {
+          if (username === session.username) return err(400, 'אי אפשר למחוק את המשתמש שאיתו התחברתם');
+          const target = await getUser(db, username);
+          if (!target) return err(404, 'המשתמש לא נמצא');
+          if (target.role === 'admin') {
+            const row = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").first();
+            if (!row || row.n <= 1) return err(400, 'חייב להישאר מנהל אחד לפחות');
+          }
           await db.batch([
-            db.prepare('DELETE FROM viewer'),
-            db.prepare("DELETE FROM sessions WHERE role = 'viewer'"),
+            db.prepare('DELETE FROM users WHERE username = ?1').bind(username),
+            db.prepare('DELETE FROM sessions WHERE username = ?1').bind(username),
           ]);
           return json({ ok: true });
         }
@@ -640,6 +770,12 @@ export async function onRequest(context) {
           )
           .bind(salt, verifier, keyIv, wrappedKey)
           .run();
+        // the same password change against the row the console authenticates on
+        await db
+          .prepare('UPDATE users SET salt = ?1, verifier = ?2, key_iv = ?3, wrapped_key = ?4 WHERE username = ?5')
+          .bind(salt, verifier, keyIv, wrappedKey, session.username || 'admin.951')
+          .run()
+          .catch(() => {});
         await db.prepare('DELETE FROM sessions').run();
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
       }
@@ -653,7 +789,7 @@ export async function onRequest(context) {
           db.prepare('DELETE FROM vault'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),
-          db.prepare('DELETE FROM viewer'),
+          db.prepare('DELETE FROM users'),
           db.prepare('DELETE FROM config'),
         ]);
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
