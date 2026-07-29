@@ -1,7 +1,7 @@
 'use strict';
 
 /* ════════════════════════════════════════════════════════════════════
-   החתמת ציוד — client logic. All plaintext personal data lives only in
+   רישום ראשוני — client logic. All plaintext personal data lives only in
    this browser's memory; everything sent to the server is ciphertext or
    a one-way derivation. See PLAN.md §4 for the cryptographic design.
    ════════════════════════════════════════════════════════════════════ */
@@ -323,7 +323,6 @@ const VEH_KIT = [
   { id: 'wrench', name: 'מפתח גלגלים' },
   { id: 'vest', name: 'אפודה זוהרת' },
   { id: 'triangle', name: 'משולש' },
-  { id: 'checklist', name: 'צ׳קלקה' },
 ];
 
 const cleanVehicle = (x) => {
@@ -347,16 +346,31 @@ const FUEL_KINDS = [
   { id: 'urea', name: 'אוריאה' },
 ];
 
-// A refuelling card. `doc` is a random 32-hex id naming the receipt image in
-// the docs table — the picture never enters the vault, which has a size cap.
+// Cards arrive holding 50 litres, so 15 is the point at which one needs
+// replacing rather than merely watching.
+const FUEL_LOW = 15;
+const FUEL_OFFICE = 'במשרד';
+
+// A refuelling card. Each receipt is a random 32-hex id naming an image in the
+// docs table — pictures never enter the vault, which has a size cap.
 const cleanFuel = (x) => ({
   id: asText(x && x.id, 40) || rndId(),
   kind: FUEL_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'diesel',
   no: asText(x && x.no, 30),
   litres: asCount(x && x.litres, 99999),
-  plate: asText(x && x.plate, 20),        // which vehicle holds the card, if any
-  doc: /^[0-9a-f]{32}$/.test(x && x.doc) ? x.doc : '',
-  docAt: asTime(x && x.docAt),
+  holder: asText(x && x.holder, 60),        // soldier's name, or FUEL_OFFICE
+  receipts: (Array.isArray(x && x.receipts) ? x.receipts : [])
+    .slice(0, 60)
+    .filter((r) => r && /^[0-9a-f]{32}$/.test(r.id))
+    .map((r) => ({ id: r.id, at: asTime(r.at) })),
+  uses: (Array.isArray(x && x.uses) ? x.uses : []).slice(0, 300).map((u) => ({
+    t: asTime(u && u.t),
+    who: asText(u && u.who, 60),
+    litres: asCount(u && u.litres, 99999),
+    plate: asText(u && u.plate, 20),
+  })),
+  credited: !!(x && x.credited),            // settled with the vehicle officer
+  creditedAt: asTime(x && x.creditedAt),
   note: asText(x && x.note, 120),
 });
 
@@ -522,6 +536,9 @@ const S = {
 
   // admin
   adminView: 'login',           // 'setup' | 'login' | 'console'
+  role: 'admin',                // 'admin' | 'viewer' — viewer cannot write
+  loginRole: 'admin',           // which credential the login form is aimed at
+  viewerInfo: null,             // { createdAt } when a viewer credential exists
   priv: null,                   // CryptoKey (RSA private)
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
@@ -541,6 +558,10 @@ const S = {
   collapsed: new Set(),         // department ids folded shut
   page: {},                     // list key -> current page index (0-based)
   revealed: new Set(),          // rids with phone shown
+  fuelOpen: new Set(),          // fuel card ids with their detail row expanded
+  expanded: new Set(),          // record rids expanded in the pending/track tables
+  picked: new Set(),            // rids ticked for a bulk action
+  sort: { key: 'date', dir: 'desc' },   // roster table ordering
   busy: false,
 };
 
@@ -573,7 +594,12 @@ function lock() {
   S.fltQ = '';
   S.invQ = '';
   S.regQ = {};
+  S.role = 'admin';
+  S.viewerInfo = null;
   S.revealed.clear();
+  S.fuelOpen.clear();
+  S.expanded.clear();
+  S.picked.clear();
   clearTimeout(idleTimer);
   api('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
   if (S.route === 'admin') {
@@ -646,7 +672,7 @@ function renderHome() {
           </svg>
         </span>
         <span class="choice-txt">
-          <span class="choice-t">החתמת ציוד</span>
+          <span class="choice-t">רישום ראשוני</span>
           <span class="choice-s">רישום הציוד האישי שקיבלתם — קסדה, ווסט, מחסניות ועוד.</span>
         </span>
         <span class="choice-go" aria-hidden="true">
@@ -1336,19 +1362,28 @@ function renderSetup() {
 
 function renderLogin() {
   $app.classList.remove('wide');
+  const viewer = S.loginRole === 'viewer';
   render(`
     <section class="panel">
-      <h1 class="panel-title">כניסת מנהל</h1>
+      <h1 class="panel-title">${viewer ? 'כניסת צפייה' : 'כניסת מנהל'}</h1>
       <p class="panel-sub">הסיסמה פותחת את מפתח ההצפנה בדפדפן — היא לעולם לא נשלחת לשרת.</p>
+      <div class="filters">
+        <button class="filter" aria-pressed="${!viewer}" data-act="login-role" data-r="admin">מנהל</button>
+        <button class="filter" aria-pressed="${viewer}" data-act="login-role" data-r="viewer">צפייה בלבד</button>
+      </div>
       <form data-form="login" novalidate>
+        <input type="hidden" name="role" value="${viewer ? 'viewer' : 'admin'}">
         <label class="field">
-          <span class="field-label">סיסמת מנהל</span>
+          <span class="field-label">${viewer ? 'סיסמת צפייה' : 'סיסמת מנהל'}</span>
           <input class="input" type="password" name="pw" autocomplete="current-password" required>
         </label>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">כניסה</button>
       </form>
-    </section>`);
+      ${viewer
+        ? '<p class="field-hint mt mb0 center">משתמש צפייה רואה את כל הנתונים אך אינו יכול לאשר, לערוך או למחוק דבר.</p>'
+        : ''}
+    </section>`, `login-${S.loginRole}`);
 }
 
 /* — console — */
@@ -1412,10 +1447,14 @@ function renderConsole() {
     <div class="conbar">
       <span class="conbar-title">${esc(title)}</span>
       <div class="conbar-actions">
+        ${S.role === 'viewer' ? '<span class="ro-tag">צפייה בלבד</span>' : ''}
         <button class="btn ghost small" data-act="refresh">רענון</button>
         <button class="btn ghost small" data-act="lock">נעילה</button>
       </div>
     </div>
+    ${S.role === 'viewer'
+      ? '<div class="callout"><p class="mb0">אתם מחוברים כ<strong>משתמש צפייה</strong>. כל הנתונים גלויים, אך אי אפשר לאשר, לערוך או למחוק. השרת דוחה כל ניסיון שינוי.</p></div>'
+      : ''}
     ${c.damaged
       ? `<div class="callout risk"><p class="mb0"><strong class="num">${c.damaged}</strong> רשומות פגומות — הפענוח נכשל (חשד לשיבוש נתונים בשרת).</p></div>`
       : ''}
@@ -1425,6 +1464,32 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>`);
+  if (S.role === 'viewer') stripWriteControls();
+}
+
+// Everything a viewer is allowed to touch. Anything else that can be clicked or
+// typed into is removed after render — an allowlist rather than a list of
+// forbidden actions, so a new write control is locked out by default rather
+// than by remembering to add it. The server refuses the writes regardless;
+// this only keeps the screen honest about what is possible.
+const READ_ACTS = new Set([
+  'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
+  'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter',
+  'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
+  'tz-pdf', 'tz-wa', 'login-role',
+]);
+
+function stripWriteControls() {
+  for (const el of $app.querySelectorAll('[data-act]')) {
+    const act = el.dataset.act;
+    if (READ_ACTS.has(act) || /(^|-)(search|qclear|export)$/.test(act)) continue;
+    if (el.matches('input, select, textarea')) {
+      el.disabled = true;
+    } else {
+      el.remove();
+    }
+  }
+  for (const el of $app.querySelectorAll('form[data-form]')) el.remove();
 }
 
 function fpStrip(rid) {
@@ -1644,7 +1709,7 @@ function waLink(d, rid) {
     .map(([k, n]) => `• ${k}: ${n}`)
     .join('\n');
   const msg =
-    '*אישור החתמת ציוד — מסייעת 951*\n\n' +
+    '*אישור רישום ראשוני — מסייעת 951*\n\n' +
     `שלום ${d.name},\n` +
     'רישום הציוד שלך אושר והוחתמת על:\n\n' +
     `${lines}\n\n` +
@@ -1735,17 +1800,170 @@ function pendingCard(rec) {
     </article>`;
 }
 
+/* ── Roster tables (PLAN §7.2 — must stay readable at 100+ soldiers) ──
+   Cards were fine for a handful of soldiers and unusable past that: one screen
+   held three people and nothing could be compared down a column. Both tabs are
+   now one row per soldier — scannable, sortable, and expandable in place for
+   the detail — with bulk approval so a whole intake is not 60 separate clicks. */
+
+const SORTS = {
+  name: (a, b) => (a.data.name || '').localeCompare(b.data.name || '', 'he'),
+  pn: (a, b) => String(a.data.pn || '').localeCompare(String(b.data.pn || ''), 'en', { numeric: true }),
+  dept: (a, b) => deptName(a.data.dept).localeCompare(deptName(b.data.dept), 'he'),
+  date: (a, b) => (a.data.createdAt || 0) - (b.data.createdAt || 0),
+  approved: (a, b) => (a.data.approvedAt || 0) - (b.data.approvedAt || 0),
+  items: (a, b) => totalItems(a.data) - totalItems(b.data),
+  out: (a, b) => outstanding(a.data) - outstanding(b.data),
+};
+
+const totalItems = (d) => Object.values(d.items || {}).reduce((s, it) => s + it.t, 0);
+
+function sortRecs(recs, key) {
+  const cmp = SORTS[key] || SORTS.name;
+  const dir = S.sort.dir === 'desc' ? -1 : 1;
+  return recs.slice().sort((a, b) => cmp(a, b) * dir);
+}
+
+// A sortable column header. Clicking the active column flips the direction.
+function sortTh(key, label, cls = '') {
+  const on = S.sort.key === key;
+  return `<th class="${cls} th-sort${on ? ' on' : ''}">
+    <button class="th-btn" data-act="sort" data-k="${key}">
+      ${label}<span class="th-arrow" aria-hidden="true">${on ? (S.sort.dir === 'desc' ? '▾' : '▴') : ''}</span>
+    </button>
+  </th>`;
+}
+
+// The compact per-item summary that lets one column stand in for five.
+function itemChips(d, mode) {
+  return ITEMS.filter((i) => d.items[i.id])
+    .map((i) => {
+      const it = d.items[i.id];
+      const held = it.t - (it.r || 0);
+      if (mode === 'track') {
+        return `<span class="chip ${held > 0 ? 'held' : 'back'}" title="${esc(i.name)}">
+          ${esc(i.name)} <span class="num">${held > 0 ? `${held}/${it.t}` : '✓'}</span></span>`;
+      }
+      return `<span class="chip" title="${esc(i.name)}">${esc(i.name)} <span class="num">${it.t}</span></span>`;
+    })
+    .join('');
+}
+
 function renderPendingTab() {
   const all = S.recs.filter((r) => r.status === 'pending');
   if (!all.length) return '<p class="empty">אין הגשות ממתינות. לחצו רענון כדי לבדוק שוב.</p>';
   const broken = all.filter((r) => r.damaged).map(damagedCard).join('');
-  const visible = applyFilters(all);
+  const visible = sortRecs(applyFilters(all), S.sort.key === 'approved' ? 'date' : S.sort.key);
   const p = paged('pending', visible);
+
+  // Ticks only survive while the row is on screen, so the count never claims
+  // more than the admin can actually see.
+  const pickable = p.slice.map((r) => r.rid);
+  const picked = pickable.filter((rid) => S.picked.has(rid));
+  const allPicked = pickable.length > 0 && picked.length === pickable.length;
+
+  const rows = p.slice.map((rec) => {
+    const d = rec.data;
+    const open = S.expanded.has(rec.rid);
+    return `
+      <tr class="${open ? 'is-open' : ''}">
+        <td><input type="checkbox" class="kitbox" data-act="pick" data-rid="${esc(rec.rid)}"
+                   ${S.picked.has(rec.rid) ? 'checked' : ''} aria-label="בחירת ${esc(d.name)}"></td>
+        <td class="lg-name">
+          <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
+            ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
+          </button>
+          ${d.supp ? '<span class="tagi supp">השלמה</span>' : ''}
+        </td>
+        <td class="num">${esc(d.pn)}</td>
+        <td>${esc(deptName(d.dept))}</td>
+        <td class="num">
+          ${esc(S.revealed.has(rec.rid) ? d.phone : maskPhone(d.phone))}
+          <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${S.revealed.has(rec.rid) ? 'הסתרה' : 'הצגה'}</button>
+        </td>
+        <td class="chips">${itemChips(d, 'pending') || '<span class="dim">—</span>'}</td>
+        <td class="num">${d.weapon ? esc(d.weapon) : '<span class="dim">—</span>'}</td>
+        <td class="num">${esc(fmtDate(d.createdAt))}</td>
+        <td class="nowrap">
+          <button class="btn primary small" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
+          <button class="linkbtn danger-link" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
+        </td>
+      </tr>
+      ${open ? `<tr class="sub"><td colspan="9">${pendingDetail(rec)}</td></tr>` : ''}`;
+  }).join('');
+
   return `
     ${searchBar(all.length, visible.length)}
     ${broken}
-    ${deptSections(p.slice, pendingCard, 'אין הגשות שתואמות את החיפוש.')}
-    ${pager('pending', p)}`;
+    <section class="panel">
+      <h2 class="panel-title">ממתינים לאישור</h2>
+      <p class="panel-sub">שורה לכל חייל. לחיצה על השם פותחת את הפירוט ומאפשרת לתקן כמויות לפני האישור. סמנו כמה שורות כדי לאשר אותן יחד.</p>
+      <div class="bulkbar${picked.length ? ' on' : ''}">
+        <label class="bulk-all">
+          <input type="checkbox" class="kitbox" data-act="pick-all" ${allPicked ? 'checked' : ''}
+                 aria-label="בחירת כל השורות בעמוד">
+          <span>בחירת כל השורות בעמוד</span>
+        </label>
+        ${picked.length
+          ? `<span class="bulk-n"><span class="num">${picked.length}</span> מסומנים</span>
+             <button class="btn primary small" data-act="bulk-approve">אישור המסומנים</button>
+             <button class="btn danger small" data-act="bulk-del">מחיקת המסומנים</button>
+             <button class="linkbtn" data-act="pick-clear">ניקוי הבחירה</button>`
+          : '<span class="muted-txt">סמנו שורות כדי לאשר או למחוק כמה יחד</span>'}
+      </div>
+      ${p.slice.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl roster">
+               <thead><tr>
+                 <th class="col-pick"></th>
+                 ${sortTh('name', 'שם')}
+                 ${sortTh('pn', 'מ״א', 'num')}
+                 ${sortTh('dept', 'מחלקה')}
+                 <th class="num">טלפון</th>
+                 ${sortTh('items', 'ציוד')}
+                 <th class="num">נשק</th>
+                 ${sortTh('date', 'נשלח', 'num')}
+                 <th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           ${pager('pending', p)}`
+        : '<p class="empty">אין הגשות שתואמות את החיפוש.</p>'}
+    </section>`;
+}
+
+// The expanded row: quantities are adjustable here, where there is room for the
+// steppers, instead of every row carrying them all the time.
+function pendingDetail(rec) {
+  const d = rec.data;
+  const rows = ITEMS.filter((i) => d.items[i.id]).map((item) => {
+    const t = d.items[item.id].t;
+    return `<li class="rec-row">
+        <span class="rec-row-main">
+          <span class="row-ico" aria-hidden="true">${item.icon}</span>
+          <span class="rec-row-name">${esc(item.name)}</span>
+        </span>
+        <span class="rec-row-tools">
+          <span class="step">
+            <button type="button" class="step-btn" data-act="adj" data-rid="${esc(rec.rid)}"
+                    data-item="${item.id}" data-d="-1" aria-label="פחות" ${t <= item.min ? 'disabled' : ''}>−</button>
+            <span class="step-val num">${t}</span>
+            <button type="button" class="step-btn" data-act="adj" data-rid="${esc(rec.rid)}"
+                    data-item="${item.id}" data-d="1" aria-label="עוד" ${t >= item.max ? 'disabled' : ''}>+</button>
+          </span>
+        </span>
+      </li>`;
+  }).join('');
+  return `
+    <div class="rowdetail">
+      ${d.supp
+        ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
+        : ''}
+      ${extrasRow(rec)}
+      <ul>${rows}</ul>
+      ${fpStrip(rec.rid)}
+    </div>`;
 }
 
 function renderTrackTab() {
@@ -1761,86 +1979,126 @@ function renderTrackTab() {
     )
     .join('');
 
-  const visible = applyFilters(approved).filter((rec) => {
-    const out = outstanding(rec.data) > 0;
-    return S.filter === 'all' || (S.filter === 'out' ? out : !out);
-  });
-
-  const card = (rec) => {
-      const d = rec.data;
-      const out = outstanding(d);
-      const rows = ITEMS.filter((i) => d.items[i.id])
-        .map((item) => {
-          const it = d.items[item.id];
-          const r = it.r || 0;
-          const returned = r >= it.t;
-          return `<li class="rec-row">
-              <span class="rec-row-main">
-                <span class="row-ico" aria-hidden="true">${item.icon}</span>
-                <span>
-                  <span class="tagi${returned ? ' done' : ''}">${esc(item.name)}</span>
-                  <span class="rec-row-sub">הוחזרו <span class="num">${r}</span> מתוך <span class="num">${it.t}</span></span>
-                </span>
-              </span>
-              <span class="rec-row-tools step">
-                <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
-                        data-item="${item.id}" data-d="-1" aria-label="ביטול החזרה" ${r <= 0 ? 'disabled' : ''}>−</button>
-                <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
-                        data-item="${item.id}" data-d="1" aria-label="החזרה" ${r >= it.t ? 'disabled' : ''}>+</button>
-              </span>
-            </li>`;
-        })
-        .join('');
-      return `
-        <article class="rec ${out > 0 ? 'live' : 'done'}">
-          <header class="rec-head">
-            <div>
-              <div class="rec-name">${esc(d.name)}</div>
-              <div class="rec-meta">מ״א <span class="num">${esc(d.pn)}</span> · ${esc(deptName(d.dept))}</div>
-              <div class="rec-meta">אושר ${esc(fmtDate(d.approvedAt))}</div>
-              <div class="rec-meta">${
-                d.notified
-                  ? '<span class="sent">✓ הודעת החתמה נשלחה</span>'
-                  : '<span class="unsent">הודעת החתמה טרם נשלחה</span>'
-              }${
-                d.returnNotified ? ' · <span class="sent">✓ הודעת זיכוי נשלחה</span>' : ''
-              }</div>
-            </div>
-            ${out > 0
-              ? `<span class="state live">ציוד בחוץ</span>`
-              : `<span class="state done">הוחזר במלואו</span>`}
-          </header>
-          ${phoneRow(rec)}
-          ${extrasRow(rec)}
-          <ul>${rows}</ul>
-          <div class="rec-actions">
-            ${out > 0
-              ? `<button class="btn primary" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
-              : ''}
-            <a class="btn wa" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
-               data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">${
-                 d.notified ? 'שליחה חוזרת' : 'שליחה בוואטסאפ'
-               }</a>
-            ${(d.items && Object.values(d.items).some((it) => (it.r || 0) > 0))
-              ? `<a class="btn wa ghost-wa" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
-                    data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">${
-                      d.returnNotified ? 'זיכוי — שליחה חוזרת' : 'הודעת זיכוי'
-                    }</a>`
-              : ''}
-            <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
-          </div>
-          ${fpStrip(rec.rid)}
-        </article>`;
-  };
+  const visible = sortRecs(
+    applyFilters(approved).filter((rec) => {
+      const out = outstanding(rec.data) > 0;
+      return S.filter === 'all' || (S.filter === 'out' ? out : !out);
+    }),
+    S.sort.key === 'date' ? 'approved' : S.sort.key
+  );
 
   const broken = approved.filter((r) => r.damaged).map(damagedCard).join('');
   const p = paged('track', visible);
+
+  const rows = p.slice.map((rec) => {
+    const d = rec.data;
+    const out = outstanding(d);
+    const open = S.expanded.has(rec.rid);
+    return `
+      <tr class="${open ? 'is-open' : ''}${out > 0 ? '' : ' row-done'}">
+        <td class="lg-name">
+          <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
+            ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
+          </button>
+        </td>
+        <td class="num">${esc(d.pn)}</td>
+        <td>${esc(deptName(d.dept))}</td>
+        <td class="num">
+          ${esc(S.revealed.has(rec.rid) ? d.phone : maskPhone(d.phone))}
+          <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${S.revealed.has(rec.rid) ? 'הסתרה' : 'הצגה'}</button>
+        </td>
+        <td class="chips">${itemChips(d, 'track') || '<span class="dim">—</span>'}</td>
+        <td class="num ${out > 0 ? 'warn' : 'ok'}">${out > 0 ? out : '✓'}</td>
+        <td class="num">${d.weapon ? esc(d.weapon) : '<span class="dim">—</span>'}</td>
+        <td class="num">${esc(fmtDate(d.approvedAt))}</td>
+        <td>${d.notified
+          ? '<span class="sent">✓ נשלחה</span>'
+          : '<span class="unsent">טרם נשלחה</span>'}</td>
+        <td class="nowrap">
+          ${out > 0
+            ? `<button class="btn ghost small" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
+            : ''}
+          <a class="btn wa small" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
+             data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>
+        </td>
+      </tr>
+      ${open ? `<tr class="sub"><td colspan="10">${trackDetail(rec)}</td></tr>` : ''}`;
+  }).join('');
+
   return `
     ${searchBar(approved.length, visible.length)}
     <div class="filters">${filters}</div>
     ${broken}
-    ${deptSections(p.slice, card, 'אין רשומות שתואמות את החיפוש והסינון.')}
-    ${pager('track', p)}`;
+    <section class="panel">
+      <h2 class="panel-title">מעקב ציוד</h2>
+      <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו. לחיצה על השם פותחת את הזיכוי פריט־פריט.</p>
+      ${p.slice.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl roster">
+               <thead><tr>
+                 ${sortTh('name', 'שם')}
+                 ${sortTh('pn', 'מ״א', 'num')}
+                 ${sortTh('dept', 'מחלקה')}
+                 <th class="num">טלפון</th>
+                 <th>ציוד — אצלו כעת / הוחתם</th>
+                 ${sortTh('out', 'בחוץ', 'num')}
+                 <th class="num">נשק</th>
+                 ${sortTh('approved', 'אושר', 'num')}
+                 <th>הודעה</th>
+                 <th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           ${pager('track', p)}`
+        : '<p class="empty">אין רשומות שתואמות את החיפוש והסינון.</p>'}
+    </section>`;
+}
+
+// The expanded row: the per-item return steppers and the messaging actions,
+// which need more room than a table cell has.
+function trackDetail(rec) {
+  const d = rec.data;
+  const rows = ITEMS.filter((i) => d.items[i.id]).map((item) => {
+    const it = d.items[item.id];
+    const r = it.r || 0;
+    const returned = r >= it.t;
+    return `<li class="rec-row">
+        <span class="rec-row-main">
+          <span class="row-ico" aria-hidden="true">${item.icon}</span>
+          <span>
+            <span class="tagi${returned ? ' done' : ''}">${esc(item.name)}</span>
+            <span class="rec-row-sub">הוחזרו <span class="num">${r}</span> מתוך <span class="num">${it.t}</span></span>
+          </span>
+        </span>
+        <span class="rec-row-tools step">
+          <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
+                  data-item="${item.id}" data-d="-1" aria-label="ביטול החזרה" ${r <= 0 ? 'disabled' : ''}>−</button>
+          <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
+                  data-item="${item.id}" data-d="1" aria-label="החזרה" ${r >= it.t ? 'disabled' : ''}>+</button>
+        </span>
+      </li>`;
+  }).join('');
+  const anyBack = d.items && Object.values(d.items).some((it) => (it.r || 0) > 0);
+  return `
+    <div class="rowdetail">
+      <div class="rec-meta">${d.notified
+        ? '<span class="sent">✓ הודעת רישום נשלחה</span>'
+        : '<span class="unsent">הודעת רישום טרם נשלחה</span>'}${
+        d.returnNotified ? ' · <span class="sent">✓ הודעת זיכוי נשלחה</span>' : ''}</div>
+      ${extrasRow(rec)}
+      <ul>${rows}</ul>
+      <div class="rec-actions">
+        ${anyBack
+          ? `<a class="btn wa ghost-wa" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
+                data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">${
+                  d.returnNotified ? 'זיכוי — שליחה חוזרת' : 'הודעת זיכוי'
+                }</a>`
+          : ''}
+        <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקת הרשומה</button>
+      </div>
+      ${fpStrip(rec.rid)}
+    </div>`;
 }
 
 function renderSummaryTab() {
@@ -2266,9 +2524,9 @@ function renderInvTab() {
   return `
     <section class="panel">
       <h2 class="panel-title">מלאי ציוד</h2>
-      <p class="panel-sub">הזינו כמה קיבלתם מכל פריט ביום קליטת הציוד. היתרה מחושבת אוטומטית מההחתמות המאושרות: <strong>פתיחה − אצל החיילים = נותר במחסן</strong>.</p>
+      <p class="panel-sub">הזינו כמה קיבלתם מכל פריט ביום קליטת הציוד. היתרה מחושבת אוטומטית מהרישומים המאושרים: <strong>פתיחה − אצל החיילים = נותר במחסן</strong>.</p>
       ${anyNeg
-        ? '<div class="callout alert"><p class="mb0"><strong>יתרה שלילית</strong> — הוחתם יותר ממה שנרשם במלאי הפתיחה. בדקו את מלאי הפתיחה או את ההחתמות.</p></div>'
+        ? '<div class="callout alert"><p class="mb0"><strong>יתרה שלילית</strong> — הוחתם יותר ממה שנרשם במלאי הפתיחה. בדקו את מלאי הפתיחה או את הרישומים.</p></div>'
         : ''}
       <div class="tbl-scroll">
         <table class="tbl">
@@ -2392,11 +2650,11 @@ function renderOverviewTab() {
   const vehLate = vehicles.filter((v) => v.service && v.service < today);
   const vehKitShort = vehicles.filter((v) => VEH_KIT.some((k) => !v[k.id]));
   const fuel = inv.fuel || [];
-  const fuelLow = fuel.filter((x) => x.litres < 50);
+  const fuelLow = fuel.filter((x) => x.litres < FUEL_LOW);
 
   const logistics = [
-    kpi(armon.length, 'פריטים בארמון', null,
-        armOut.length ? `${armOut.length} נשקים לא בארמון` : 'כל הנשקים בארמון'),
+    kpi(armon.filter((x) => x.loc === 'armon').length, 'פריטים בארמון', null,
+        `${armon.length} רשומים · ${armon.length - armon.filter((x) => x.loc === 'armon').length} בחוץ`),
     kpi(ammo.reduce((s, x) => s + x.qty, 0), 'יחידות תחמושת', ammoEmpty.length ? 'warn' : null,
         ammoEmpty.length ? `${ammoEmpty.length} פריטים אזלו` : `${ammo.length} סוגים`),
     kpi(vehicles.length, 'רכבים', vehLate.length ? 'bad' : vehKitShort.length ? 'warn' : 'ok',
@@ -2409,7 +2667,7 @@ function renderOverviewTab() {
   // Each row jumps straight to the page that clears it.
   const actions = [
     c.pending && { n: c.pending, tone: 'warn', tab: 'pending',
-      t: 'החתמות ממתינות לאישור', s: 'חיילים ששלחו רישום ועדיין לא אושרו' },
+      t: 'רישומים ממתינים לאישור', s: 'חיילים ששלחו רישום ועדיין לא אושרו' },
     openDeposits() && { n: openDeposits(), tone: 'bad', tab: 'armon',
       t: 'אפסוני נשק ממתינים', s: 'נשק שנמסר ועדיין לא נקלט לרישום הארמון' },
     openFaults() && { n: openFaults(), tone: 'warn', tab: 'faults',
@@ -2425,9 +2683,9 @@ function renderOverviewTab() {
     vehLate.length && { n: vehLate.length, tone: 'bad', tab: 'veh',
       t: 'רכבים עם טיפול שעבר', s: vehLate.map((v) => v.plate).filter(Boolean).join(', ') || 'ללא מספר רכב' },
     vehKitShort.length && { n: vehKitShort.length, tone: 'warn', tab: 'veh',
-      t: 'רכבים עם ציוד חסר', s: 'ג׳ק, מפתח גלגלים, אפודה, משולש או צ׳קלקה' },
+      t: 'רכבים עם ציוד חסר', s: VEH_KIT.map((k) => k.name).join(', ') },
     fuelLow.length && { n: fuelLow.length, tone: 'warn', tab: 'veh',
-      t: 'כרטיסי תדלוק במלאי נמוך', s: 'מתחת ל-50 ליטר' },
+      t: 'כרטיסי תדלוק במלאי נמוך', s: `מתחת ל-${FUEL_LOW} ליטר` },
     ammoEmpty.length && { n: ammoEmpty.length, tone: 'warn', tab: 'ammo',
       t: 'פריטי תחמושת שאזלו', s: ammoEmpty.map((x) => x.name).join(', ') },
     armOut.length && { n: armOut.length, tone: 'warn', tab: 'armon',
@@ -2805,7 +3063,13 @@ function renderArmonTab() {
   const log = (S.inv && S.inv.armonLog) || [];
   const vis = armonVisible();
   const p = paged('armon', vis);
-  const byKind = ARM_KINDS.map((k) => ({ ...k, n: all.filter((x) => x.kind === k.id).length }));
+  const here = all.filter((x) => x.loc === 'armon');
+  const out = all.filter((x) => x.loc !== 'armon');
+  const byKind = ARM_KINDS.map((k) => ({
+    ...k,
+    here: here.filter((x) => x.kind === k.id).length,
+    out: out.filter((x) => x.kind === k.id).length,
+  }));
   const noMission = all.filter((x) => x.loc === 'mission' && !x.mission).length;
 
   const kindChips = [['all', 'הכל'], ...ARM_KINDS.map((k) => [k.id, k.name])]
@@ -2880,8 +3144,8 @@ function renderArmonTab() {
       <h2 class="panel-title">פריטים בארמון</h2>
       <p class="panel-sub">כל הפריטים הרשומים בארמון. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".</p>
       <div class="kpis">
-        ${kpi(all.length, 'סה״כ פריטים')}
-        ${byKind.map((k) => kpi(k.n, k.name)).join('')}
+        ${kpi(here.length, 'נמצאים בארמון', 'ok', `${all.length} רשומים · ${out.length} בחוץ`)}
+        ${byKind.map((k) => kpi(k.here, k.name, k.out ? 'warn' : null, k.out ? `${k.out} בחוץ` : 'הכול בארמון')).join('')}
       </div>
       ${noMission
         ? `<div class="callout risk"><p class="mb0"><strong class="num">${noMission}</strong> פריטים מסומנים "במשימה" בלי שם משימה — מלאו את שם המשימה בשורה.</p></div>`
@@ -3176,16 +3440,18 @@ function fuelPanel() {
     .filter(({ x }) =>
       !q ||
       (x.no || '').toLowerCase().includes(q) ||
-      (x.plate || '').toLowerCase().includes(q) ||
+      (x.holder || '').toLowerCase().includes(q) ||
+      x.uses.some((u) => (u.who || '').toLowerCase().includes(q)) ||
       nameOf(FUEL_KINDS, x.kind).includes(q)
     );
   const p = paged('fuel', vis);
-  const LOW = 50;                                  // litres below which a card is flagged
-  const low = all.filter((x) => x.litres < LOW).length;
+  const low = all.filter((x) => x.litres < FUEL_LOW).length;
+  const credited = all.filter((x) => x.credited).length;
 
   const rows = p.slice.map(({ x, i }) => {
-    const shown = S.docs[`${x.doc}:fuel`];
-    return `<tr${x.litres < LOW ? ' class="row-short"' : ''}>
+    const open = S.fuelOpen.has(x.id);
+    const n = x.receipts.length;
+    return `<tr${x.litres < FUEL_LOW ? ' class="row-short"' : ''}>
       <td>
         <select class="input mini select-mini" data-act="fuel-kind" data-i="${i}" aria-label="סוג כרטיס">
           ${FUEL_KINDS.map((k) => `<option value="${k.id}"${x.kind === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}
@@ -3193,55 +3459,67 @@ function fuelPanel() {
       </td>
       <td><input class="input mini num" type="text" maxlength="30" value="${esc(x.no)}"
                  data-act="fuel-no" data-i="${i}" aria-label="מספר כרטיס" placeholder="1234-5678"></td>
+      <td>
+        <input class="input mini" type="text" maxlength="60" value="${esc(x.holder)}"
+               data-act="fuel-holder" data-i="${i}" aria-label="אצל מי הכרטיס" placeholder="שם החייל">
+        <button class="linkbtn" data-act="fuel-office" data-i="${i}">${FUEL_OFFICE}</button>
+      </td>
       <td><input class="input mini num" type="text" inputmode="numeric" maxlength="5" value="${x.litres}"
                  data-act="fuel-litres" data-i="${i}" aria-label="ליטרים שנותרו"></td>
-      <td><input class="input mini num" type="text" maxlength="20" value="${esc(x.plate)}"
-                 data-act="fuel-plate" data-i="${i}" aria-label="רכב משויך" placeholder="—"></td>
-      <td class="${x.litres < LOW ? 'bad' : 'ok'}">${x.litres < LOW ? '⚠ מלאי נמוך' : '✓ תקין'}</td>
+      <td class="${x.litres < FUEL_LOW ? 'bad' : 'ok'}">${x.litres < FUEL_LOW ? '⚠ מלאי נמוך' : '✓ תקין'}</td>
       <td class="nowrap">
-        <label class="linkbtn">
-          📷 ${x.doc ? 'צילום מחדש' : 'צילום קבלה'}
-          <input class="vis-hidden" type="file" accept="image/*" capture="environment"
-                 data-act="fuel-file" data-i="${i}">
-        </label>
-        <label class="linkbtn">
-          🖼 מהגלריה
-          <input class="vis-hidden" type="file" accept="image/*"
-                 data-act="fuel-file" data-i="${i}">
-        </label>
-        ${x.doc
-          ? `<button class="linkbtn" data-act="fuel-doc" data-i="${i}">${shown ? 'הסתרה' : 'הצגה'}</button>
-             <button class="linkbtn danger-link" data-act="fuel-doc-del" data-i="${i}">מחיקת קבלה</button>`
-          : ''}
-        ${shown ? `<img class="doc-img" src="${shown}" alt="קבלת תדלוק">` : ''}
-        ${x.docAt ? `<span class="muted-txt">צולם ${esc(fmtDate(x.docAt))}</span>` : ''}
+        <button class="btn ghost small" data-act="fuel-use" data-i="${i}">+ רישום שימוש</button>
+        ${x.uses.length
+          ? `<button class="linkbtn" data-act="fuel-open" data-id="${esc(x.id)}">${open ? 'סגירה' : `${x.uses.length} שימושים`}</button>`
+          : '<span class="muted-txt">טרם נעשה שימוש</span>'}
+      </td>
+      <td class="nowrap">
+        <label class="linkbtn">📷 צילום
+          <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
+                 data-act="fuel-file" data-i="${i}"></label>
+        <label class="linkbtn">🖼 גלריה
+          <input class="vis-hidden" type="file" accept="image/*" multiple
+                 data-act="fuel-file" data-i="${i}"></label>
+        ${n
+          ? `<button class="linkbtn" data-act="fuel-open" data-id="${esc(x.id)}">${open ? 'סגירה' : `${n} קבלות`}</button>
+             <button class="linkbtn" data-act="fuel-dl-all" data-i="${i}">הורדת הכול</button>`
+          : '<span class="muted-txt">אין קבלות</span>'}
+      </td>
+      <td class="nowrap">
+        <button class="btn ${x.credited ? 'ghost' : 'primary'} small" data-act="fuel-credit" data-i="${i}">
+          ${x.credited ? '✓ זוכה' : 'סימון זיכוי'}
+        </button>
+        ${x.credited ? `<span class="muted-txt">${esc(fmtDate(x.creditedAt))}</span>` : ''}
       </td>
       <td><button class="linkbtn danger-link" data-act="fuel-del" data-i="${i}" aria-label="מחיקת כרטיס">✕</button></td>
-    </tr>`;
+    </tr>
+    ${open ? `<tr class="sub"><td colspan="9">${fuelDetail(x, i)}</td></tr>` : ''}`;
   }).join('');
 
   return `
     <section class="panel">
       <h2 class="panel-title">כרטיסי תדלוק</h2>
-      <p class="panel-sub">סוג הדלק, מספר הכרטיס והיתרה בליטרים. אפשר לצרף צילום קבלה לכל כרטיס — הצילום מוצפן ונשמר בנפרד מהטבלה. כרטיס מתחת ל-${LOW} ליטר נצבע באדום.</p>
+      <p class="panel-sub">מי מחזיק כל כרטיס, כמה נשאר בו, מי תדלק ומתי. רישום שימוש מוריד את הליטרים מהיתרה אוטומטית. אפשר לצרף כמה קבלות לכל כרטיס — כל צילום מוצפן ונשמר בנפרד מהטבלה. כרטיס מתחת ל-${FUEL_LOW} ליטר נצבע באדום.</p>
       <div class="kpis">
         ${kpi(all.length, 'כרטיסים')}
         ${FUEL_KINDS.map((k) => kpi(
           all.filter((x) => x.kind === k.id).reduce((s, x) => s + x.litres, 0),
           `ליטר ${k.name}`
         )).join('')}
-        ${kpi(low, 'מלאי נמוך', low ? 'bad' : 'ok')}
+        ${kpi(low, `מתחת ל-${FUEL_LOW} ליטר`, low ? 'bad' : 'ok')}
+        ${kpi(credited, 'זוכו אצל קצין רכב', null, `${all.length - credited} טרם זוכו`)}
       </div>
       ${all.length > 4
         ? plainSearch('fuel-search', 'fuel-qclear', S.regQ.fuel || '',
-                      'חיפוש לפי מספר כרטיס, רכב או סוג', all.length, vis.length)
+                      'חיפוש לפי מספר כרטיס, מחזיק, משתמש או סוג דלק', all.length, vis.length)
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
              <table class="tbl">
                <thead><tr>
-                 <th>סוג כרטיס</th><th class="num">מספר כרטיס</th><th class="num">ליטרים שנותרו</th>
-                 <th class="num">רכב</th><th>סטטוס</th><th>קבלה</th><th></th>
+                 <th>סוג כרטיס</th><th class="num">מספר כרטיס</th><th>אצל מי</th>
+                 <th class="num">ליטרים שנותרו</th><th>סטטוס</th><th>שימושים</th>
+                 <th>קבלות</th><th>זיכוי</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -3250,24 +3528,74 @@ function fuelPanel() {
         : `<p class="empty">${all.length ? 'אין כרטיס שתואם את החיפוש.' : 'אין כרטיסי תדלוק. הוסיפו את הראשון למטה.'}</p>`}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="fuel-add">+ הוספת כרטיס</button>
-        <button class="btn ghost" data-act="fuel-export">ייצוא ל-CSV</button>
+        <button class="btn ghost" data-act="fuel-export">ייצוא הכרטיסים ל-CSV</button>
+        <button class="btn ghost" data-act="fuel-uses-export">ייצוא יומן השימושים ל-CSV</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
     </section>`;
 }
 
+// The expanded row: who used the card, and the receipts. Thumbnails are fetched
+// and decrypted one at a time, so opening a card with twenty receipts does not
+// pull twenty images at once.
+function fuelDetail(card, i) {
+  const uses = card.uses.length
+    ? `<table class="tbl compact">
+         <thead><tr><th class="num">תאריך</th><th>מי השתמש</th><th class="num">ליטרים</th><th class="num">רכב</th><th></th></tr></thead>
+         <tbody>${card.uses.map((u, n) => `
+           <tr>
+             <td class="num">${esc(fmtDate(u.t))}</td>
+             <td>${esc(u.who)}</td>
+             <td class="num">${u.litres}</td>
+             <td class="num">${u.plate ? esc(u.plate) : '—'}</td>
+             <td><button class="linkbtn danger-link" data-act="fuel-use-del" data-i="${i}" data-n="${n}">✕</button></td>
+           </tr>`).join('')}</tbody>
+       </table>`
+    : '<p class="empty mb0">טרם נרשם שימוש בכרטיס.</p>';
+
+  const rcpts = card.receipts.length
+    ? `<div class="rcpts">
+         ${card.receipts.map((r, n) => {
+           const img = S.docs[`${r.id}:fuel`];
+           return `
+             <figure class="rcpt">
+               ${img
+                 ? `<img class="rcpt-img" src="${img}" alt="קבלה ${n + 1}">`
+                 : `<button class="rcpt-ph" data-act="fuel-doc" data-r="${esc(r.id)}">
+                      <span>קבלה ${n + 1}</span><span class="muted-txt">הצגה</span>
+                    </button>`}
+               <figcaption>
+                 <span class="num">${esc(fmtDate(r.at))}</span>
+                 <button class="linkbtn" data-act="fuel-dl-one" data-i="${i}" data-r="${esc(r.id)}">הורדה</button>
+                 <button class="linkbtn danger-link" data-act="fuel-doc-del" data-i="${i}" data-r="${esc(r.id)}">מחיקה</button>
+               </figcaption>
+             </figure>`;
+         }).join('')}
+       </div>`
+    : '';
+
+  const used = card.uses.reduce((s, u) => s + u.litres, 0);
+  return `
+    <div class="fuel-detail">
+      <h3 class="field-label">יומן שימושים — סה״כ <span class="num">${used}</span> ליטר</h3>
+      ${uses}
+      ${rcpts ? `<h3 class="field-label mt">קבלות (${card.receipts.length})</h3>${rcpts}` : ''}
+    </div>`;
+}
+
 /* ── Fuel card actions ─────────────────────────────────────────────── */
 
-// Deleting a card also drops its receipt, so an orphan image is never left
+// Deleting a card drops every receipt with it, so no orphan image is left
 // sitting in the docs table with nothing pointing at it.
 const fuelDelete = (i) =>
   withBusy(async () => {
     const card = (S.inv.fuel || [])[i];
     if (!card) return;
-    if (!window.confirm(`למחוק את כרטיס ${card.no || 'התדלוק'}${card.doc ? ' ואת הקבלה המצורפת' : ''}?`)) return;
-    if (card.doc) {
-      await api(`/admin/docs/${card.doc}/fuel`, { method: 'DELETE' }).catch(() => {});
-      delete S.docs[`${card.doc}:fuel`];
+    const n = card.receipts.length;
+    if (!window.confirm(`למחוק את כרטיס ${card.no || 'התדלוק'}${n ? ` ואת ${n} הקבלות המצורפות` : ''}?`)) return;
+    for (const r of card.receipts) {
+      await api(`/admin/docs/${r.id}/fuel`, { method: 'DELETE' }).catch(() => {});
+      delete S.docs[`${r.id}:fuel`];
     }
     S.inv.fuel.splice(i, 1);
     await saveInv();
@@ -3275,55 +3603,136 @@ const fuelDelete = (i) =>
     toast('הכרטיס נמחק');
   });
 
+// Accepts a whole selection at once — a month of receipts in one pick.
 const fuelFile = (i, input) =>
   withBusy(async () => {
     const card = (S.inv.fuel || [])[i];
-    const file = input.files && input.files[0];
-    input.value = '';                       // let the same file be picked again
-    if (!card || !file) return;
-    if (!/^image\//.test(file.type)) { toast('יש לבחור קובץ תמונה', true); return; }
-    toast('מעבד את התמונה…');
-    const { bytes } = await compressImage(file);
-    const doc = card.doc || hex(crypto.getRandomValues(new Uint8Array(16)));
-    const sealed = await sealBytes(S.pubKey, bytes);
-    await api(`/admin/docs/${doc}/fuel`, { method: 'PUT', body: sealed });
-    card.doc = doc;
-    card.docAt = Date.now();
-    delete S.docs[`${doc}:fuel`];           // force a re-fetch of the new image
+    const files = [...(input.files || [])].filter((f) => /^image\//.test(f.type));
+    const rejected = (input.files || []).length - files.length;
+    input.value = '';                       // let the same files be picked again
+    if (!card) return;
+    if (!files.length) { toast('יש לבחור קובצי תמונה', true); return; }
+    if (card.receipts.length + files.length > 60) {
+      toast('מקסימום 60 קבלות לכרטיס', true);
+      return;
+    }
+    let done = 0;
+    for (const file of files) {
+      toast(`מעבד קבלה ${done + 1} מתוך ${files.length}…`);
+      const { bytes } = await compressImage(file);
+      const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+      await api(`/admin/docs/${id}/fuel`, { method: 'PUT', body: await sealBytes(S.pubKey, bytes) });
+      card.receipts.push({ id, at: Date.now() });
+      done++;
+    }
+    S.fuelOpen.add(card.id);
     await saveInv();
     renderConsole();
-    toast('הקבלה נשמרה');
+    toast(`${done} קבלות נשמרו${rejected ? ` · ${rejected} קבצים שאינם תמונה דולגו` : ''}`);
   });
 
-const fuelDocToggle = (i) =>
+// Pulls and decrypts one receipt. Cached afterwards, so re-opening is free.
+async function fuelDocLoad(docId) {
+  const key = `${docId}:fuel`;
+  if (S.docs[key]) return S.docs[key];
+  const { docs } = await api(`/admin/docs/${docId}`);
+  const row = (docs || []).find((x) => x.kind === 'fuel');
+  if (!row) throw new Error('הקבלה לא נמצאה');
+  const bytes = await openBytes(S.priv, row);
+  let bin = '';
+  for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
+  S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
+  return S.docs[key];
+}
+
+const fuelDocShow = (docId) =>
   withBusy(async () => {
-    const card = (S.inv.fuel || [])[i];
-    if (!card || !card.doc) return;
-    const key = `${card.doc}:fuel`;
-    if (S.docs[key]) { delete S.docs[key]; renderConsole(); return; }
-    const { docs } = await api(`/admin/docs/${card.doc}`);
-    const row = (docs || []).find((x) => x.kind === 'fuel');
-    if (!row) { toast('הקבלה לא נמצאה', true); return; }
-    const bytes = await openBytes(S.priv, row);
-    let bin = '';
-    for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
-    S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
+    await fuelDocLoad(docId);
     renderConsole();
   });
 
-const fuelDocDelete = (i) =>
+const fuelDocDelete = (i, docId) =>
   withBusy(async () => {
     const card = (S.inv.fuel || [])[i];
-    if (!card || !card.doc) return;
-    if (!window.confirm('למחוק את צילום הקבלה? הפעולה אינה הפיכה.')) return;
-    await api(`/admin/docs/${card.doc}/fuel`, { method: 'DELETE' });
-    delete S.docs[`${card.doc}:fuel`];
-    card.doc = '';
-    card.docAt = 0;
+    if (!card) return;
+    if (!window.confirm('למחוק את הקבלה? הפעולה אינה הפיכה.')) return;
+    await api(`/admin/docs/${docId}/fuel`, { method: 'DELETE' });
+    delete S.docs[`${docId}:fuel`];
+    card.receipts = card.receipts.filter((r) => r.id !== docId);
     await saveInv();
     renderConsole();
     toast('הקבלה נמחקה');
   });
+
+function saveDataUrl(dataUrl, name) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+const fuelFileStem = (card) =>
+  `קבלה-${nameOf(FUEL_KINDS, card.kind)}-${(card.no || 'ללא-מספר').replace(/[^\w֐-׿-]/g, '')}`;
+
+const fuelDownloadOne = (i, docId) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    if (!card) return;
+    const n = card.receipts.findIndex((r) => r.id === docId) + 1;
+    saveDataUrl(await fuelDocLoad(docId), `${fuelFileStem(card)}-${n}.jpg`);
+  });
+
+// One click, every receipt on the card. Browsers throttle a burst of downloads,
+// so they go out spaced rather than all at once.
+const fuelDownloadAll = (i) =>
+  withBusy(async () => {
+    const card = (S.inv.fuel || [])[i];
+    if (!card || !card.receipts.length) { toast('אין קבלות להורדה', true); return; }
+    const stem = fuelFileStem(card);
+    for (let n = 0; n < card.receipts.length; n++) {
+      toast(`מוריד קבלה ${n + 1} מתוך ${card.receipts.length}…`);
+      saveDataUrl(await fuelDocLoad(card.receipts[n].id), `${stem}-${n + 1}.jpg`);
+      await new Promise((r) => setTimeout(r, 350));
+    }
+    renderConsole();
+    toast(`${card.receipts.length} קבלות הורדו`);
+  });
+
+// Who took the card out and how much they burned. Deducting the litres here is
+// what keeps the remaining balance honest without a second manual edit.
+function fuelUse(i) {
+  const card = (S.inv.fuel || [])[i];
+  if (!card) return;
+  const who = window.prompt('מי השתמש בכרטיס? (שם מלא)', card.holder === FUEL_OFFICE ? '' : card.holder);
+  if (who === null) return;
+  if (who.trim().length < 2) { toast('נא למלא שם', true); return; }
+  const raw = window.prompt('כמה ליטרים תודלקו?', '');
+  if (raw === null) return;
+  const litres = Math.max(0, Math.min(99999, parseInt(String(raw).replace(/\D/g, ''), 10) || 0));
+  if (!litres) { toast('נא למלא כמות ליטרים', true); return; }
+  const plate = (window.prompt('מספר רכב (רשות):', '') || '').trim().slice(0, 20);
+  card.uses = [{ t: Date.now(), who: who.trim().slice(0, 60), litres, plate }, ...card.uses].slice(0, 300);
+  card.litres = Math.max(0, card.litres - litres);
+  S.fuelOpen.add(card.id);
+  invSave();
+}
+
+function fuelCredit(i) {
+  const card = (S.inv.fuel || [])[i];
+  if (!card) return;
+  if (card.credited) {
+    if (!window.confirm('לבטל את סימון הזיכוי?')) return;
+    card.credited = false;
+    card.creditedAt = 0;
+  } else {
+    if (!window.confirm(`לסמן שכרטיס ${card.no || 'זה'} זוכה אצל קצין רכב?`)) return;
+    card.credited = true;
+    card.creditedAt = Date.now();
+  }
+  invSave();
+}
 
 // The stock table, exactly as the page computes it — opening stock less what
 // the approved sign-outs still hold.
@@ -3363,16 +3772,37 @@ function exportFuelCsv() {
   const rows = (S.inv && S.inv.fuel) || [];
   if (!rows.length) { toast('אין כרטיסים לייצוא', true); return; }
   const lines = [
-    ['סוג כרטיס', 'מספר כרטיס', 'ליטרים שנותרו', 'רכב משויך', 'קבלה מצורפת', 'תאריך צילום']
+    ['סוג כרטיס', 'מספר כרטיס', 'ליטרים שנותרו', 'סטטוס', 'אצל מי',
+      'שימושים', 'ליטרים שנוצלו', 'שימוש אחרון', 'מספר קבלות', 'זוכה אצל קצין רכב']
       .map(csvCell).join(','),
   ];
   for (const x of rows) {
+    const used = x.uses.reduce((s, u) => s + u.litres, 0);
     lines.push([
-      nameOf(FUEL_KINDS, x.kind), x.no, x.litres, x.plate || '',
-      x.doc ? 'כן' : 'לא', x.docAt ? fmtDate(x.docAt) : '',
+      nameOf(FUEL_KINDS, x.kind), x.no, x.litres,
+      x.litres < FUEL_LOW ? 'מלאי נמוך' : 'תקין', x.holder || '',
+      x.uses.length, used, x.uses[0] ? fmtDate(x.uses[0].t) : '',
+      x.receipts.length, x.credited ? `כן — ${fmtDate(x.creditedAt)}` : 'לא',
     ].map(csvCell).join(','));
   }
   downloadCsv(lines, 'tzayad-fuel.csv');
+}
+
+// Flat movement log across every card, so "who used what, when" is one export.
+function exportFuelUsesCsv() {
+  const rows = (S.inv && S.inv.fuel) || [];
+  const uses = rows.flatMap((c) => c.uses.map((u) => ({ ...u, card: c })));
+  if (!uses.length) { toast('לא נרשמו שימושים', true); return; }
+  uses.sort((a, b) => b.t - a.t);
+  const lines = [
+    ['תאריך', 'מספר כרטיס', 'סוג דלק', 'מי השתמש', 'ליטרים', 'מספר רכב'].map(csvCell).join(','),
+  ];
+  for (const u of uses) {
+    lines.push([
+      fmtDate(u.t), u.card.no, nameOf(FUEL_KINDS, u.card.kind), u.who, u.litres, u.plate || '',
+    ].map(csvCell).join(','));
+  }
+  downloadCsv(lines, 'tzayad-fuel-uses.csv');
 }
 
 /* ── Armoury / ammunition / vehicle actions ───────────────────────── */
@@ -3617,7 +4047,11 @@ const openDeposits = () => depositReports().filter((r) => r.status !== 'done').l
 // Faults not yet closed — 'partial' means handed to the works team.
 const openFaults = () => faultReports().filter((r) => r.status !== 'done').length;
 
-const armonCount = () => ((S.inv && S.inv.armon) || []).length;
+// What is physically in the cupboard right now. An item logged as being with a
+// soldier or out on a mission is off the armoury's shelf count — it is still
+// registered, but counting it as present is how a shortage goes unnoticed.
+const armonHere = () => ((S.inv && S.inv.armon) || []).filter((x) => x.loc === 'armon');
+const armonCount = () => armonHere().length;
 
 // Vehicles missing any kit item, or overdue for service.
 function vehAlerts() {
@@ -3734,7 +4168,7 @@ function renderReportsTab() {
   return `
     <section class="panel">
       <h2 class="panel-title">בקשות ודיווחי חוסר</h2>
-      <p class="panel-sub">בקשות שחיילים שלחו בעצמם דרך <span class="code-inline">#report</span>. לא קשור למאגר ההחתמות. סמנו ✓ אחרי הטיפול.</p>
+      <p class="panel-sub">בקשות שחיילים שלחו בעצמם דרך <span class="code-inline">#report</span>. לא קשור למאגר הרישומים. סמנו ✓ אחרי הטיפול.</p>
       ${plainSearch('rep-search', 'rep-qclear', S.repQ, 'חיפוש לפי שם או תוכן הבקשה', byStatus.length, visible.length)}
       <div class="filters">${filters}</div>
       ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
@@ -3862,6 +4296,42 @@ function exportFaultsCsv() {
   downloadCsv(lines, 'tzayad-faults.csv');
 }
 
+// The read-only credential. Setting it wraps a second copy of the private key
+// under a password of its own — which is why it can only be created while the
+// admin is signed in and holding the key in memory.
+function viewerPanel() {
+  const has = !!S.viewerInfo;
+  return `
+    <section class="panel">
+      <h2 class="panel-title">משתמש צפייה בלבד</h2>
+      <p class="panel-sub">
+        ${has
+          ? `קיים משתמש צפייה מאז <strong>${esc(fmtDate(S.viewerInfo.createdAt))}</strong>. הגדרת סיסמה חדשה מחליפה את הקודמת ומנתקת מיד כל מי שמחובר בה.`
+          : 'הגדרת סיסמה נפרדת שמאפשרת לצפות בכל הנתונים בלי אפשרות לאשר, לערוך או למחוק.'}
+      </p>
+      <div class="callout risk">
+        <p class="callout-title">מה זה כן ומה זה לא</p>
+        <p>המערכת מוצפנת מקצה לקצה, ולכן משתמש צפייה מחזיק עותק משלו של מפתח הפענוח — הוא <strong>רואה הכול</strong>: שמות, טלפונים, מספרים אישיים וצילומי רישיונות. אין דרך להראות לו חלק מהנתונים בלבד.</p>
+        <p class="mb0">מה שהוא לא יכול: <strong>לשנות שום דבר</strong>. השרת דוחה כל בקשת כתיבה מהסשן שלו — לא רק שהכפתורים מוסתרים. תנו את הסיסמה הזו רק למי שממילא מורשה לראות את המידע.</p>
+      </div>
+      <form data-form="viewer" novalidate>
+        <label class="field">
+          <span class="field-label">${has ? 'סיסמת צפייה חדשה' : 'סיסמת צפייה'} (10 תווים לפחות)</span>
+          <input class="input" type="password" name="pw" autocomplete="new-password" required>
+        </label>
+        <label class="field">
+          <span class="field-label">אימות סיסמה</span>
+          <input class="input" type="password" name="pw2" autocomplete="new-password" required>
+        </label>
+        <p class="form-err" data-err></p>
+        <div class="rec-actions">
+          <button class="btn primary" type="submit">${has ? 'החלפת סיסמת הצפייה' : 'יצירת משתמש צפייה'}</button>
+          ${has ? '<button class="btn danger" type="button" data-act="viewer-del">ביטול משתמש הצפייה</button>' : ''}
+        </div>
+      </form>
+    </section>`;
+}
+
 function renderSecurityTab() {
   return `
     <div class="callout">
@@ -3877,6 +4347,8 @@ function renderSecurityTab() {
       <p class="callout-title">אין שחזור סיסמה</p>
       <p class="mb0">איבוד הסיסמה משמעו איבוד כל הנתונים. הדרך היחידה להמשיך היא מחיקה מלאה והתחלה מחדש.</p>
     </div>
+    ${viewerPanel()}
+
     <section class="panel">
       <h2 class="panel-title">החלפת סיסמה</h2>
       <p class="panel-sub">ההחלפה מיידית ואינה מצפינה מחדש רשומות. כל החיבורים הפעילים ינותקו.</p>
@@ -4261,14 +4733,16 @@ async function loginSubmit(form) {
   const pw = form.pw.value;
   if (!pw) return setFormErr(form, 'נא להזין סיסמה');
   setFormErr(form, '');
+  const role = form.role && form.role.value === 'viewer' ? 'viewer' : 'admin';
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'מתחבר…';
   await withBusy(async () => {
     try {
-      const { salt } = await api('/admin/challenge');
+      const { salt } = await api(`/admin/challenge${role === 'viewer' ? '?role=viewer' : ''}`);
       const { kek, verifier } = await deriveAuth(pw, salt);
-      const { keyIv, wrappedKey } = await api('/admin/login', { body: { verifier } });
+      const { keyIv, wrappedKey } = await api('/admin/login', { body: { verifier, role } });
+      S.role = role;
       const pkcs8 = new Uint8Array(
         await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(keyIv) }, kek, ub64(wrappedKey))
       );
@@ -4280,6 +4754,7 @@ async function loginSubmit(form) {
       await loadRecords();
       await loadInv();
       await loadReports();
+      if (role === 'admin') await loadViewerInfo();
       S.tab = 'over';
       armIdle();
       renderConsole();
@@ -4310,11 +4785,13 @@ const adminAdjust = (rid, itemId, delta) =>
     renderConsole();
   });
 
-const adminApprove = (rid) =>
-  withBusy(async () => {
-    const rec = findRec(rid);
-    if (!rec || rec.damaged) return;
-    const now = Date.now();
+// Approving one record. Split out of the click handler so a bulk run can call
+// it repeatedly without nesting withBusy or firing a toast per soldier.
+// Returns a short outcome the caller turns into a message.
+async function approveCore(rid) {
+  const rec = findRec(rid);
+  if (!rec || rec.damaged) return { skipped: true };
+  const now = Date.now();
     if (rec.data.supp) {
       // supplement: merge into the soldier's main record (matched by pn)
       const parent = S.recs.find(
@@ -4340,14 +4817,7 @@ const adminApprove = (rid) =>
         await saveRec(parent);
         await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
         S.recs = S.recs.filter((r) => r.rid !== rec.rid);
-        renderConsole();
-        toast(
-          suppFailed
-            ? `ההשלמה מוזגה לרישום של ${parent.data.name} — ההודעה לא נשלחה אוטומטית`
-            : `ההשלמה מוזגה ונשלחה הודעה ל${parent.data.name}`,
-          !!suppFailed
-        );
-        return;
+        return { name: parent.data.name, merged: true, failed: !!suppFailed };
       }
       // main record was deleted meanwhile — approve as a standalone record
       delete rec.data.supp;
@@ -4361,13 +4831,73 @@ const adminApprove = (rid) =>
       rec.data.log.push({ a: 'notify', t: now });
     }
     await saveRec(rec);
+    return { name: rec.data.name, failed: !!failed };
+}
+
+const adminApprove = (rid) =>
+  withBusy(async () => {
+    const r = await approveCore(rid);
+    S.picked.delete(rid);
+    renderConsole();
+    if (r.skipped) return;
+    toast(
+      r.merged
+        ? (r.failed
+            ? `ההשלמה מוזגה לרישום של ${r.name} — ההודעה לא נשלחה אוטומטית`
+            : `ההשלמה מוזגה ונשלחה הודעה ל${r.name}`)
+        : (r.failed
+            ? `אושר: ${r.name} — ההודעה לא נשלחה אוטומטית, שלחו ידנית במעקב ציוד`
+            : `אושר: ${r.name} — הודעת וואטסאפ נשלחה`),
+      !!r.failed
+    );
+  });
+
+// Bulk approval. Each record is saved on its own, so a failure part-way leaves
+// everything before it approved rather than rolling the batch back.
+const bulkApprove = () =>
+  withBusy(async () => {
+    const rids = [...S.picked];
+    if (!rids.length) return;
+    if (!window.confirm(`לאשר ${rids.length} רישומים? לכל חייל תישלח הודעה.`)) return;
+    let ok = 0, noMsg = 0;
+    const failedRids = [];
+    for (const rid of rids) {
+      toast(`מאשר ${ok + failedRids.length + 1} מתוך ${rids.length}…`);
+      try {
+        const r = await approveCore(rid);
+        if (r.skipped) continue;
+        ok++;
+        if (r.failed) noMsg++;
+        S.picked.delete(rid);
+      } catch {
+        failedRids.push(rid);
+      }
+    }
     renderConsole();
     toast(
-      failed
-        ? `אושר: ${rec.data.name} — ההודעה לא נשלחה אוטומטית, שלחו ידנית במעקב ציוד`
-        : `אושר: ${rec.data.name} — הודעת וואטסאפ נשלחה`,
-      !!failed
+      `${ok} רישומים אושרו` +
+        (noMsg ? ` · ${noMsg} ללא הודעה אוטומטית` : '') +
+        (failedRids.length ? ` · ${failedRids.length} נכשלו ונשארו מסומנים` : ''),
+      failedRids.length > 0
     );
+  });
+
+const bulkDelete = () =>
+  withBusy(async () => {
+    const rids = [...S.picked];
+    if (!rids.length) return;
+    if (!window.confirm(`למחוק ${rids.length} רישומים? הפעולה אינה הפיכה.`)) return;
+    let ok = 0;
+    for (const rid of rids) {
+      try {
+        await api(`/admin/records/${rid}`, { method: 'DELETE' });
+        S.recs = S.recs.filter((r) => r.rid !== rid);
+        S.picked.delete(rid);
+        ok++;
+      } catch { /* leave it ticked so the failure is visible */ }
+    }
+    renderConsole();
+    toast(`${ok} רישומים נמחקו`);
   });
 
 const adminCredit = (rid, itemId, delta) =>
@@ -4469,6 +4999,48 @@ async function rotateSubmit(form) {
     renderConsole();
     toast('הסיסמה הוחלפה');
   });
+}
+
+// Wraps the very same private key under a second password. Only possible while
+// the admin is signed in, because the unwrapped key lives in memory only then.
+async function viewerSubmit(form) {
+  const pw = form.pw.value;
+  const pw2 = form.pw2.value;
+  if (pw.length < 10) return setFormErr(form, 'הסיסמה חייבת להכיל 10 תווים לפחות');
+  if (pw !== pw2) return setFormErr(form, 'הסיסמאות אינן תואמות');
+  if (!S.pkcs8) return setFormErr(form, 'המפתח אינו זמין — התחברו מחדש');
+  setFormErr(form, '');
+  await withBusy(async () => {
+    const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+    const keyIv = crypto.getRandomValues(new Uint8Array(12));
+    const { kek, verifier } = await deriveAuth(pw, salt);
+    const wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: keyIv }, kek, S.pkcs8);
+    await api('/admin/viewer', {
+      method: 'PUT',
+      body: { salt, verifier, keyIv: b64(keyIv), wrappedKey: b64(wrapped) },
+    });
+    await loadViewerInfo();
+    renderConsole();
+    toast('סיסמת הצפייה נשמרה');
+  });
+}
+
+const viewerDelete = () =>
+  withBusy(async () => {
+    if (!window.confirm('לבטל את משתמש הצפייה? מי שמחובר בו ינותק מיד.')) return;
+    await api('/admin/viewer', { method: 'DELETE' });
+    S.viewerInfo = null;
+    renderConsole();
+    toast('משתמש הצפייה בוטל');
+  });
+
+async function loadViewerInfo() {
+  try {
+    const { viewer } = await api('/admin/viewer');
+    S.viewerInfo = viewer;
+  } catch {
+    S.viewerInfo = null;                  // older deployment without the table
+  }
 }
 
 const adminWipe = () =>
@@ -4606,7 +5178,7 @@ $app.addEventListener('input', (e) => {
     case 'veh-fuelcode': S.inv.vehicles[+el.dataset.i].fuelCode = el.value; break;
     case 'fuel-search':  S.regQ = { ...S.regQ, fuel: el.value }; S.page = {}; rerenderKeepFocus(el); break;
     case 'fuel-no':      S.inv.fuel[+el.dataset.i].no = el.value; break;
-    case 'fuel-plate':   S.inv.fuel[+el.dataset.i].plate = el.value; break;
+    case 'fuel-holder':  S.inv.fuel[+el.dataset.i].holder = el.value; break;
     case 'fuel-litres':
       S.inv.fuel[+el.dataset.i].litres =
         Math.max(0, Math.min(99999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
@@ -4650,6 +5222,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'setup') setupSubmit(form);
   else if (kind === 'login') loginSubmit(form);
   else if (kind === 'rotate') rotateSubmit(form);
+  else if (kind === 'viewer') viewerSubmit(form);
   else if (kind === 'report') reportSubmit(form);
   else if (kind === 'deposit') depositSubmit(form);
   else if (kind === 'fault') faultSubmit(form);
@@ -4774,9 +5347,31 @@ function dispatch(act, el) {
       focusLast('[data-act="fuel-no"]');
       break;
     case 'fuel-del': fuelDelete(+el.dataset.i); break;
-    case 'fuel-doc': fuelDocToggle(+el.dataset.i); break;
-    case 'fuel-doc-del': fuelDocDelete(+el.dataset.i); break;
+    case 'fuel-doc': fuelDocShow(el.dataset.r); break;
+    case 'fuel-doc-del': fuelDocDelete(+el.dataset.i, el.dataset.r); break;
+    case 'fuel-dl-one': fuelDownloadOne(+el.dataset.i, el.dataset.r); break;
+    case 'fuel-dl-all': fuelDownloadAll(+el.dataset.i); break;
+    case 'fuel-use': fuelUse(+el.dataset.i); break;
+    case 'fuel-use-del':
+      if (window.confirm('למחוק את רישום השימוש? הליטרים לא יוחזרו ליתרה אוטומטית.')) {
+        S.inv.fuel[+el.dataset.i].uses.splice(+el.dataset.n, 1);
+        invSave();
+      }
+      break;
+    case 'fuel-credit': fuelCredit(+el.dataset.i); break;
+    case 'fuel-office':
+      S.inv.fuel[+el.dataset.i].holder = FUEL_OFFICE;
+      renderConsole();
+      break;
+    case 'fuel-open': {
+      const id = el.dataset.id;
+      if (S.fuelOpen.has(id)) S.fuelOpen.delete(id);
+      else S.fuelOpen.add(id);
+      renderConsole();
+      break;
+    }
     case 'fuel-export': exportFuelCsv(); break;
+    case 'fuel-uses-export': exportFuelUsesCsv(); break;
     case 'inv-export': exportInvCsv(); break;
     case 'inv-xexport': exportInvExtraCsv(); break;
     case 'fuel-qclear': S.regQ = { ...S.regQ, fuel: '' }; renderConsole(); break;
@@ -4797,6 +5392,40 @@ function dispatch(act, el) {
       renderConsole();
       break;
     }
+    case 'login-role': S.loginRole = el.dataset.r; renderLogin(); break;
+    case 'viewer-del': viewerDelete(); break;
+    // roster tables
+    case 'sort': {
+      const k = el.dataset.k;
+      S.sort = S.sort.key === k
+        ? { key: k, dir: S.sort.dir === 'asc' ? 'desc' : 'asc' }
+        : { key: k, dir: k === 'date' || k === 'approved' ? 'desc' : 'asc' };
+      S.page = {};
+      renderConsole();
+      break;
+    }
+    case 'expand':
+      if (S.expanded.has(rid)) S.expanded.delete(rid);
+      else S.expanded.add(rid);
+      renderConsole();
+      break;
+    case 'pick':
+      if (S.picked.has(rid)) S.picked.delete(rid);
+      else S.picked.add(rid);
+      renderConsole();
+      break;
+    case 'pick-all': {
+      const page = paged('pending', sortRecs(applyFilters(S.recs.filter((r) => r.status === 'pending')),
+                                             S.sort.key === 'approved' ? 'date' : S.sort.key));
+      const rids = page.slice.map((r) => r.rid);
+      const allOn = rids.every((x) => S.picked.has(x));
+      for (const x of rids) { if (allOn) S.picked.delete(x); else S.picked.add(x); }
+      renderConsole();
+      break;
+    }
+    case 'pick-clear': S.picked.clear(); renderConsole(); break;
+    case 'bulk-approve': bulkApprove(); break;
+    case 'bulk-del': bulkDelete(); break;
     case 'rep-again': S.repSent = false; S.rep = null; renderReport(); break;
     // armoury deposits
     case 'dep-again': S.depSent = false; S.dep = null; renderDeposit(); break;

@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════════
-   החתמת ציוד — "operations console" design system.
+   רישום ראשוני — "operations console" design system.
    Cool neutral field, crisp white surfaces, disciplined olive/brass
    accents, tight technical geometry. Built for daylight readability and
    for an administrator working long shifts against dense tables.
@@ -243,6 +243,135 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .pill.bad { background: var(--bad-fill); color: #fff; }
 .nowrap { white-space: nowrap; }
 .mt-xs { margin-top: 4px; }
+.ro-tag {
+  align-self: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--brass-tint);
+  border: 1px solid var(--brass);
+  color: #6A5416;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ── Roster tables ─────────────────────────────────────────────────── */
+.roster .col-pick { width: 34px; }
+.roster tr.is-open > td { background: var(--pine-tint); }
+.roster tr.row-done .lg-name { color: var(--muted); }
+
+.th-sort { padding: 0; }
+.th-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 9px 10px;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  text-align: start;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.th-btn:hover { color: var(--pine); }
+.th-sort.on .th-btn { color: var(--pine-deep); }
+.th-arrow { font-size: 10px; }
+
+.rowlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--pine-deep);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: start;
+}
+.rowlink:hover { text-decoration: underline; }
+.row-caret { font-size: 10px; color: var(--muted-2); }
+.tagi.supp { background: var(--brass-tint); color: #6A5416; margin-inline-start: 6px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 320px; }
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chip.held { border-color: var(--warn-fill); background: var(--warn-tint); color: var(--warn-ink); }
+.chip.back { border-color: var(--ok-fill); background: var(--ok-tint); color: var(--ok-ink); }
+
+.bulkbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font-size: 13.5px;
+}
+.bulkbar.on { border-color: var(--pine); background: var(--pine-tint); }
+.bulk-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.bulk-n { font-weight: 700; }
+
+.rowdetail { padding: 2px 0; }
+.rowdetail ul { margin: 8px 0; }
+
+/* ── Expanded detail rows ──────────────────────────────────────────── */
+.tbl tr.sub > td { background: var(--bg); padding: 14px 12px; }
+.tbl.compact { font-size: 13px; }
+.tbl.compact th, .tbl.compact td { padding: 6px 8px; }
+.fuel-detail > .field-label { display: block; margin-bottom: 6px; }
+
+.rcpts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.rcpt {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.rcpt-img { display: block; width: 100%; height: 120px; object-fit: cover; }
+.rcpt-ph {
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 120px;
+  background: var(--pine-tint);
+  color: var(--pine-deep);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 0;
+}
+.rcpt-ph:hover { background: var(--line-soft); }
+.rcpt figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+}
 .panel-sub {
   color: var(--muted);
   font-size: 14px;

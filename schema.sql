@@ -61,9 +61,24 @@ CREATE TABLE IF NOT EXISTS vault (
   updated_at  INTEGER NOT NULL
 );
 
+-- A second, read-only credential. It holds its own copy of the same private
+-- key, wrapped under the viewer's own password — decryption happens in the
+-- browser, so there is no way to show the data without handing over a key.
+-- What makes it read-only is the server: every mutating endpoint refuses a
+-- session whose role is 'viewer'.
+CREATE TABLE IF NOT EXISTS viewer (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  salt         TEXT    NOT NULL,   -- PBKDF2 salt for the viewer KEK + verifier
+  verifier     TEXT    NOT NULL,
+  key_iv       TEXT    NOT NULL,
+  wrapped_key  TEXT    NOT NULL,   -- private key encrypted under the viewer KEK
+  created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token   TEXT PRIMARY KEY,        -- 64 hex chars
-  expires INTEGER NOT NULL
+  expires INTEGER NOT NULL,
+  role    TEXT NOT NULL DEFAULT 'admin'   -- 'admin' | 'viewer'
 );
 
 CREATE TABLE IF NOT EXISTS throttle (
