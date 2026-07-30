@@ -894,34 +894,60 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   background: var(--surface-2);
 }
 
-/* ── Tables ────────────────────────────────────────────────────────── */
+/* ── Tables ──────────────────────────────────────────────────────────
+   A register is read by running the eye down a column, so the columns get
+   the width their content actually asks for — an automatic layout, not an
+   equal share that starves the equipment column and wastes half of the one
+   holding a seven-digit number. What keeps that honest is the folding in
+   app.js: a table only ever lays out columns it has room for. */
 .tbl-scroll {
   overflow-x: auto;
-  margin: 2px -2px 0;
+  margin: 4px -2px 0;
   padding: 0 2px;
   border-radius: var(--r-md);
 }
-.tbl { width: 100%; font-size: 14px; }
+.tbl { width: 100%; font-size: 14px; table-layout: auto; }
 .tbl th, .tbl td {
-  padding: 9px 11px;
+  padding: 10px 13px;
   text-align: right;
+  vertical-align: middle;
+  overflow-wrap: break-word;
   border-bottom: 1px solid var(--line-soft);
 }
 .tbl thead th {
   position: sticky;
   top: 0;
   z-index: 1;
+  padding-block: 8px;
   background: var(--surface-3);
   font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   color: var(--ink-2);
   border-bottom: 1px solid var(--line-hard);
   white-space: nowrap;
+  vertical-align: bottom;
 }
 .tbl tbody tr { transition: background-color 0.12s; }
 .tbl tbody tr:hover { background: var(--surface-2); }
 .tbl tbody tr:last-child td { border-bottom: none; }
+
+/* Buttons in a cell sit side by side. `.rec-actions` is built for the foot
+   of a card, where it wants a rule above it and buttons that stretch to
+   share the width; inside a row both make the row twice as tall as it
+   needs to be. */
+.tbl td .rec-actions {
+  gap: 6px;
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+.tbl td .rec-actions .btn { flex: 0 0 auto; min-width: 0; }
+/* Keeping them on one line is also how the column asks the layout for the
+   width to hold them: a wrapping flex box measures only its widest child,
+   so the column was sized for one button and the second dropped below. */
+.tbl:not(.folded) td .rec-actions { flex-wrap: nowrap; }
+.tbl .chips { max-width: none; gap: 4px 5px; }
 .tbl td.num, .tbl th.num { text-align: center; }
 /* .num marks a column of digits, and its heading is a Hebrew word. Left in
    the monospace LTR context the digits need, that word renders letter-spaced
@@ -1550,180 +1576,175 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .serial-lbl { font-size: 14px; font-weight: 600; }
 .serial-val { font-size: 26px; font-weight: 800; letter-spacing: 0.08em; }
 
-/* ── Tables: compact on a desktop, folded on a phone ───────────────────
-   Two different problems, two different answers — but the same shape.
+/* ── Controls inside a cell ────────────────────────────────────────────
+   A form field is drawn to be filled in; a cell holds a value that is
+   usually only read. So in a table the controls shed the padding and the
+   minimum widths they carry in a form, and fill the column instead. */
 
-   On a wide screen the columns are what make a register readable, so the
-   table simply stops wasting space: tight padding, inputs sized for a cell
-   rather than a form, headings that wrap, and a fixed layout so columns
-   share the width instead of each demanding what its content wants.
-
-   On a phone twelve columns across 375px is thirty pixels each, and no
-   amount of styling fixes that. It stays a table — rows you can scan down
-   and compare, which a stack of cards cannot give you — and drops to the
-   two or three columns that carry it. The rest fold into a panel under the
-   row, opened by the chevron. Nothing hidden off the side, no column maths. */
-
-.tbl { font-size: 13.5px; }
-.tbl th, .tbl td { padding: 6px 7px; }
-.tbl th {
-  font-size: 12px;
-  line-height: 1.25;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.tbl .input.mini { padding: 4px 6px; font-size: 13px; }
-.tbl td .input { width: 100%; min-width: 0; }
-.tbl .btn.small { padding: 4px 8px; font-size: 12.5px; }
+.tbl .input.mini { padding: 5px 7px; font-size: 13px; }
+/* A cell is narrower than a form field and the value has to fit inside it:
+   a registration number cut off at "77-123" is worse than a small one. */
+.tbl td .input { width: 100%; min-width: 0; font-size: 13.5px; padding: 5px 7px; }
+.tbl td .input.num { min-width: 4.5em; }
+.tbl td .select-mini { min-width: 6.5em; }
+.tbl .input[type="date"] { font-size: 12.5px; padding: 5px 6px; min-width: 0; width: 100%; }
+.tbl .btn.small { padding: 5px 9px; font-size: 12.5px; }
 .tbl .linkbtn { font-size: 12.5px; }
 .tbl .kitbox { width: 17px; height: 17px; }
-.tbl td.nowrap { white-space: normal; }
-.tbl td .rec-actions { gap: 4px; }
-.tbl .chips { gap: 3px; }
-.tbl .chip { font-size: 11.5px; padding: 1px 6px; }
+/* `.nowrap` marks a cell whose contents belong on one line — two buttons,
+   a date and its time. Keeping them there is also how the column asks the
+   layout for the width to hold them. A folded table has no width to spare
+   and lets them wrap instead. */
+.tbl td.nowrap { white-space: nowrap; }
+.tbl.folded td.nowrap { white-space: normal; }
+.tbl .chip { font-size: 11.5px; padding: 1px 7px; }
 .tbl .minibar { width: 100%; max-width: 74px; min-width: 26px; }
+.tbl .lg-name { max-width: none; }
+.tbl th.kit-col, .tbl td.kit-col { width: 1%; padding-inline: 5px; }
+.tbl th.kit-col .lg-h { font-size: 11px; }
 
-.cellrow { display: flex; gap: 4px; }
+/* stacked controls in one cell need air between them, not just beside */
+.tbl td .input.mini + .input.mini,
+.tbl td .select-mini + .input.mini,
+.tbl td .input.mini + .btn,
+.tbl td .select-mini + .btn { margin-top: 5px; }
+
+.cellrow { display: flex; gap: 5px; }
 .cellrow .input { flex: 1; min-width: 0; }
 .useredit { padding: 4px 0; }
 .useredit .lic-set { margin-bottom: 12px; }
 
-/* ── Wide screens: a real table, tightened ─────────────────────────── */
-@media (min-width: 701px) {
-  .tbl { table-layout: fixed; width: 100%; }
-  .tbl th, .tbl td { overflow-wrap: anywhere; }
-  .tbl th.num, .tbl td.num { width: auto; white-space: normal; }
-  .tbl .lg-name { max-width: none; }
-  .tbl .chips { max-width: 100px; }
-  .tbl td .input.num { min-width: 4.5em; }
-  .tbl td .select-mini { min-width: 6.5em; }
-  .tbl th.kit-col, .tbl td.kit-col { width: 1%; padding-inline: 4px; }
-  .tbl th.kit-col .lg-h { font-size: 11px; }
-  .tbl .input[type="date"] { font-size: 12px; padding: 4px; min-width: 0; width: 100%; }
-  .tbl td .input.mini + .input.mini,
-  .tbl td .select-mini + .input.mini,
-  .tbl td .input.mini + .btn,
-  .tbl td .select-mini + .btn { margin-top: 4px; }
-}
+/* ── A folded table ────────────────────────────────────────────────────
+   Not a phone stylesheet: a table folds whenever it cannot afford all its
+   columns, which happens at 375px and equally in a narrow laptop window.
+   So everything here keys off the class app.js sets, never off a width. */
 
-/* A column the phone cannot afford. Its cells are moved into the row's
-   panel by script; only the heading is left behind to hide. */
+/* A column that did not fit. Its cells are moved into the row's panel by
+   script; only the heading is left behind to hide. */
 .folded-out { display: none; }
 
-/* ── Phones: the same table, fewer columns ─────────────────────────── */
+/* The columns that are left still get the width their content asks for.
+   What forced the table wider than the screen before was the headings: they
+   are kept on one line so a column is never narrower than its own name, and
+   three or four of those on a phone already overflow. A folded table lets
+   them wrap instead, which drops each column's floor to its longest word. */
+.tbl.folded thead th { white-space: normal; line-height: 1.3; }
+/* set by app.js only when the content still will not fit: the columns share
+   the width equally and the text wraps inside them */
+.tbl.folded.even { table-layout: fixed; }
+.tbl.folded th.exp-col, .tbl.folded td.exp-col { width: 40px; }
+.tbl.folded th.col-pick, .tbl.folded td.col-pick { width: 32px; }
+.tbl.folded th, .tbl.folded td { padding: 9px 8px; }
+.tbl.folded td { white-space: normal; }
+/* the ledger's name column asks for 148px, which is a third of a phone */
+.tbl.folded .lg-name { min-width: 0; }
+/* Two buttons that will not sit side by side sit one above the other, and
+   a ragged left edge is the only thing that makes that look accidental. */
+.tbl.folded td .btn { width: 100%; }
+.tbl.folded td .btn.small { padding: 6px 7px; }
+.tbl.folded .minibar { max-width: none; }
+/* a two-word chip is wider than a folded column; let it take a second line
+   rather than reach past the cell it sits in */
+.tbl.folded .chip, .tbl.folded .state, .det-v .chip, .det-v .state { white-space: normal; }
+
+/* ── the chevron ── */
+.tbl th.exp-col, .tbl td.exp-col {
+  padding-inline: 3px;
+  text-align: center;
+  vertical-align: middle;
+}
+.exp-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.exp-btn:hover { border-color: var(--line-hard); color: var(--ink-2); }
+.exp-btn[aria-expanded="true"] {
+  transform: rotate(180deg);
+  color: var(--pine);
+  border-color: var(--pine);
+}
+
+/* ── the panel holding the columns that did not fit ── */
+.tbl tr.exp > td { border-bottom-color: transparent; }
+.tbl tr.det { display: none; }
+.tbl tr.det.on { display: table-row; }
+.tbl tr.det > td { padding: 0 8px 12px; background: var(--pine-tint); }
+
+.det-grid {
+  display: grid;
+  gap: 1px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--line-soft);
+}
+/* Two columns once there is room for the labels to line up — a folded table
+   on a laptop has plenty, and one field per line there just looks empty. */
+@media (min-width: 620px) {
+  .det-grid { grid-template-columns: 1fr 1fr; }
+  /* an odd number of fields would otherwise leave a hole in the last row */
+  .det-f:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+.det-f {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  padding: 8px 11px;
+  background: var(--surface);
+}
+.det-l {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  /* .num cells set a monospace LTR context for their digits; the Hebrew
+     label must not inherit it or it renders letter-spaced and reversed */
+  direction: rtl;
+  unicode-bidi: isolate;
+  font-family: var(--font);
+  letter-spacing: normal;
+}
+/* .num carries its own LTR monospace context from the cell it came out of */
+.det-v {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 6px;
+  flex: 1 1 55%;
+  min-width: 0;
+  text-align: end;
+}
+.det-v:empty { display: none; }
+.det-v > .minibar { flex: 1 1 60px; min-width: 40px; max-width: none; }
+.det-v .input,
+.det-v .select-mini { width: 100%; min-width: 0; }
+.det-v .chips,
+.det-v .rec-actions { justify-content: flex-end; }
+.det-v .minibar { margin-inline-start: auto; }
+
+/* ── Phones ────────────────────────────────────────────────────────── */
 @media (max-width: 700px) {
   .tbl-scroll { overflow-x: visible; }
-  .tbl { width: 100%; font-size: 13px; }
-  /* Once a table is down to three or four columns a fixed layout is safe
-     again — each gets seventy-odd pixels, not the thirty that broke Hebrew
-     a letter per line — and it is what stops the widest name in the list
-     from pushing the whole table past the screen. */
-  .tbl.folded { table-layout: fixed; }
-  .tbl.folded th.exp-col, .tbl.folded td.exp-col { width: 38px; }
-  .tbl.folded th.col-pick, .tbl.folded td.col-pick { width: 30px; }
-  .tbl th, .tbl td { padding: 7px 5px; }
+  .tbl { font-size: 13px; }
+  .tbl th, .tbl td { padding: 8px 7px; }
+  .tbl.folded th, .tbl.folded td { padding: 8px 6px; }
   .tbl th { font-size: 11px; letter-spacing: 0; }
-  .tbl td { white-space: normal; overflow-wrap: break-word; }
-  .tbl .lg-name { max-width: none; }
-
-  /* the surviving columns hold real content again, so give the controls
-     inside them the full width of the cell rather than a form's minimum */
-  .tbl td .input,
-  .tbl td .select-mini { width: 100%; min-width: 0; }
-  /* a column is narrower than a form field, and the value must fit in it —
-     a truncated registration number is worse than a small one */
-  .tbl td .input { font-size: 13.5px; padding: 5px 6px; }
+  .tbl td .input { padding: 5px 6px; }
   .tbl td .input[type="date"] { font-size: 12px; }
   .tbl td .btn.small { padding: 6px 8px; font-size: 12px; }
-  .tbl .chips { max-width: 100%; }
-  .tbl .minibar { max-width: none; }
-  /* a two-word chip is wider than a phone column; let it take a second line
-     rather than reach past the cell it sits in */
-  .tbl .chip, .tbl .state, .det-v .chip, .det-v .state { white-space: normal; }
-
-  /* ── the chevron column ── */
-  .tbl th.exp-col, .tbl td.exp-col {
-    width: 1%;
-    padding-inline: 2px;
-    text-align: center;
-    vertical-align: middle;
-  }
-  .exp-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-    background: var(--surface);
-    color: var(--muted);
-    font-size: 15px;
-    line-height: 1;
-    cursor: pointer;
-    transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-  }
-  .exp-btn[aria-expanded="true"] {
-    transform: rotate(180deg);
-    color: var(--pine);
-    border-color: var(--pine);
-  }
-
-  /* ── the panel that holds the folded columns ── */
-  .tbl tr.exp > td { border-bottom-color: transparent; }
-  .tbl tr.det { display: none; }
-  .tbl tr.det.on { display: table-row; }
-  .tbl tr.det > td { padding: 0 4px 10px; background: var(--pine-tint); }
-
-  .det-grid {
-    display: grid;
-    gap: 1px;
-    border-radius: var(--r-sm);
-    overflow: hidden;
-    background: var(--line-soft);
-  }
-  .det-f {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px 12px;
-    flex-wrap: wrap;
-    padding: 7px 9px;
-    background: var(--surface);
-  }
-  .det-l {
-    flex: none;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--muted);
-    /* .num cells set a monospace LTR context for their digits; the Hebrew
-       label must not inherit it or it renders letter-spaced and reversed */
-    direction: rtl;
-    unicode-bidi: isolate;
-    font-family: var(--font);
-    letter-spacing: normal;
-  }
-  /* .num carries its own LTR monospace context from the cell it came out of */
-  .det-v {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 4px 6px;
-    flex: 1 1 55%;
-    min-width: 0;
-    text-align: end;
-  }
-  .det-v:empty { display: none; }
-  .det-v > .minibar { flex: 1 1 60px; min-width: 40px; max-width: none; }
-  .det-v .input,
-  .det-v .select-mini { width: 100%; min-width: 0; }
-  .det-v .chips,
-  .det-v .rec-actions { justify-content: flex-end; }
-  .det-v .minibar { margin-inline-start: auto; }
-
-  /* an existing detail row (a fuel card opened out) spans the new width */
   .tbl tbody tr.sub > td { padding: 8px 4px; }
 }

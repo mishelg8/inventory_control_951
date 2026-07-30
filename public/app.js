@@ -714,38 +714,65 @@ const render = (html, focusKey) => {
   }
 };
 
-/* ── Tables on a phone ─────────────────────────────────────────────────
-   A register is a table, and it has to stay one. The columns are what let
-   you run your eye down a list and compare rows; stacking each row into a
-   card throws that away and turns a screenful into a scroll.
+/* ── Fitting a table to the screen ─────────────────────────────────────
+   A register is a table, and it has to stay one at every width. The
+   columns are what let you run your eye down a list and compare rows;
+   stacking each row into a card throws that away and turns a screenful
+   into a scroll.
 
-   But twelve columns will never fit across 375px. So on a phone the table
-   sheds columns rather than its shape: each table names the two or three
+   But twelve columns will never fit across 375px — nor across the 620px a
+   narrow laptop window leaves this panel. So a table that cannot afford
+   all its columns sheds the ones it can spare: each names the two or three
    that carry it in `data-phone`, and the rest fold into a panel under the
    row that opens with the row's chevron. The cells are moved, not copied,
-   so an input in a folded column is still the same live control. Nothing
-   is lost, nothing scrolls sideways, and the rows still line up. */
+   so an input in a folded column is still the same live control.
 
-const phoneMq = window.matchMedia('(max-width: 700px)');
+   Whether it can afford them is measured, not guessed at a breakpoint —
+   a table of five columns is comfortable where one of twelve is not. */
+
+// What a column needs before its content starts stacking a word per line.
+function colNeed(th) {
+  if (th.classList.contains('col-pick')) return 34;
+  if (th.classList.contains('kit-col') || th.classList.contains('lg-col')) return 46;
+  if (th.classList.contains('num')) return 72;
+  return 100;
+}
 
 function fitTables() {
   let ti = 0;
   for (const table of $app.querySelectorAll('table.tbl')) {
     if (!table.tHead || !table.tHead.rows[0] || !table.tBodies[0]) continue;
+    const hcells = [...table.tHead.rows[0].cells];
     // A header may carry an abbreviation for the desktop column and the full
     // name in its title; the folded panel has room for the full name. What it
     // must not carry is the sort arrow or an icon — those are decoration for
     // the column heading, and a label reading "נשלח▾" is just wrong.
-    const heads = [...table.tHead.rows[0].cells].map((c) => (c.title || '').trim() || headText(c));
+    const heads = hcells.map((c) => (c.title || '').trim() || headText(c));
     for (const row of table.tBodies[0].rows) {
       if (row.cells.length === 1 && row.cells[0].colSpan > 1) continue;   // detail row
       [...row.cells].forEach((cell, i) => {
         if (heads[i]) cell.dataset.label = heads[i];
       });
     }
-    if (phoneMq.matches) {
+
+    const box = table.parentElement;
+    const room = box ? box.clientWidth : 0;
+    // Two questions, both of which must come out well. Would the columns be
+    // too cramped to read? — that is the estimate. Does the table actually
+    // reach past its panel? — that is the measurement, and it catches what
+    // an estimate per column cannot: a cell whose contents will not break.
+    const wants = hcells.reduce((sum, th) => sum + colNeed(th), 0);
+    if (room && (wants > room || table.scrollWidth > room + 1)) {
       const keep = keepCols(table, heads.length);
-      if (keep) foldTable(table, keep, ti);
+      if (keep && spend(keep, hcells, room).size < heads.length) {
+        foldTable(table, keep, ti);
+        // Even folded, a few columns whose content will not break — a
+        // username, a button caption — can still ask for more than the
+        // screen. Then, and only then, the columns share the width equally
+        // and the text wraps inside them. Measured, because at ten columns
+        // an equal share is exactly what broke Hebrew a letter per line.
+        if (table.scrollWidth > box.clientWidth + 1) table.classList.add('even');
+      }
     }
     ti += 1;
   }
@@ -757,9 +784,9 @@ function headText(th) {
   return copy.textContent.trim();
 }
 
-// Which columns survive on a phone. A table says so itself; a negative index
-// counts from the end, so the actions column is -1 however many columns
-// precede it. Short tables already fit and are left alone.
+// Which columns survive when there is not room for all of them. A table says
+// so itself; a negative index counts from the end, so the actions column is
+// -1 however many columns precede it.
 function keepCols(table, n) {
   const spec = (table.dataset.phone || '').trim();
   let keep;
@@ -768,10 +795,26 @@ function keepCols(table, n) {
       .map((s) => { const v = parseInt(s, 10); return v < 0 ? n + v : v; })
       .filter((v) => Number.isInteger(v) && v >= 0 && v < n));
   } else {
-    if (n <= 4) return null;
     keep = new Set([0, 1, n - 1]);
   }
   return keep.size && keep.size < n ? keep : null;
+}
+
+// `data-phone` names the columns a table cannot do without — what it keeps at
+// 375px. A laptop window too narrow for all thirteen usually has room for
+// eight, and showing three there would be throwing away the screen. So the
+// room left over buys back as many of the folded columns as it will hold.
+function spend(keep, hcells, room) {
+  let used = 40;                                   // the chevron's own column
+  for (const i of keep) used += colNeed(hcells[i]);
+  for (let i = 0; i < hcells.length; i += 1) {
+    if (keep.has(i)) continue;
+    const need = colNeed(hcells[i]);
+    if (used + need > room) continue;
+    keep.add(i);
+    used += need;
+  }
+  return keep;
 }
 
 // Identifies a row across re-renders, so a panel the user opened stays open.
@@ -853,9 +896,18 @@ function foldTable(table, keep, ti) {
   });
 }
 
-// Crossing the breakpoint changes the shape of every table, and the folding
-// mutates the DOM — so rebuild from state rather than try to undo it.
-phoneMq.addEventListener('change', () => renderRoute());
+// A width change can put a table either side of what it can afford, and the
+// folding mutates the DOM — so rebuild from state rather than try to undo it.
+// Height-only changes (a phone's address bar sliding away, a soft keyboard)
+// must not, or the console would rebuild under the user's finger.
+let lastWidth = window.innerWidth;
+let fitTimer = null;
+window.addEventListener('resize', () => {
+  if (window.innerWidth === lastWidth) return;
+  lastWidth = window.innerWidth;
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => renderRoute(), 150);
+});
 
 function renderRoute() {
   // the console needs a wide column for tables; soldier pages stay narrow
