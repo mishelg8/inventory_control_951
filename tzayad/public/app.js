@@ -587,6 +587,7 @@ const S = {
   ammoDraft: {},                // per-row movement being composed in the ammo table
   fuelDraft: {},                // per-row refuelling being composed in the fuel table
   armDraft: {},                 // per-row removal being composed in the armoury table
+  openRows: new Set(),          // rows whose folded-away columns are open on a phone
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
@@ -683,6 +684,10 @@ const render = (html, focusKey) => {
 
   $app.innerHTML = html;
 
+  // Folding moves cells around, and moving a node drops focus — so reshape
+  // the tables first and hand focus back to the settled DOM.
+  fitTables();
+
   if (keep && keep.key) {
     const back = [...$app.querySelectorAll('[data-act]')].find((e) => fieldKey(e) === keep.key);
     if (back && typeof back.focus === 'function') {
@@ -707,31 +712,150 @@ const render = (html, focusKey) => {
   for (const el of $app.querySelectorAll('.brk-fill[data-w], .minibar-fill[data-w]')) {
     el.style.width = `${el.dataset.w}%`;
   }
-
-  labelCells();
 };
 
-/* ── Column labels for narrow screens ──────────────────────────────────
-   Tables stay tables — the columns are what make a register readable. Each
-   cell still carries its heading so the compact layout can show it above the
-   value when the column gets tight, rather than pushing the table wider. */
+/* ── Tables on a phone ─────────────────────────────────────────────────
+   A register is a table, and it has to stay one. The columns are what let
+   you run your eye down a list and compare rows; stacking each row into a
+   card throws that away and turns a screenful into a scroll.
 
-function labelCells() {
-  for (const box of $app.querySelectorAll('.tbl-scroll')) {
-    const table = box.querySelector('table');
-    if (!table || !table.tHead || !table.tBodies[0]) continue;
+   But twelve columns will never fit across 375px. So on a phone the table
+   sheds columns rather than its shape: each table names the two or three
+   that carry it in `data-phone`, and the rest fold into a panel under the
+   row that opens with the row's chevron. The cells are moved, not copied,
+   so an input in a folded column is still the same live control. Nothing
+   is lost, nothing scrolls sideways, and the rows still line up. */
+
+const phoneMq = window.matchMedia('(max-width: 700px)');
+
+function fitTables() {
+  let ti = 0;
+  for (const table of $app.querySelectorAll('table.tbl')) {
+    if (!table.tHead || !table.tHead.rows[0] || !table.tBodies[0]) continue;
     // A header may carry an abbreviation for the desktop column and the full
-    // name in its title; a card has room for the full name.
-    const heads = [...table.tHead.rows[0].cells]
-      .map((c) => (c.title || '').trim() || c.textContent.trim());
+    // name in its title; the folded panel has room for the full name. What it
+    // must not carry is the sort arrow or an icon — those are decoration for
+    // the column heading, and a label reading "נשלח▾" is just wrong.
+    const heads = [...table.tHead.rows[0].cells].map((c) => (c.title || '').trim() || headText(c));
     for (const row of table.tBodies[0].rows) {
       if (row.cells.length === 1 && row.cells[0].colSpan > 1) continue;   // detail row
       [...row.cells].forEach((cell, i) => {
         if (heads[i]) cell.dataset.label = heads[i];
       });
     }
+    if (phoneMq.matches) {
+      const keep = keepCols(table, heads.length);
+      if (keep) foldTable(table, keep, ti);
+    }
+    ti += 1;
   }
 }
+
+function headText(th) {
+  const copy = th.cloneNode(true);
+  for (const dec of copy.querySelectorAll('[aria-hidden="true"], svg')) dec.remove();
+  return copy.textContent.trim();
+}
+
+// Which columns survive on a phone. A table says so itself; a negative index
+// counts from the end, so the actions column is -1 however many columns
+// precede it. Short tables already fit and are left alone.
+function keepCols(table, n) {
+  const spec = (table.dataset.phone || '').trim();
+  let keep;
+  if (spec) {
+    keep = new Set(spec.split(',')
+      .map((s) => { const v = parseInt(s, 10); return v < 0 ? n + v : v; })
+      .filter((v) => Number.isInteger(v) && v >= 0 && v < n));
+  } else {
+    if (n <= 4) return null;
+    keep = new Set([0, 1, n - 1]);
+  }
+  return keep.size && keep.size < n ? keep : null;
+}
+
+// Identifies a row across re-renders, so a panel the user opened stays open.
+// Index alone would follow the position rather than the row once a list is
+// re-sorted or filtered.
+function rowKey(row, ri) {
+  const el = row.querySelector('[data-act]');
+  const d = el ? el.dataset : null;
+  const k = d ? (d.rid || d.id || d.item || d.i) : null;
+  return k == null || k === '' ? `#${ri}` : k;
+}
+
+function foldTable(table, keep, ti) {
+  table.classList.add('folded');
+  const hrow = table.tHead.rows[0];
+  [...hrow.cells].forEach((c, i) => { if (!keep.has(i)) c.classList.add('folded-out'); });
+  const hexp = document.createElement('th');
+  hexp.className = 'exp-col';
+  hrow.appendChild(hexp);
+
+  const span = keep.size + 1;
+  [...table.tBodies[0].rows].forEach((row, ri) => {
+    if (row.cells.length === 1 && row.cells[0].colSpan > 1) {
+      row.cells[0].colSpan = span;      // an existing detail row spans the new width
+      return;
+    }
+    const folded = [...row.cells].filter((_, i) => !keep.has(i));
+    if (!folded.length) return;
+
+    // before the cells move — the identifying control may be in a folded one
+    const key = `${S.tab}:${ti}:${rowKey(row, ri)}`;
+
+    const grid = document.createElement('div');
+    grid.className = 'det-grid';
+    for (const cell of folded) {
+      const field = document.createElement('div');
+      field.className = 'det-f';
+      const lbl = document.createElement('span');
+      lbl.className = 'det-l';
+      lbl.textContent = cell.dataset.label || '';
+      const val = document.createElement('div');
+      val.className = `det-v${cell.classList.contains('num') ? ' num' : ''}`;
+      while (cell.firstChild) val.appendChild(cell.firstChild);
+      cell.remove();
+      if (!lbl.textContent && !val.textContent.trim() && !val.children.length) continue;
+      field.append(lbl, val);
+      grid.appendChild(field);
+    }
+
+    const panel = document.createElement('tr');
+    panel.className = 'det';
+    const holder = document.createElement('td');
+    holder.colSpan = span;
+    holder.appendChild(grid);
+    panel.appendChild(holder);
+
+    const tog = document.createElement('td');
+    tog.className = 'exp-col';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'exp-btn';
+    btn.textContent = '⌄';
+    tog.appendChild(btn);
+    row.appendChild(tog);
+    row.after(panel);
+
+    const paint = (on) => {
+      panel.classList.toggle('on', on);
+      row.classList.toggle('exp', on);
+      btn.setAttribute('aria-expanded', String(on));
+      btn.setAttribute('aria-label', on ? 'סגירת שאר הפרטים' : 'הצגת שאר הפרטים');
+    };
+    paint(S.openRows.has(key));
+    btn.addEventListener('click', () => {
+      const on = !panel.classList.contains('on');
+      paint(on);
+      if (on) S.openRows.add(key); else S.openRows.delete(key);
+    });
+  });
+}
+
+// Crossing the breakpoint changes the shape of every table, and the folding
+// mutates the DOM — so rebuild from state rather than try to undo it.
+phoneMq.addEventListener('change', () => renderRoute());
 
 function renderRoute() {
   // the console needs a wide column for tables; soldier pages stay narrow
@@ -2076,7 +2200,7 @@ function renderPendingTab() {
       </div>
       ${p.slice.length
         ? `<div class="tbl-scroll">
-             <table class="tbl roster">
+             <table class="tbl roster" data-phone="0,1,-1">
                <thead><tr>
                  <th class="col-pick"></th>
                  ${sortTh('name', 'שם')}
@@ -2190,7 +2314,7 @@ function renderTrackTab() {
       <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו. לחיצה על השם פותחת את הזיכוי פריט־פריט.</p>
       ${p.slice.length
         ? `<div class="tbl-scroll">
-             <table class="tbl roster">
+             <table class="tbl roster" data-phone="0,4,-1">
                <thead><tr>
                  ${sortTh('name', 'שם')}
                  ${sortTh('pn', 'מ״א', 'num')}
@@ -2313,7 +2437,7 @@ function renderSummaryTab() {
            </div>`
         : ''}
       <div class="tbl-scroll">
-        <table class="tbl">
+        <table class="tbl" data-phone="0,4,5">
           <thead><tr>
             <th>פריט</th><th class="num">מלאי פתיחה</th><th class="num">הונפק</th>
             <th class="num">הוחזר</th><th class="num">בחוץ</th><th class="num">במחסן</th>
@@ -2415,7 +2539,7 @@ function licencePanel(approved) {
         : ''}
       ${rows.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,5,7">
                <thead><tr>
                  <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
                  <th class="num">מס׳ רישיון</th><th class="num">בתוקף עד</th>
@@ -2469,7 +2593,7 @@ function weaponsPanel(approved) {
       </div>
       ${armed.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,3">
                <thead><tr><th class="num">מס׳ נשק</th><th class="num">אמר״ל</th><th class="num">כוונת</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -2924,7 +3048,7 @@ function ledgerPanel(approved) {
       <p class="panel-sub">כל שורה היא חייל, כל עמודה פריט. המספר הוא מה שעדיין אצלו, מתוך מה שהוחתם. ✓ = הוחזר במלואו.</p>
       ${visible.length
         ? `<div class="tbl-scroll">
-             <table class="tbl lg">
+             <table class="tbl lg" data-phone="0,-1">
                <thead><tr><th class="lg-name">חייל</th>${heads}<th class="num">בחוץ</th></tr></thead>
                <tbody>${body}</tbody>
              </table>
@@ -3034,7 +3158,7 @@ function renderInvTab() {
       ${inv.extra.length
         ? extraVisible.length
           ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,3,4">
                <thead><tr><th>פריט</th><th>סה״כ</th><th>בשימוש</th><th class="num">נותר</th><th></th></tr></thead>
                <tbody>${extraRows}</tbody>
              </table>
@@ -3358,7 +3482,7 @@ function renderOverviewTab() {
       <p class="panel-sub">כמה פריטים הוחתמו בכל מחלקה, כמה הוחזרו, כמה עדיין בחוץ, כמה נשקים משויכים וכמה רישיונות אינם בתוקף.</p>
       ${deptRows.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,1,4">
                <thead><tr>
                  <th>מחלקה</th><th class="num">חיילים</th><th class="num">הוחתם</th>
                  <th class="num">הוחזר</th><th class="num">בחוץ</th>
@@ -3446,7 +3570,7 @@ function depositsPanel() {
       <div class="filters">${filters}</div>
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="1,7,-1">
                <thead><tr>
                  <th class="num">נשלח</th><th>שם החייל</th><th class="num">מ״א</th><th class="num">טלפון</th>
                  <th class="num">מס׳ נשק</th><th class="num">מק״ט אמר״ל</th><th class="num">מק״ט כוונת</th>
@@ -3656,7 +3780,7 @@ function renderArmonTab() {
       <div class="filters">${kindChips}</div>
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="2,4,-1">
                <thead><tr>
                  <th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>בעלים</th>
                  <th>מיקום</th><th class="num">נוסף</th><th></th>
@@ -3679,7 +3803,7 @@ function renderArmonTab() {
       <p class="panel-sub">פריטים שיצאו מהארמון ורשומים על מישהו. הם אינם נספרים במלאי הארמון, אך נשארים ברישום. החזרת המיקום ל"ארמון" מחזירה אותם לרשימה למעלה.</p>
       ${visOut.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="2,3,-1">
                <thead><tr>
                  <th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>אצל מי</th>
                  <th>מיקום</th><th class="num">נוסף</th><th></th>
@@ -3699,7 +3823,7 @@ function renderArmonTab() {
       <p class="panel-sub">כל הוספה והסרה, עם כל הפרטים והתאריך. ${log.length > 200 ? 'מוצגות 200 הפעולות האחרונות.' : ''}</p>
       ${log.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,1,4">
                <thead><tr>
                  <th class="num">תאריך</th><th>פעולה</th><th>סוג</th><th>פריט</th>
                  <th class="num">מס׳ סידורי</th><th>בעלים</th><th>יעד</th><th>הערה</th>
@@ -3776,7 +3900,7 @@ function renderTzelemTab() {
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl" id="tzTable">
+             <table class="tbl" data-phone="1,2,4" id="tzTable">
                <thead><tr><th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>בעלים</th><th>מיקום</th></tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -3885,7 +4009,7 @@ function renderAmmoTab() {
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,2,-1">
                <thead><tr>
                  <th>פריט</th><th class="num">כמות התחלתית</th><th class="num">כמות נוכחית</th>
                  <th class="num">נוצל</th><th>יעד</th><th>הערה</th><th class="num">כמות</th><th></th>
@@ -3901,7 +4025,7 @@ function renderAmmoTab() {
       <h2 class="panel-title">יומן תנועות</h2>
       ${log.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,2,3">
                <thead><tr><th class="num">תאריך</th><th>פעולה</th><th>פריט</th><th class="num">כמות</th><th>יעד</th><th>למי</th><th>הערה</th></tr></thead>
                <tbody>${logRows}</tbody>
              </table>
@@ -3965,7 +4089,7 @@ function renderVehTab() {
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="0,-2,-1">
                <thead><tr>
                  <th class="num">מספר רכב</th><th>חברת השכרה</th><th class="num">ק״מ</th><th class="num">טיפול</th>
                  <th class="num">קוד קודן</th><th class="num">קוד דלקן</th>
@@ -4084,7 +4208,7 @@ function fuelPanel() {
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl">
+             <table class="tbl" data-phone="1,3,-1">
                <thead><tr>
                  <th>סוג כרטיס</th><th class="num">מספר כרטיס</th><th>אצל מי</th>
                  <th class="num">ליטרים שנותרו</th><th>סטטוס</th><th>שימושים</th>
@@ -4111,7 +4235,7 @@ function fuelPanel() {
 // pull twenty images at once.
 function fuelDetail(card, i) {
   const uses = card.uses.length
-    ? `<table class="tbl compact">
+    ? `<table class="tbl compact" data-phone="0,1,2">
          <thead><tr><th class="num">תאריך</th><th>מי השתמש</th><th class="num">ליטרים</th><th class="num">רכב</th><th></th></tr></thead>
          <tbody>${card.uses.map((u, n) => `
            <tr>
@@ -4803,7 +4927,7 @@ function usersPanel() {
       <h2 class="panel-title">משתמשים</h2>
       <p class="panel-sub">מנהל רואה ועושה הכול. <strong>קריאה ועריכה</strong> — רואה ומשנה, אך רק במסכים שסימנתם. <strong>צפייה בלבד</strong> — רואה את אותם מסכים בלי לשנות דבר. ניהול משתמשים, יומן הפעולות והאבטחה נשארים אצל המנהל בלבד.</p>
       <div class="tbl-scroll">
-        <table class="tbl">
+        <table class="tbl" data-phone="0,1,-1">
           <thead><tr><th>שם משתמש</th><th>הרשאה</th><th>מסכים</th><th class="num">כניסה אחרונה</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -4910,7 +5034,7 @@ function auditPanel() {
         ? '<button class="btn ghost wide" data-act="audit-load">טעינת היומן</button>'
         : S.audit.length
           ? `<div class="tbl-scroll">
-               <table class="tbl">
+               <table class="tbl" data-phone="0,1,2">
                  <thead><tr><th class="num">מתי</th><th>משתמש</th><th>פעולה</th><th class="num">מזהה</th><th>פרטים</th></tr></thead>
                  <tbody>${S.audit.map((e) => `<tr>
                    <td class="num">${esc(fmtDate(e.at))}</td>
