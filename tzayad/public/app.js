@@ -720,7 +720,10 @@ function labelCells() {
   for (const box of $app.querySelectorAll('.tbl-scroll')) {
     const table = box.querySelector('table');
     if (!table || !table.tHead || !table.tBodies[0]) continue;
-    const heads = [...table.tHead.rows[0].cells].map((c) => c.textContent.trim());
+    // A header may carry an abbreviation for the desktop column and the full
+    // name in its title; a card has room for the full name.
+    const heads = [...table.tHead.rows[0].cells]
+      .map((c) => (c.title || '').trim() || c.textContent.trim());
     for (const row of table.tBodies[0].rows) {
       if (row.cells.length === 1 && row.cells[0].colSpan > 1) continue;   // detail row
       [...row.cells].forEach((cell, i) => {
