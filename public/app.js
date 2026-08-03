@@ -826,16 +826,30 @@ function fitTables() {
     // reach past its panel? — that is the measurement, and it catches what
     // an estimate per column cannot: a cell whose contents will not break.
     const wants = hcells.reduce((sum, th) => sum + colNeed(th), 0);
-    if (room && (wants > room || table.scrollWidth > room + 1)) {
-      const keep = keepCols(table, heads.length);
-      if (keep && spend(keep, hcells, room).size < heads.length) {
+    const keep = room && (wants > room || table.scrollWidth > room + 1)
+      ? keepCols(table, heads.length) : null;
+    if (keep) {
+      // The estimate proposes; the table disposes. Buying columns back by
+      // estimate alone once put twelve of them into space enough for nine,
+      // because a cell holding a thirteen-digit card number does not care
+      // what its heading is called. So the proposal is tried on — hiding a
+      // column is only a class — and columns are handed back until it fits.
+      const bought = spend(keep, hcells, room);
+      hideCols(table, keep);
+      while (bought.length && table.scrollWidth > room + 1) {
+        keep.delete(bought.pop());
+        hideCols(table, keep);
+      }
+      if (keep.size < heads.length) {
         foldTable(table, keep, ti);
         // Even folded, a few columns whose content will not break — a
         // username, a button caption — can still ask for more than the
         // screen. Then, and only then, the columns share the width equally
         // and the text wraps inside them. Measured, because at ten columns
         // an equal share is exactly what broke Hebrew a letter per line.
-        if (table.scrollWidth > box.clientWidth + 1) table.classList.add('even');
+        if (table.scrollWidth > room + 1) table.classList.add('even');
+      } else {
+        hideCols(table, null);        // it fits after all — show everything
       }
     }
     ti += 1;
@@ -868,7 +882,10 @@ function keepCols(table, n) {
 // 375px. A laptop window too narrow for all thirteen usually has room for
 // eight, and showing three there would be throwing away the screen. So the
 // room left over buys back as many of the folded columns as it will hold.
+// Returns what it bought, in the order it bought it, so the caller can hand
+// the last ones back when the table turns out to need more than was estimated.
 function spend(keep, hcells, room) {
+  const bought = [];
   let used = 40;                                   // the chevron's own column
   for (const i of keep) used += colNeed(hcells[i]);
   for (let i = 0; i < hcells.length; i += 1) {
@@ -876,9 +893,21 @@ function spend(keep, hcells, room) {
     const need = colNeed(hcells[i]);
     if (used + need > room) continue;
     keep.add(i);
+    bought.push(i);
     used += need;
   }
-  return keep;
+  return bought;
+}
+
+// Try a column set on without committing to it: hiding a cell is a class,
+// where folding moves it into the row's panel and cannot be undone. Passing
+// null shows every column again.
+function hideCols(table, keep) {
+  const rows = [table.tHead.rows[0], ...table.tBodies[0].rows];
+  for (const row of rows) {
+    if (!row || (row.cells.length === 1 && row.cells[0].colSpan > 1)) continue;
+    [...row.cells].forEach((c, i) => c.classList.toggle('folded-out', !!keep && !keep.has(i)));
+  }
 }
 
 // Identifies a row across re-renders, so a panel the user opened stays open.
@@ -915,10 +944,12 @@ function foldTable(table, keep, ti) {
     grid.className = 'det-grid';
     for (const cell of folded) {
       const field = document.createElement('div');
-      field.className = 'det-f';
       const lbl = document.createElement('span');
       lbl.className = 'det-l';
       lbl.textContent = cell.dataset.label || '';
+      // An actions column has no heading, so its field has nothing to label
+      // and the control takes the row rather than sitting beside a blank.
+      field.className = lbl.textContent ? 'det-f' : 'det-f is-bare';
       const val = document.createElement('div');
       val.className = `det-v${cell.classList.contains('num') ? ' num' : ''}`;
       while (cell.firstChild) val.appendChild(cell.firstChild);
@@ -4209,7 +4240,7 @@ function renderVehTab() {
     const late = x.service && x.service < today;
     const missing = VEH_KIT.filter((k) => !x[k.id]);
     return `<tr${late || missing.length ? ' class="row-short"' : ''}>
-      <td><input class="input mini num" type="text" maxlength="20" value="${esc(x.plate)}"
+      <td><input class="input mini num wide" type="text" maxlength="20" value="${esc(x.plate)}"
                  data-act="veh-plate" data-i="${i}" aria-label="מספר רכב" placeholder="12-345-67"></td>
       <td><input class="input mini" type="text" maxlength="40" value="${esc(x.company)}"
                  data-act="veh-company" data-i="${i}" aria-label="חברת השכרה" placeholder="חברה"></td>
@@ -4289,62 +4320,52 @@ function fuelPanel() {
   const low = all.filter((x) => x.litres < FUEL_LOW).length;
   const credited = all.filter((x) => x.credited).length;
 
+  // One control per cell. The row is the card — what it is, who holds it, how
+  // much is left — and everything you *do* to a card happens in the drawer
+  // below it. Refuelling used to be a three-field form inside a cell, which
+  // made every row six lines tall and the table wider than any screen.
   const rows = p.slice.map(({ x, i }) => {
     const open = S.fuelOpen.has(x.id);
-    const draft = S.fuelDraft[x.id] || {};
     const n = x.receipts.length;
-    return `<tr${x.litres < FUEL_LOW ? ' class="row-short"' : ''}>
+    const parts = [
+      x.uses.length === 1 ? 'שימוש אחד' : x.uses.length ? `${x.uses.length} שימושים` : '',
+      n === 1 ? 'קבלה אחת' : n ? `${n} קבלות` : '',
+    ].filter(Boolean);
+    const cls = [x.litres < FUEL_LOW ? 'row-short' : '', open ? 'is-open' : ''].filter(Boolean);
+    return `<tr${cls.length ? ` class="${cls.join(' ')}"` : ''}>
       <td>
         <select class="input mini select-mini" data-act="fuel-kind" data-i="${i}" aria-label="סוג כרטיס">
           ${FUEL_KINDS.map((k) => `<option value="${k.id}"${x.kind === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}
         </select>
       </td>
-      <td><input class="input mini num" type="text" maxlength="30" value="${esc(x.no)}"
+      <td><input class="input mini num wide" type="text" maxlength="30" value="${esc(x.no)}"
                  data-act="fuel-no" data-i="${i}" aria-label="מספר כרטיס" placeholder="1234-5678"></td>
       <td>
-        <input class="input mini" type="text" maxlength="60" value="${esc(x.holder)}"
-               data-act="fuel-holder" data-i="${i}" aria-label="אצל מי הכרטיס" placeholder="שם החייל">
-        <button class="linkbtn" data-act="fuel-office" data-i="${i}">${FUEL_OFFICE}</button>
+        <div class="cellrow">
+          <input class="input mini" type="text" maxlength="60" value="${esc(x.holder)}"
+                 data-act="fuel-holder" data-i="${i}" aria-label="אצל מי הכרטיס" placeholder="שם החייל">
+          <button class="linkbtn" data-act="fuel-office" data-i="${i}"
+                  title="העברה למשרד">${FUEL_OFFICE}</button>
+        </div>
       </td>
       <td><input class="input mini num" type="text" inputmode="numeric" maxlength="5" value="${x.litres}"
                  data-act="fuel-litres" data-i="${i}" aria-label="ליטרים שנותרו"></td>
-      <td class="${x.litres < FUEL_LOW ? 'bad' : 'ok'}">${x.litres < FUEL_LOW ? '⚠ מלאי נמוך' : '✓ תקין'}</td>
-      <td>
-        <input class="input mini" type="text" maxlength="60" value="${esc(draft.who || '')}"
-               data-act="fuel-use-who" data-id="${esc(x.id)}" placeholder="מי השתמש" aria-label="מי השתמש">
-        <div class="cellrow mt-xs">
-          <input class="input mini num" type="text" inputmode="numeric" maxlength="5"
-                 value="${esc(draft.litres || '')}" data-act="fuel-use-litres" data-id="${esc(x.id)}"
-                 placeholder="ליטר" aria-label="ליטרים">
-          <input class="input mini num" type="text" maxlength="20" value="${esc(draft.plate || '')}"
-                 data-act="fuel-use-plate" data-id="${esc(x.id)}" placeholder="רכב" aria-label="מספר רכב">
-        </div>
-        <button class="btn ghost small mt-xs" data-act="fuel-use" data-i="${i}">רישום שימוש</button>
-        ${x.uses.length
-          ? `<button class="linkbtn" data-act="fuel-open" data-id="${esc(x.id)}">${open ? 'סגירה' : `${x.uses.length} שימושים`}</button>`
-          : ''}
-      </td>
+      <td class="${x.litres < FUEL_LOW ? 'bad' : 'ok'}">${x.litres < FUEL_LOW ? '⚠ נמוך' : '✓ תקין'}</td>
       <td class="nowrap">
-        <label class="linkbtn">📷 צילום
-          <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
-                 data-act="fuel-file" data-i="${i}"></label>
-        <label class="linkbtn">🖼 גלריה
-          <input class="vis-hidden" type="file" accept="image/*" multiple
-                 data-act="fuel-file" data-i="${i}"></label>
-        ${n
-          ? `<button class="linkbtn" data-act="fuel-open" data-id="${esc(x.id)}">${open ? 'סגירה' : `${n} קבלות`}</button>
-             <button class="linkbtn" data-act="fuel-dl-all" data-i="${i}">הורדת הכול</button>`
-          : '<span class="muted-txt">אין קבלות</span>'}
+        <button class="btn ghost small" data-act="fuel-open" data-id="${esc(x.id)}"
+                aria-expanded="${open}">${open ? 'סגירה' : esc(parts.join(' · ') || 'פתיחה')}</button>
       </td>
       <td class="nowrap">
         <button class="btn ${x.credited ? 'ghost' : 'primary'} small" data-act="fuel-credit" data-i="${i}">
           ${x.credited ? '✓ זוכה' : 'סימון זיכוי'}
         </button>
-        ${x.credited ? `<span class="muted-txt">${esc(fmtDate(x.creditedAt))}</span>` : ''}
+        ${x.credited && x.creditedAt
+          ? `<span class="muted-txt num">${esc(new Date(x.creditedAt).toLocaleDateString('he-IL'))}</span>`
+          : ''}
       </td>
       <td><button class="linkbtn danger-link" data-act="fuel-del" data-i="${i}" aria-label="מחיקת כרטיס">✕</button></td>
     </tr>
-    ${open ? `<tr class="sub"><td colspan="9">${fuelDetail(x, i)}</td></tr>` : ''}`;
+    ${open ? `<tr class="sub"><td colspan="8">${fuelDetail(x, i)}</td></tr>` : ''}`;
   }).join('');
 
   return `
@@ -4366,11 +4387,11 @@ function fuelPanel() {
         : ''}
       ${vis.length
         ? `<div class="tbl-scroll">
-             <table class="tbl" data-phone="1,3,-1">
+             <table class="tbl" data-phone="1,5">
                <thead><tr>
-                 <th>סוג כרטיס</th><th class="num">מספר כרטיס</th><th>אצל מי</th>
-                 <th class="num">ליטרים שנותרו</th><th>סטטוס</th><th>שימושים</th>
-                 <th>קבלות</th><th>זיכוי</th><th></th>
+                 <th>סוג</th><th class="num">מספר כרטיס</th><th>אצל מי</th>
+                 <th class="num" title="ליטרים שנותרו">ליטרים</th><th>סטטוס</th>
+                 <th>שימושים וקבלות</th><th>זיכוי</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -4392,6 +4413,45 @@ function fuelPanel() {
 // and decrypted one at a time, so opening a card with twenty receipts does not
 // pull twenty images at once.
 function fuelDetail(card, i) {
+  const draft = S.fuelDraft[card.id] || {};
+
+  // Recording a refuelling: the three things you have to say, on one line,
+  // with room to type them. This is the work the drawer exists for.
+  const entry = `
+    <div class="fuel-entry">
+      <label class="field mb0">
+        <span class="field-label">מי תדלק</span>
+        <input class="input mini" type="text" maxlength="60" value="${esc(draft.who || '')}"
+               data-act="fuel-use-who" data-id="${esc(card.id)}" placeholder="שם החייל">
+      </label>
+      <label class="field mb0">
+        <span class="field-label">ליטרים</span>
+        <input class="input mini num" type="text" inputmode="numeric" maxlength="5"
+               value="${esc(draft.litres || '')}" data-act="fuel-use-litres" data-id="${esc(card.id)}"
+               placeholder="0">
+      </label>
+      <label class="field mb0">
+        <span class="field-label">רכב</span>
+        <input class="input mini num" type="text" maxlength="20" value="${esc(draft.plate || '')}"
+               data-act="fuel-use-plate" data-id="${esc(card.id)}" placeholder="12-345-67">
+      </label>
+      <button class="btn primary small" data-act="fuel-use" data-i="${i}">רישום שימוש</button>
+    </div>
+    <p class="field-hint mb0">הליטרים יורדו מיתרת הכרטיס אוטומטית.</p>`;
+
+  const upload = `
+    <div class="fuel-entry">
+      <label class="btn ghost small">📷 צילום קבלה
+        <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
+               data-act="fuel-file" data-i="${i}"></label>
+      <label class="btn ghost small">🖼 בחירה מהגלריה
+        <input class="vis-hidden" type="file" accept="image/*" multiple
+               data-act="fuel-file" data-i="${i}"></label>
+      ${card.receipts.length
+        ? `<button class="btn ghost small" data-act="fuel-dl-all" data-i="${i}">הורדת כל הקבלות</button>`
+        : ''}
+    </div>`;
+
   const uses = card.uses.length
     ? `<table class="tbl compact" data-phone="0,1,2">
          <thead><tr><th class="num">תאריך</th><th>מי השתמש</th><th class="num">ליטרים</th><th class="num">רכב</th><th></th></tr></thead>
@@ -4430,9 +4490,13 @@ function fuelDetail(card, i) {
   const used = card.uses.reduce((s, u) => s + u.litres, 0);
   return `
     <div class="fuel-detail">
-      <h3 class="field-label">יומן שימושים — סה״כ <span class="num">${used}</span> ליטר</h3>
+      <h3 class="fuel-h">רישום תדלוק</h3>
+      ${entry}
+      <h3 class="fuel-h mt">יומן שימושים — סה״כ <span class="num">${used}</span> ליטר</h3>
       ${uses}
-      ${rcpts ? `<h3 class="field-label mt">קבלות (${card.receipts.length})</h3>${rcpts}` : ''}
+      <h3 class="fuel-h mt">קבלות${card.receipts.length ? ` (${card.receipts.length})` : ''}</h3>
+      ${upload}
+      ${rcpts || '<p class="empty mb0">טרם צורפו קבלות לכרטיס.</p>'}
     </div>`;
 }
 
