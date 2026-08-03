@@ -156,3 +156,33 @@ test('the client and the Worker agree on what each screen reads', () => {
     assert.equal(needs, [...workerNeeds[id]].sort().join(','), `${id} needs different data on each side`);
   }
 });
+
+test('a guarded action never calls another guarded action', () => {
+  // withBusy refuses to run while another action is running — that is what
+  // stops a double click from approving twice. The cost is that a guarded
+  // helper called from inside a guarded action does not run either: it
+  // returns as though it had worked, having done nothing. That is how filing
+  // a refuelling report took the litres off the card on screen and never
+  // saved the vault, which the next refresh then undid.
+  //
+  // So the rule is: inside withBusy, call the plain function (saveInv,
+  // fetchTrash), never the wrapped one (invSave, loadTrash).
+  const decls = [...app.matchAll(/const (\w+) = \([^)]*\) =>\n\s*withBusy\(async \(\) => \{/g)];
+  const wrapped = new Set(decls.map(([, name]) => name));
+  assert.ok(wrapped.size > 20, 'the guarded actions were not found — has the shape changed?');
+
+  const offenders = [];
+  for (const m of decls) {
+    const start = m.index;
+    // the body ends where the next top-level declaration begins
+    const rest = app.slice(start + m[0].length);
+    const end = rest.search(/\n(?:const|function|async function|\/\* ──) /);
+    const body = rest.slice(0, end === -1 ? undefined : end);
+    for (const other of wrapped) {
+      if (other !== m[1] && new RegExp(`\\b${other}\\(`).test(body)) {
+        offenders.push(`${m[1]} calls ${other}, which will decline to run`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, []);
+});

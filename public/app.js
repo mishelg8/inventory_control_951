@@ -4969,7 +4969,7 @@ function refuelPanel() {
         </td>
         <td class="nowrap">
           ${done
-            ? ''
+            ? `<button class="btn ghost small" data-act="rf-reopen" data-id="${esc(r.id)}">החזרה לטיפול</button>`
             : `<button class="btn primary small" data-act="rf-file" data-id="${esc(r.id)}"
                        ${target ? '' : 'disabled'}>קליטה לכרטיס</button>`}
           ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, '✕', 'מחיקת הדיווח', 'למחוק את הדיווח?')}
@@ -5014,6 +5014,7 @@ const refuelFile = (id) =>
     if (!card) { toast('לא נבחר כרטיס', true); return; }
 
     const d = rec.data;
+    const before = { uses: card.uses, litres: card.litres, receipts: card.receipts };
     card.uses = [{ t: d.createdAt || Date.now(), who: d.name, litres: d.litres, plate: d.plate }, ...(card.uses || [])];
     card.litres = Math.max(0, card.litres - d.litres);
     // The soldier's receipt was filed against the report; filing moves it onto
@@ -5029,12 +5030,38 @@ const refuelFile = (id) =>
       }).catch(() => {});
       card.receipts = [...(card.receipts || []), { id: docId, at: d.createdAt || Date.now() }];
     }
-    await invSave();
+    // saveInv, not invSave: this is already inside withBusy, and invSave is
+    // itself wrapped in it — so calling it here would find the flag up, decline
+    // to run, and return as though it had saved. The litres would come off the
+    // card on screen and nowhere else, and the next refresh would put them
+    // back. Nothing is marked filed until the vault actually took the write.
+    try {
+      await saveInv();
+    } catch (e) {
+      Object.assign(card, before);                 // the screen goes back to the truth
+      renderConsole();
+      throw e;
+    }
     await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: 'done' } });
     rec.status = 'done';
     delete S.rfPick[id];
     renderConsole();
     toast(`נקלט — ${d.litres} ליטר ירדו מהכרטיס`);
+  });
+
+// Putting a filed report back in the queue. Filing writes to the card, and a
+// card is only ever written by hand — so when it went to the wrong card, or
+// went nowhere because the save did not land, the way back is to file it
+// again. This only moves the report; whatever reached the card stays there
+// and is removed from the card itself.
+const refuelReopen = (id) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec) return;
+    await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: 'open' } });
+    rec.status = 'open';
+    renderConsole();
+    toast('הדיווח חזר לטיפול — בדקו את הכרטיס לפני קליטה חוזרת');
   });
 
 function fuelDetail(card, i) {
@@ -5712,30 +5739,37 @@ const exportRecoveryKey = () =>
     toast('קובץ השחזור הורד');
   });
 
+// The plain fetch, with no busy guard on it, so an action that is already
+// running can refresh the bin without the guard turning the call into a no-op.
+const fetchTrash = async () => {
+  const { records, reports, keepMs } = await api('/admin/trash');
+  const open = async (rows, clean) => {
+    const out = [];
+    for (const row of rows) {
+      try { out.push({ ...row, data: await openRecord(S.priv, row, clean), damaged: false }); }
+      catch { out.push({ ...row, data: null, damaged: true }); }
+    }
+    return out;
+  };
+  S.trash = {
+    records: await open(records, cleanRecord),
+    reports: await open(reports, cleanReport),
+    keepDays: Math.round(keepMs / 86400000),
+  };
+};
+
 const loadTrash = () =>
   withBusy(async () => {
-    const { records, reports, keepMs } = await api('/admin/trash');
-    const open = async (rows, clean) => {
-      const out = [];
-      for (const row of rows) {
-        try { out.push({ ...row, data: await openRecord(S.priv, row, clean), damaged: false }); }
-        catch { out.push({ ...row, data: null, damaged: true }); }
-      }
-      return out;
-    };
-    S.trash = {
-      records: await open(records, cleanRecord),
-      reports: await open(reports, cleanReport),
-      keepDays: Math.round(keepMs / 86400000),
-    };
+    await fetchTrash();
     renderConsole();
   });
 
 const trashRestore = (kind, id) =>
   withBusy(async () => {
     await api(`/admin/trash/${kind}/${id}`, { method: 'POST', body: {} });
-    await loadTrash();
+    await fetchTrash();
     await adminRefreshQuiet();
+    renderConsole();
     toast('הפריט שוחזר');
   });
 
@@ -7470,6 +7504,7 @@ function dispatch(act, el) {
     case 'rep-cancel': S.repEdit = ''; S.repDraft = null; renderConsole(); break;
     case 'rep-save': repSave(el.dataset.id); break;
     case 'rf-file': refuelFile(el.dataset.id); break;
+    case 'rf-reopen': refuelReopen(el.dataset.id); break;
     case 'inv-xdel':
       S.inv.extra.splice(parseInt(el.dataset.i, 10), 1);
       S.askDel = '';
