@@ -620,7 +620,9 @@ const S = {
   rfSent: false,
   rfPhoto: null,                // the receipt the soldier attached, before sending
   cards: [],                    // fuel cards a soldier may report against
+  fleet: [],                    // vehicles a soldier may report against
   rfPick: {},                   // report id -> the card the admin picked for it
+  rfFilter: 'open',             // 'open' | 'done' | 'all' in the console's list
 
   // shortage reporting (soldier-facing, separate flow)
   rep: null,                    // draft { pn, name, phone, dept, text }
@@ -1374,7 +1376,12 @@ function renderRefuel() {
   if (!cardsAsked && S.config && S.config.ready) {
     cardsAsked = true;
     api('/cards')
-      .then((r) => { S.cards = r.cards || []; if (S.route === 'refuel') renderRefuel(); })
+      .then((r) => {
+        S.cards = r.cards || [];
+        S.fleet = r.vehicles || [];
+        // The roster can land after the soldier has started typing.
+        if (S.route === 'refuel') { captureRefuelForm(); renderRefuel(); }
+      })
       .catch(() => { /* the form already says there is nothing to pick */ });
   }
   if (!S.config || !S.config.ready) {
@@ -1434,8 +1441,16 @@ function renderRefuel() {
         </div>
         <label class="field">
           <span class="field-label">מספר הרכב שתודלק <span class="req">*</span></span>
-          <input class="input num" name="plate" inputmode="numeric" maxlength="20"
-                 value="${esc(v.plate)}" placeholder="12-345-67" required>
+          ${(S.fleet || []).length
+            ? `<select class="input select" name="plate" required>
+                 <option value="">בחרו רכב…</option>
+                 ${S.fleet.map((x) =>
+                   `<option value="${esc(x.id)}"${v.plate === x.id ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}
+               </select>
+               <span class="field-hint">הרכבים שרשומים אצל מנהל הרכב. לא מוצאים את הרכב? פנו אליו.</span>`
+            : `<input class="input num" name="plate" inputmode="numeric" maxlength="20"
+                      value="${esc(v.plate)}" placeholder="12-345-67" required>
+               <span class="field-hint">אין כרגע רכבים רשומים במערכת — רשמו את מספר הרכב.</span>`}
         </label>
 
         <fieldset class="lic-set">
@@ -1467,7 +1482,7 @@ async function refuelSubmit(form) {
   const name = form.name.value.trim();
   const phone = form.phone.value.trim();
   const card = form.card.value.trim();
-  const plate = form.plate.value.trim();
+  const plateVal = form.plate.value.trim();
   const litres = parseInt(String(form.litres.value).replace(/\D/g, ''), 10);
   if (name.length < 2) return setFormErr(form, 'נא למלא את שם המתדלק');
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
@@ -1475,10 +1490,15 @@ async function refuelSubmit(form) {
   if (!picked) return setFormErr(form, 'נא לבחור כרטיס תדלוק מהרשימה');
   if (!Number.isFinite(litres) || litres < 1) return setFormErr(form, 'נא למלא כמות ליטרים');
   if (litres > 500) return setFormErr(form, 'כמות הליטרים נראית שגויה — בדקו שוב');
-  if (plate.length < 5) return setFormErr(form, 'נא למלא את מספר הרכב');
+  // With a fleet published the field is a picker, so the value is an id and
+  // what the office should read is the plate; without one it is still typed.
+  const veh = (S.fleet || []).find((x) => x.id === plateVal);
+  if ((S.fleet || []).length && !veh) return setFormErr(form, 'נא לבחור את הרכב שתודלק');
+  if (!veh && plateVal.length < 5) return setFormErr(form, 'נא למלא את מספר הרכב');
+  const plate = veh ? veh.label.split(' · ')[0] : plateVal;
   if (!S.rfPhoto) return setFormErr(form, 'נא לצרף צילום של הקבלה');
   setFormErr(form, '');
-  S.rf = { name, phone, card, litres: String(litres), plate };
+  S.rf = { name, phone, card, litres: String(litres), plate: plateVal };
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'שולח…';
@@ -2232,7 +2252,7 @@ function renderConsole() {
 // this only keeps the screen honest about what is possible.
 const READ_ACTS = new Set([
   'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
-  'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter',
+  'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter', 'rf-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
   'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
@@ -4894,10 +4914,14 @@ function fuelPanel() {
 // The expanded row: who used the card, and the receipts. Thumbnails are fetched
 // and decrypted one at a time, so opening a card with twenty receipts does not
 // pull twenty images at once.
-/* Refuelling reports waiting to be filed against a card. The soldier typed a
-   card number, and a typo there must not quietly take litres off the wrong
-   card — so the number is matched, and where it does not match exactly the
-   admin picks the card before anything moves. */
+/* Refuelling reports waiting to be filed against a card. The soldier picked a
+   card, but an older report carries a typed number and a typo there must not
+   quietly take litres off the wrong card — so the number is matched, and where
+   it does not match exactly the admin picks the card before anything moves.
+
+   A filed report is not thrown away. It stays here, marked with the card it
+   went to, because "who reported this and what did I do with it" is a question
+   that gets asked weeks later. The list opens on what still needs doing. */
 function refuelPanel() {
   const all = refuelReports();
   const open = all.filter((r) => r.status !== 'done');
@@ -4905,16 +4929,25 @@ function refuelPanel() {
 
   const cards = (S.inv && S.inv.fuel) || [];
   const norm = (v) => String(v || '').replace(/\D/g, '');
-  const rows = open.map((r) => {
+  const vis = all.filter((r) =>
+    S.rfFilter === 'all' ? true : S.rfFilter === 'done' ? r.status === 'done' : r.status !== 'done');
+
+  const filters = [['open', 'ממתין לקליטה'], ['done', 'נקלטו'], ['all', 'הכל']]
+    .map(([id, label]) =>
+      `<button class="filter" aria-pressed="${S.rfFilter === id}" data-act="rf-filter" data-f="${id}">${label}</button>`)
+    .join('');
+
+  const rows = vis.map((r) => {
     const d = r.data;
-    // The form now sends the card's own id. Older reports carry a typed
-    // number, so those still fall back to matching on the digits.
+    const done = r.status === 'done';
+    // The form sends the card's own id. Older reports carry a typed number,
+    // so those still fall back to matching on the digits.
     const match = cards.find((c) => c.id === d.card)
       || cards.find((c) => norm(c.no) && norm(c.no) === norm(d.card));
     const picked = S.rfPick[r.id] || (match ? match.id : '');
     const target = cards.find((c) => c.id === picked);
     return `
-      <tr${target ? '' : ' class="row-short"'}>
+      <tr${done || target ? '' : ' class="row-short"'}>
         <td class="num">${esc(fmtDate(d.createdAt))}</td>
         <td>${esc(d.name)}</td>
         <td class="num">
@@ -4925,16 +4958,20 @@ function refuelPanel() {
         <td class="num"><strong>${d.litres}</strong></td>
         <td class="num">${esc(d.plate)}</td>
         <td>
-          ${match && !S.rfPick[r.id]
-            ? `<span class="ok">✓ ${esc(nameOf(FUEL_KINDS, match.kind))}</span>`
-            : `<select class="input mini select-mini" data-act="rf-pick" data-id="${esc(r.id)}" aria-label="לאיזה כרטיס">
-                 <option value="">כרטיס לא זוהה — בחרו</option>
-                 ${cards.map((c) => `<option value="${esc(c.id)}"${picked === c.id ? ' selected' : ''}>${esc(nameOf(FUEL_KINDS, c.kind))} · ${esc(c.no || 'ללא מספר')}</option>`).join('')}
-               </select>`}
+          ${done
+            ? `<span class="state done">✓ נקלט${match ? ` — ${esc(nameOf(FUEL_KINDS, match.kind))} ${esc(match.no || '')}` : ''}</span>`
+            : match && !S.rfPick[r.id]
+              ? `<span class="ok">✓ ${esc(nameOf(FUEL_KINDS, match.kind))}</span>`
+              : `<select class="input mini select-mini" data-act="rf-pick" data-id="${esc(r.id)}" aria-label="לאיזה כרטיס">
+                   <option value="">כרטיס לא זוהה — בחרו</option>
+                   ${cards.map((c) => `<option value="${esc(c.id)}"${picked === c.id ? ' selected' : ''}>${esc(nameOf(FUEL_KINDS, c.kind))} · ${esc(c.no || 'ללא מספר')}</option>`).join('')}
+                 </select>`}
         </td>
         <td class="nowrap">
-          <button class="btn primary small" data-act="rf-file" data-id="${esc(r.id)}"
-                  ${target ? '' : 'disabled'}>קליטה לכרטיס</button>
+          ${done
+            ? ''
+            : `<button class="btn primary small" data-act="rf-file" data-id="${esc(r.id)}"
+                       ${target ? '' : 'disabled'}>קליטה לכרטיס</button>`}
           ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, '✕', 'מחיקת הדיווח', 'למחוק את הדיווח?')}
         </td>
       </tr>`;
@@ -4943,8 +4980,9 @@ function refuelPanel() {
   return `
     <section class="panel">
       <h2 class="panel-title">דיווחי תדלוק ${open.length ? `<span class="pill bad num">${open.length}</span>` : ''}</h2>
-      <p class="panel-sub">מה שחיילים דיווחו מהשטח דרך "דיווח תדלוק". קליטה מורידה את הליטרים מיתרת הכרטיס ורושמת את השימוש. שורה באדום — מספר הכרטיס לא זוהה, בחרו כרטיס לפני הקליטה.</p>
-      ${open.length
+      <p class="panel-sub">מה שחיילים דיווחו מהשטח דרך "דיווח תדלוק". קליטה מורידה את הליטרים מיתרת הכרטיס ורושמת את השימוש בכרטיס, יחד עם הקבלה. הדיווח נשאר כאן גם אחרי הקליטה. שורה באדום — מספר הכרטיס לא זוהה, בחרו כרטיס לפני הקליטה.</p>
+      <div class="filters">${filters}</div>
+      ${vis.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="1,4,-1">
                <thead><tr>
@@ -4955,7 +4993,7 @@ function refuelPanel() {
                <tbody>${rows}</tbody>
              </table>
            </div>`
-        : '<p class="empty">כל הדיווחים נקלטו.</p>'}
+        : `<p class="empty">${S.rfFilter === 'done' ? 'טרם נקלט דיווח.' : 'כל הדיווחים נקלטו.'}</p>`}
     </section>`;
 }
 
@@ -6120,26 +6158,36 @@ async function loadInv() {
 // The vault is one blob shared by every admin. Sending the version it was
 // loaded at lets the server refuse a save that would overwrite someone else's
 // work, instead of silently discarding it.
-/* The list of cards the refuelling form may offer. Only this browser can read
-   the vault, so only this browser can publish it — which happens on every
-   save, so crediting or deleting a card takes it off the soldiers' form at
-   the same moment it leaves the table.
+/* The cards and the vehicles the refuelling form may offer. Only this browser
+   can read the vault, so only this browser can publish them — which happens on
+   every save, so crediting a card or striking a vehicle takes it off the
+   soldiers' form at the same moment it leaves the table.
 
-   The label is masked. A fuel card is a payment instrument and the form it
-   appears on is open to anyone with the link, so what goes out is the fuel
+   A card's label is masked. A fuel card is a payment instrument and the form
+   it appears on is open to anyone with the link, so what goes out is the fuel
    type and the last four digits — enough for a soldier holding the card to
-   recognise it, and not enough to use it. */
+   recognise it, and not enough to use it.
+
+   A vehicle's label is the plate as written on the vehicle. Masking it would
+   defeat the point: the soldier is standing at the pump looking at the plate,
+   and has to find that plate in the list. A plate is visible to anyone who
+   walks past the vehicle, which a card number is not. */
 const cardLabel = (c) => {
   const no = String(c.no || '').replace(/\s+/g, '');
   const tail = no.length > 4 ? `••${no.slice(-4)}` : no || 'ללא מספר';
   return `${nameOf(FUEL_KINDS, c.kind)} · ${tail}`;
 };
 
+const vehLabel = (v) => (v.company ? `${v.plate} · ${v.company}` : v.plate);
+
 async function publishCards() {
   const cards = ((S.inv && S.inv.fuel) || [])
     .filter((c) => !c.credited)          // credited at the vehicle office — done with
     .map((c) => ({ id: c.id, label: cardLabel(c) }));
-  await api('/admin/cards', { method: 'PUT', body: { cards } }).catch(() => {});
+  const vehicles = ((S.inv && S.inv.vehicles) || [])
+    .filter((v) => String(v.plate || '').trim().length >= 5)   // a blank new row is not a vehicle
+    .map((v) => ({ id: v.id, label: vehLabel(v).slice(0, 60) }));
+  await api('/admin/cards', { method: 'PUT', body: { cards, vehicles } }).catch(() => {});
 }
 
 async function saveInv() {
@@ -6320,12 +6368,29 @@ async function licFile(kind, input) {
   }
 }
 
+// Attaching or removing the receipt re-renders the form, so whatever the
+// soldier has already typed has to be read out of the live form first —
+// otherwise the photo lands and the name, the litres and the rest are blank
+// again. Same reason step 1 of the sign-out captures before re-rendering.
+function captureRefuelForm() {
+  const f = $app.querySelector('form[data-form="refuel"]');
+  if (!f) return;
+  S.rf = {
+    name: f.name.value.trim(),
+    phone: f.phone.value.trim(),
+    card: f.card.value,
+    litres: String(f.litres.value).replace(/\D/g, ''),
+    plate: f.plate.value.trim(),
+  };
+}
+
 // The refuelling receipt, compressed and held in memory until the report is
 // sent. Same path as a licence photo — the office should never have to take
 // a soldier's word for the litres.
 async function refuelPhoto(input) {
   const file = input.files && input.files[0];
   if (!file) return;
+  captureRefuelForm();
   if (!/^image\//.test(file.type)) { toast('יש לבחור קובץ תמונה', true); return; }
   toast('מעבד את התמונה…');
   try {
@@ -7590,12 +7655,13 @@ function dispatch(act, el) {
     // armoury deposits
     case 'dep-again': S.depSent = false; S.dep = null; renderDeposit(); break;
     case 'dep-filter': S.depFilter = el.dataset.f; S.page = {}; renderConsole(); break;
+    case 'rf-filter': S.rfFilter = el.dataset.f; renderConsole(); break;
     case 'dep-approve': depApprove(el.dataset.id); break;
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
-    case 'rf-photo-clear': S.rfPhoto = null; renderRefuel(); break;
+    case 'rf-photo-clear': captureRefuelForm(); S.rfPhoto = null; renderRefuel(); break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used

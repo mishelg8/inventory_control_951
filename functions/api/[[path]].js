@@ -359,10 +359,14 @@ export async function onRequest(context) {
     }
 
     // ── GET /api/status/:rid ─────────────────────────────────────────
+    // A deleted record does not exist. It is kept for thirty days so a
+    // mis-click is recoverable, but that is the admin's business — to the
+    // soldier standing at the form it is gone, and signing again starts a
+    // new registration rather than a supplement to a slip nobody can see.
     if (seg[0] === 'status' && seg.length === 2 && method === 'GET') {
       if (!isHex(seg[1], HEX32)) return err(400, 'בקשה לא תקינה');
       const row = await db
-        .prepare('SELECT status FROM records WHERE rid = ?1')
+        .prepare('SELECT status FROM records WHERE rid = ?1 AND deleted_at IS NULL')
         .bind(seg[1])
         .first();
       if (!row) return json({ exists: false });
@@ -370,16 +374,19 @@ export async function onRequest(context) {
     }
 
     // ── GET /api/cards ───────────────────────────────────────────────
-    // The fuel cards a soldier may report against. Ids and masked labels
-    // only — the full number never leaves the admin's vault — and a card the
-    // admin has credited or removed is not in here at all, which is what
-    // makes it unpickable rather than merely discouraged.
+    // What the refuelling form may offer: the fuel cards, and the vehicles.
+    // Ids and labels only — a card's full number never leaves the admin's
+    // vault — and anything the admin credited, removed or never entered is
+    // not in here at all, which is what makes it unpickable rather than
+    // merely discouraged.
     if (seg[0] === 'cards' && seg.length === 1 && method === 'GET') {
       const { results } = await db
-        .prepare('SELECT id, label FROM pub_cards ORDER BY sort')
+        .prepare('SELECT kind, id, label FROM pub_pick ORDER BY kind, sort')
         .all()
         .catch(() => ({ results: [] }));
-      return json({ cards: results || [] });
+      const rows = results || [];
+      const of = (k) => rows.filter((r) => r.kind === k).map((r) => ({ id: r.id, label: r.label }));
+      return json({ cards: of('card'), vehicles: of('vehicle') });
     }
 
     // ── GET /api/serial?tag=… ────────────────────────────────────────
@@ -421,11 +428,28 @@ export async function onRequest(context) {
         return err(403, 'ההרשאה לשליחה פגה — רעננו את הדף ונסו שוב');
       }
       const existing = await db
-        .prepare('SELECT status FROM records WHERE rid = ?1')
+        .prepare('SELECT status FROM records WHERE rid = ?1 AND deleted_at IS NULL')
         .bind(rid)
         .first();
       if (existing && existing.status === 'approved') {
         return err(409, 'הרשומה כבר אושרה ואינה ניתנת לעדכון — פנו למנהל הציוד');
+      }
+      // Nothing live under this id, but a deleted one may still be sitting in
+      // the bin holding the id — and the id is derived from the personal
+      // number, so it is the same soldier signing again. The old slip is
+      // taken out for good, photos included: leaving it would either block
+      // the insert or, worse, let the new registration inherit the deleted
+      // one's licence photos, which share the id. Deleting a record in the
+      // console is meant to mean the soldier can sign again from scratch.
+      if (!existing) {
+        const buried = await db
+          .prepare('DELETE FROM records WHERE rid = ?1 AND deleted_at IS NOT NULL')
+          .bind(rid)
+          .run();
+        if (buried.meta.changes) {
+          await db.prepare('DELETE FROM docs WHERE rid = ?1').bind(rid).run();
+          await releaseSerials(db, 'record', rid);
+        }
       }
       const clash = await claimSerials(db, b.tags, 'record', rid, 'pending', now);
       if (clash) {
@@ -518,7 +542,7 @@ export async function onRequest(context) {
         if (rep.status === 'done') return err(409, 'הדיווח כבר נקלט — פנו למנהל הרכב');
       } else {
         const owner = await db
-          .prepare('SELECT status FROM records WHERE rid = ?1')
+          .prepare('SELECT status FROM records WHERE rid = ?1 AND deleted_at IS NULL')
           .bind(rid)
           .first();
         if (!owner) return err(409, 'אין רשומה לצרף אליה צילום');
@@ -851,29 +875,43 @@ export async function onRequest(context) {
       // GET | PUT /api/admin/vault — the encrypted inventory blob
       // PUT /api/admin/cards — republish the roster the refuelling form offers.
       // Sent by the admin's browser whenever the vault is saved, since only it
-      // can read the cards. The whole list is replaced each time, so a card
-      // that has been credited or deleted disappears by simply not being sent.
+      // can read the cards and the vehicles. The whole list of a kind is
+      // replaced each time, so a card that has been credited or a vehicle that
+      // has left the fleet disappears by simply not being sent. A kind that is
+      // absent from the body is left alone rather than emptied — an older tab
+      // that only knows about cards must not wipe the vehicles.
       if (seg[1] === 'cards' && seg.length === 2 && method === 'PUT') {
         if (isRestricted(session.role) && !scopesFor(session.tabs).has('vault')) {
           return err(403, 'אין הרשאה לנתונים אלה');
         }
         const b = await readBody(request);
-        const list = Array.isArray(b && b.cards) ? b.cards.slice(0, 300) : null;
-        if (!list) return err(400, 'בקשה לא תקינה');
-        for (const c of list) {
-          if (!c || typeof c.id !== 'string' || c.id.length > 40 ||
-              typeof c.label !== 'string' || c.label.length > 60) {
-            return err(400, 'בקשה לא תקינה');
+        if (!b) return err(400, 'בקשה לא תקינה');
+        const lists = {};
+        for (const [key, kind] of [['cards', 'card'], ['vehicles', 'vehicle']]) {
+          if (b[key] === undefined) continue;
+          if (!Array.isArray(b[key])) return err(400, 'בקשה לא תקינה');
+          const list = b[key].slice(0, 500);
+          for (const c of list) {
+            if (!c || typeof c.id !== 'string' || c.id.length > 40 ||
+                typeof c.label !== 'string' || c.label.length > 60) {
+              return err(400, 'בקשה לא תקינה');
+            }
           }
+          lists[kind] = list;
         }
-        await db.prepare('DELETE FROM pub_cards').run();
-        for (let i = 0; i < list.length; i += 1) {
-          await db
-            .prepare('INSERT OR REPLACE INTO pub_cards (id, label, sort, updated_at) VALUES (?1, ?2, ?3, ?4)')
-            .bind(list[i].id, list[i].label, i, now)
-            .run();
+        if (!Object.keys(lists).length) return err(400, 'בקשה לא תקינה');
+        let n = 0;
+        for (const [kind, list] of Object.entries(lists)) {
+          await db.prepare('DELETE FROM pub_pick WHERE kind = ?1').bind(kind).run();
+          for (let i = 0; i < list.length; i += 1) {
+            await db
+              .prepare('INSERT OR REPLACE INTO pub_pick (kind, id, label, sort, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)')
+              .bind(kind, list[i].id, list[i].label, i, now)
+              .run();
+          }
+          n += list.length;
         }
-        return json({ ok: true, n: list.length });
+        return json({ ok: true, n });
       }
 
       if (seg[1] === 'vault' && seg.length === 2) {
