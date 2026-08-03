@@ -2419,11 +2419,6 @@ const fmtShort = (ms) => {
   return `${d.getDate()}.${d.getMonth() + 1}.${String(d.getFullYear()).slice(2)}`;
 };
 
-const itemsText = (d) =>
-  ITEMS.filter((i) => d.items[i.id])
-    .map((i) => `${i.name} ×${d.items[i.id].t}`)
-    .join(', ');
-
 /* ── Search & grouping (PLAN §7.2 — usable at 100+ soldiers) ────────── */
 
 // Matches a record against the free-text query: name, personal number, phone,
@@ -2590,21 +2585,17 @@ function waPhone(raw) {
 }
 
 // Prefilled WhatsApp message opened on the ADMIN's device — the server never
-// sees the phone number, so this is the only E2E-preserving way to notify a
-// soldier. Opened in a new tab so the console keeps its in-memory key.
-// Automatic send via the Worker (WhatsApp Cloud API). Resolves to a reason
-// string when it could not send, so approval never fails because of delivery.
-async function notifySoldier(d) {
-  try {
-    const r = await api('/admin/notify', {
-      body: { phone: waPhone(d.phone), name: d.name, items: itemsText(d) },
-    });
-    return r && r.sent ? null : (r && r.reason) || 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
+// sees the phone number, so this is the only way to notify a soldier that
+// keeps the encryption intact. Opened in a new tab so the console keeps its
+// in-memory key.
+//
+// There used to be a second path here: the Worker calling Meta's Cloud API so
+// the message went out by itself on approval. It is gone. It required a
+// business registration this unit cannot get, so it never sent anything —
+// every approval spent a network round trip to be told 'not_configured' and
+// then apologised for it on screen. It was also the one place where a name, a
+// phone number and an equipment list left the browser in the clear. Removing
+// it means nothing readable leaves this system at all.
 function waLink(d, rid) {
   const lines = ITEMS.filter((i) => d.items[i.id])
     .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
@@ -5739,6 +5730,19 @@ const exportRecoveryKey = () =>
     toast('קובץ השחזור הורד');
   });
 
+// Ends every session this account has, including this one. The console then
+// locks like any sign-out: the key is wiped from memory and the password is
+// the only way back in. lock() calls /logout on a session the server has
+// already deleted, which answers 401 and is caught — the point was to be gone,
+// and it is.
+const revokeSessions = () =>
+  withBusy(async () => {
+    const r = await api('/admin/sessions/revoke', { method: 'POST', body: {} });
+    const n = (r && r.ended) || 1;
+    lock();
+    toast(n > 1 ? `${n} חיבורים נותקו` : 'החיבור נותק');
+  });
+
 // The plain fetch, with no busy guard on it, so an action that is already
 // running can refresh the bin without the guard turning the call into a no-op.
 const fetchTrash = async () => {
@@ -5857,6 +5861,10 @@ const AUDIT_LABEL = {
   'restore-report': 'שחזור דיווח', vault: 'שמירת מלאי', 'user-create': 'יצירת משתמש',
   'user-update': 'עדכון משתמש', 'user-delete': 'מחיקת משתמש',
   'edit-report': 'תיקון דיווח',
+  // Who came in, who tried and failed, and who was locked out for trying too
+  // often. The trail recorded everything an account did except how it got in.
+  login: 'כניסה', 'login-fail': 'כניסה נכשלה', 'login-lock': 'נעילה זמנית',
+  logout: 'יציאה', 'sessions-revoke': 'ניתוק כל המכשירים',
 };
 
 // Users. Every account carries its own copy of the private key, wrapped under
@@ -6026,9 +6034,9 @@ function renderSecurityTab() {
       <p>שם, מספר אישי, טלפון, מספר נשק, פירוט הציוד <strong>וצילומי הרישיונות</strong> מוצפנים במכשיר לפני השליחה. השרת, קלאודפלייר, וכל מי שמשיג גישה לחשבון או למסד — רואים צופן בלבד.</p>
       <p class="mb0">מה השרת כן רואה: מספר הרשומות, סטטוס (ממתין/מאושר) וחותמות זמן. לא זהות ולא פירוט ציוד.</p>
     </div>
-    <div class="callout risk">
-      <p class="callout-title">שליחה אוטומטית בוואטסאפ</p>
-      <p class="mb0">אם הופעלה שליחה אוטומטית, ברגע האישור עוברים שם החייל, הטלפון ופירוט הציוד דרך השרת אל Meta. הם אינם נשמרים במסד הנתונים, אך Meta מקבלת עותק. בשליחה הידנית שום דבר מזה לא קורה.</p>
+    <div class="callout">
+      <p class="callout-title">הודעות לחיילים</p>
+      <p class="mb0">כפתורי הוואטסאפ פותחים צ'אט <strong>מהמכשיר שלכם</strong> עם הודעה מוכנה. שום שרת לא מעורב ושום פרט לא עובר לצד שלישי. השליחה האוטומטית דרך Meta הוסרה — היא דרשה רישום עסקי, ובדרך היא הייתה מוציאה שם, טלפון ופירוט ציוד בטקסט גלוי.</p>
     </div>
     <div class="callout risk">
       <p class="callout-title">אין שחזור סיסמה</p>
@@ -6039,6 +6047,12 @@ function renderSecurityTab() {
     ${trashPanel()}
 
     ${auditPanel()}
+
+    <section class="panel">
+      <h2 class="panel-title">חיבורים פעילים</h2>
+      <p class="panel-sub">חיבור נסגר מעצמו כעבור שעה ללא פעילות, ובכל מקרה 12 שעות מרגע הכניסה. אם נשארתם מחוברים במכשיר אחר — נתקו הכל מכאן, וגם החיבור הנוכחי ייסגר.</p>
+      <button class="btn ghost wide" data-act="sessions-revoke">ניתוק מכל המכשירים</button>
+    </section>
 
     <section class="panel">
       <h2 class="panel-title">גיבוי מפתח שחזור</h2>
@@ -6781,15 +6795,10 @@ async function approveCore(rid) {
         if (rec.data.amral) parent.data.amral = rec.data.amral;
         if (rec.data.scope) parent.data.scope = rec.data.scope;
         parent.data.log.push({ a: 'supplement', t: now });
-        const suppFailed = await notifySoldier(parent.data);
-        if (!suppFailed) {
-          parent.data.notified = now;
-          parent.data.log.push({ a: 'notify', t: now });
-        }
         await saveRec(parent);
         await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
         S.recs = S.recs.filter((r) => r.rid !== rec.rid);
-        return { name: parent.data.name, merged: true, failed: !!suppFailed };
+        return { name: parent.data.name, merged: true };
       }
       // main record was deleted meanwhile — approve as a standalone record
       delete rec.data.supp;
@@ -6797,13 +6806,8 @@ async function approveCore(rid) {
     rec.data.approvedAt = now;
     rec.data.log.push({ a: 'approve', t: now });
     rec.status = 'approved';
-    const failed = await notifySoldier(rec.data);
-    if (!failed) {
-      rec.data.notified = now;
-      rec.data.log.push({ a: 'notify', t: now });
-    }
     await saveRec(rec);
-    return { name: rec.data.name, failed: !!failed };
+    return { name: rec.data.name };
 }
 
 const adminApprove = (rid) =>
@@ -6819,16 +6823,9 @@ const adminApprove = (rid) =>
     S.picked.delete(rid);
     renderConsole();
     if (r.skipped) return;
-    toast(
-      r.merged
-        ? (r.failed
-            ? `ההשלמה מוזגה לרישום של ${r.name} — ההודעה לא נשלחה אוטומטית`
-            : `ההשלמה מוזגה ונשלחה הודעה ל${r.name}`)
-        : (r.failed
-            ? `אושר: ${r.name} — ההודעה לא נשלחה אוטומטית, שלחו ידנית במעקב ציוד`
-            : `אושר: ${r.name} — הודעת וואטסאפ נשלחה`),
-      !!r.failed
-    );
+    toast(r.merged
+      ? `ההשלמה מוזגה לרישום של ${r.name} — שלחו הודעה במעקב ציוד`
+      : `אושר: ${r.name} — שלחו הודעה במעקב ציוד`);
   });
 
 // Bulk approval. Each record is saved on its own, so a failure part-way leaves
@@ -6847,8 +6844,8 @@ const bulkApprove = () =>
     const head = flagged.length
       ? `⚠ ${flagged.length} מתוך ${rids.length} עם בעיה במספרים סידוריים:\n\n${flagged.slice(0, 8).join('\n')}${flagged.length > 8 ? `\n…ועוד ${flagged.length - 8}` : ''}\n\n`
       : '';
-    if (!window.confirm(`${head}לאשר ${rids.length} רישומים? לכל חייל תישלח הודעה.`)) return;
-    let ok = 0, noMsg = 0;
+    if (!window.confirm(`${head}לאשר ${rids.length} רישומים? ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.`)) return;
+    let ok = 0;
     const failedRids = [];
     for (const rid of rids) {
       toast(`מאשר ${ok + failedRids.length + 1} מתוך ${rids.length}…`);
@@ -6856,7 +6853,6 @@ const bulkApprove = () =>
         const r = await approveCore(rid);
         if (r.skipped) continue;
         ok++;
-        if (r.failed) noMsg++;
         S.picked.delete(rid);
       } catch {
         failedRids.push(rid);
@@ -6865,7 +6861,6 @@ const bulkApprove = () =>
     renderConsole();
     toast(
       `${ok} רישומים אושרו` +
-        (noMsg ? ` · ${noMsg} ללא הודעה אוטומטית` : '') +
         (failedRids.length ? ` · ${failedRids.length} נכשלו ונשארו מסומנים` : ''),
       failedRids.length > 0
     );
@@ -7626,6 +7621,7 @@ function dispatch(act, el) {
     }
     // users, trash, audit
     case 'key-export': exportRecoveryKey(); break;
+    case 'sessions-revoke': revokeSessions(); break;
     case 'trash-load': loadTrash(); break;
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;

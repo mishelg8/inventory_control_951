@@ -3,6 +3,11 @@
 // arrives here in plaintext. See PLAN.md §4 and §6 for the contract.
 
 const SESSION_MS = 60 * 60 * 1000;        // 1 hour, refreshed on each authed request
+// ...but not forever. A console that is used all day used to hold its session
+// open indefinitely, because every request pushed the hour out again. Twelve
+// hours from sign-in is a long shift and a firm end: after that the password
+// is needed again, which is also the only way the browser gets the key back.
+const SESSION_ABS_MS = 12 * 60 * 60 * 1000;
 const LOGIN_LIMIT = 8;                    // login attempts per IP...
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;   // ...per 10-minute lockout window
 // A whole unit signing out is typically behind ONE base-WiFi NAT address, so
@@ -238,10 +243,18 @@ async function getSession(db, request, now) {
   const m = cookie.match(/(?:^|;\s*)sid=([0-9a-f]{64})(?:;|$)/);
   if (!m) return null;
   const row = await db
-    .prepare('SELECT token, expires, role, username, tabs FROM sessions WHERE token = ?1')
+    .prepare('SELECT token, expires, role, username, tabs, created_at FROM sessions WHERE token = ?1')
     .bind(m[1])
     .first();
   if (!row || row.expires <= now) return null;
+  // Sessions from before this column existed have no start time. They are
+  // stamped now rather than killed, so a migration never signs anyone out.
+  if (row.created_at == null) {
+    await db.prepare('UPDATE sessions SET created_at = ?1 WHERE token = ?2').bind(now, row.token).run();
+  } else if (now - row.created_at >= SESSION_ABS_MS) {
+    await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(row.token).run();
+    return null;
+  }
   await db
     .prepare('UPDATE sessions SET expires = ?1 WHERE token = ?2')
     .bind(now + SESSION_MS, row.token)
@@ -586,6 +599,7 @@ export async function onRequest(context) {
         // Per-IP alone lets a distributed attacker grind one account. The
         // account itself also has a budget.
         if (username && !(await allow(db, `luser:${username}`, LOGIN_LIMIT, LOGIN_WINDOW_MS, now))) {
+          await audit(db, now, { username }, 'login-lock', username, null);
           return err(429, 'החשבון ננעל זמנית לאחר ניסיונות כושלים — נסו בעוד 10 דקות');
         }
 
@@ -599,6 +613,9 @@ export async function onRequest(context) {
           if (cfg) cred = { ...cfg, username: 'admin.951', role: 'admin', tabs: '*' };
         }
         if (!cred || !tsEqual(b.verifier, cred.verifier)) {
+          // The name that was tried, never what was tried against it. A run of
+          // these against one account is the thing worth being able to see.
+          await audit(db, now, { username }, 'login-fail', username || null, null);
           return err(401, 'שם משתמש או סיסמה שגויים');
         }
 
@@ -607,14 +624,15 @@ export async function onRequest(context) {
         const token = randomToken();
         await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
         await db
-          .prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?1, ?2, ?3, ?4, ?5)')
-          .bind(token, now + SESSION_MS, role, cred.username || username || null, tabs)
+          .prepare('INSERT INTO sessions (token, expires, role, username, tabs, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
+          .bind(token, now + SESSION_MS, role, cred.username || username || null, tabs, now)
           .run();
         await db
           .prepare('UPDATE users SET last_seen = ?1 WHERE username = ?2')
           .bind(now, cred.username || username || '')
           .run()
           .catch(() => {});
+        await audit(db, now, { username: cred.username || username }, 'login', null, role);
         return json(
           { keyIv: cred.key_iv, wrappedKey: cred.wrapped_key, role, tabs, username: cred.username || username },
           200,
@@ -627,8 +645,13 @@ export async function onRequest(context) {
       if (!session) return err(401, 'נדרשת התחברות');
 
       // A viewer may read; it may not change anything. Enforced here rather
-      // than per-endpoint so a new write route cannot forget to opt in.
-      if (session.role === 'viewer' && method !== 'GET' && !(seg[1] === 'logout' && method === 'POST')) {
+      // than per-endpoint so a new write route cannot forget to opt in. The
+      // two exceptions are the writes that only ever take access away from
+      // the caller: signing out, here or everywhere.
+      const selfWrite =
+        (seg[1] === 'logout' && seg.length === 2) ||
+        (seg[1] === 'sessions' && seg[2] === 'revoke' && seg.length === 3);
+      if (session.role === 'viewer' && method !== 'GET' && !(selfWrite && method === 'POST')) {
         return err(403, 'משתמש צפייה בלבד — אין הרשאת עריכה');
       }
 
@@ -655,7 +678,26 @@ export async function onRequest(context) {
       // POST /api/admin/logout
       if (seg[1] === 'logout' && seg.length === 2 && method === 'POST') {
         await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session.token).run();
+        await audit(db, now, session, 'logout', null, null);
         return json({ ok: true }, 200, { 'Set-Cookie': clearedCookie() });
+      }
+
+      // POST /api/admin/sessions/revoke — end every session of this user,
+      // this one included. For a laptop left signed in somewhere else, which
+      // until now could only be waited out. A viewer may do this too: it is
+      // the one write that only ever takes access away, and it is their own.
+      if (seg[1] === 'sessions' && seg[2] === 'revoke' && seg.length === 3 && method === 'POST') {
+        if (!session.username) {
+          await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(session.token).run();
+          return json({ ok: true, ended: 1 }, 200, { 'Set-Cookie': clearedCookie() });
+        }
+        const r = await db
+          .prepare('DELETE FROM sessions WHERE username = ?1')
+          .bind(session.username)
+          .run();
+        const ended = (r.meta && r.meta.changes) || 0;
+        await audit(db, now, session, 'sessions-revoke', session.username, `${ended}`);
+        return json({ ok: true, ended }, 200, { 'Set-Cookie': clearedCookie() });
       }
 
       // GET /api/admin/users — the roster, never the credentials themselves
@@ -966,73 +1008,15 @@ export async function onRequest(context) {
         return json({ records: results });
       }
 
-      // POST /api/admin/notify
-      // Sends the approval message through the WhatsApp Cloud API. The phone
-      // number and item list pass through this Worker in plaintext — that is
-      // unavoidable for automatic delivery, since a messaging provider must be
-      // able to read what it sends. Nothing here is ever written to D1 or
-      // logged; the plaintext exists only for the duration of this request.
-      // Without WHATSAPP_TOKEN / WHATSAPP_PHONE_ID configured this returns
-      // {sent:false, reason:'not_configured'} and the client falls back to the
-      // manual send button.
-      if (seg[1] === 'notify' && seg.length === 2 && method === 'POST') {
-        const token = env.WHATSAPP_TOKEN;
-        const phoneId = env.WHATSAPP_PHONE_ID;
-        if (!token || !phoneId) return json({ sent: false, reason: 'not_configured' });
-
-        const b = await readBody(request);
-        if (!b) return err(400, 'בקשה לא תקינה');
-        const to = String(b.phone || '').replace(/\D/g, '');
-        const name = String(b.name || '').slice(0, 60);
-        const items = String(b.items || '').slice(0, 300);
-        if (to.length < 9 || to.length > 15 || !name || !items) {
-          return err(400, 'בקשה לא תקינה');
-        }
-
-        const payload = {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'template',
-          template: {
-            name: env.WHATSAPP_TEMPLATE || 'equipment_approved',
-            language: { code: env.WHATSAPP_LANG || 'he' },
-            components: [
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: name },
-                  { type: 'text', text: items },
-                ],
-              },
-            ],
-          },
-        };
-
-        let res;
-        try {
-          res = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-          });
-        } catch {
-          return json({ sent: false, reason: 'network' });
-        }
-        if (!res.ok) {
-          let detail = '';
-          try {
-            const e = await res.json();
-            detail = (e && e.error && e.error.message) || '';
-          } catch {
-            // provider returned a non-JSON error body
-          }
-          return json({ sent: false, reason: 'api', status: res.status, detail });
-        }
-        return json({ sent: true });
-      }
+      // There was a POST /api/admin/notify here: the Worker calling Meta's
+      // WhatsApp Cloud API so an approval message went out by itself. It is
+      // gone. Automatic delivery needs a business registration this unit
+      // cannot obtain, so the route never sent a message — it answered
+      // 'not_configured' to every approval. It was also the only place where a
+      // name, a phone number and an equipment list passed through this server
+      // in the clear, and the only outbound call to a third party. The console
+      // opens WhatsApp on the admin's own device instead, which reveals
+      // nothing to anyone.
 
       // PUT | DELETE /api/admin/records/:rid
       if (seg[1] === 'records' && seg.length === 3) {
