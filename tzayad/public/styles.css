@@ -334,7 +334,30 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .tbl tr.sub > td { background: var(--bg); padding: 14px 12px; }
 .tbl.compact { font-size: 13px; }
 .tbl.compact th, .tbl.compact td { padding: 6px 8px; }
-.fuel-detail > .field-label { display: block; margin-bottom: 6px; }
+/* The drawer under a fuel card. Everything you do to a card lives here —
+   recording a refuelling, attaching a receipt — because a row has no room
+   for a form and a table of six-line rows is not a table. */
+.fuel-h {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+}
+.fuel-h.mt { margin-top: 20px; }
+.fuel-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+  margin-bottom: 8px;
+}
+.fuel-entry > .field { flex: 1 1 130px; min-width: 0; }
+.fuel-entry > .field .input { width: 100%; }
+.fuel-entry > .btn { flex: 0 0 auto; }
+/* a file input dressed as a button still has to sit on the baseline */
+.fuel-entry > label.btn { display: inline-flex; align-items: center; cursor: pointer; }
 
 .rcpts {
   display: grid;
@@ -1585,7 +1608,12 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 /* A cell is narrower than a form field and the value has to fit inside it:
    a registration number cut off at "77-123" is worse than a small one. */
 .tbl td .input { width: 100%; min-width: 0; font-size: 13.5px; padding: 5px 7px; }
+/* An input fills its cell, so its own content cannot ask the column for room
+   — the floor here is what does. A number cut off mid-way is not a smaller
+   number, it is the wrong one, so the floor fits what the field holds:
+   readings and codes at 6.5em, plates and card numbers at 11. */
 .tbl td .input.num { min-width: 4.5em; }
+.tbl td .input.num.wide { min-width: 9.5em; }
 .tbl td .select-mini { min-width: 6.5em; }
 .tbl .input[type="date"] { font-size: 12.5px; padding: 5px 6px; min-width: 0; width: 100%; }
 .tbl .btn.small { padding: 5px 9px; font-size: 12.5px; }
@@ -1638,10 +1666,18 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .tbl.folded td { white-space: normal; }
 /* the ledger's name column asks for 148px, which is a third of a phone */
 .tbl.folded .lg-name { min-width: 0; }
+/* A floor on a field is how a column bids for width. Once the columns are
+   settled the bid is over, and a floor of eleven characters in a cell of
+   seven is just overflow. */
+.tbl.folded td .input,
+.det-v .input,
+.det-v .select-mini { min-width: 0; }
 /* Two buttons that will not sit side by side sit one above the other, and
-   a ragged left edge is the only thing that makes that look accidental. */
-.tbl.folded td .btn { width: 100%; }
-.tbl.folded td .btn.small { padding: 6px 7px; }
+   a ragged left edge is the only thing that makes that look accidental.
+   A drawer under the row is a panel, not a cell — its buttons keep their
+   own size. */
+.tbl.folded tr:not(.sub) td .btn { width: 100%; }
+.tbl.folded tr:not(.sub) td .btn.small { padding: 6px 7px; }
 .tbl.folded .minibar { max-width: none; }
 /* a two-word chip is wider than a folded column; let it take a second line
    rather than reach past the cell it sits in */
@@ -1728,6 +1764,8 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   min-width: 0;
   text-align: end;
 }
+.det-f.is-bare > .det-l { display: none; }
+.det-f.is-bare > .det-v { flex: 1 1 100%; justify-content: flex-start; }
 .det-v:empty { display: none; }
 .det-v > .minibar { flex: 1 1 60px; min-width: 40px; max-width: none; }
 .det-v .input,
