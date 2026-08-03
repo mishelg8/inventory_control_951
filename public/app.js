@@ -700,8 +700,9 @@ const S = {
   repEdit: '',                  // report id whose fields are open for correction
   repDraft: null,
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
-  invVersion: 0,                // vault updated_at at load, for conflict detection
-  invBytes: 0,                  // sealed vault size, for the headroom gauge
+  invVer: {},                   // part -> updated_at at load, for conflict detection
+  invBase: {},                  // part -> its content when loaded, for the dirty check
+  invBytes: 0,                  // sealed size of the largest part, for the headroom gauge
   busy: false,
 };
 
@@ -6184,13 +6185,98 @@ const repDelete = (id) =>
     toast('הדיווח נמחק');
   });
 
-// The inventory blob rides the same envelope as records.
+/* ── The vault, one domain at a time ───────────────────────────────────
+   The logistics side used to be one encrypted blob: every save rewrote all
+   of it, so two admins working on unrelated screens collided, and the
+   movement logs — the only thing here that grows without end — shared a
+   ceiling with everything else.
+
+   It is now a row per domain, sealed exactly as before. This map is the
+   whole definition of the split: which keys of the inventory object live in
+   which row. A test fails if a key is ever added to the inventory without
+   being given a home here, because a key with no home is a key that is
+   quietly never saved. */
+const VAULT_PARTS = [
+  ['stock', ['open', 'extra', 'notes']],
+  ['countedAt', ['countedAt']],
+  ['armon', ['armon']],
+  ['armonLog', ['armonLog']],
+  ['comms', ['comms']],
+  ['commsLog', ['commsLog']],
+  ['ammo', ['ammo']],
+  ['ammoLog', ['ammoLog']],
+  ['vehicles', ['vehicles']],
+  ['fuel', ['fuel']],
+];
+
+const partSlice = (inv, keys) => {
+  const out = {};
+  for (const k of keys) out[k] = inv[k];
+  return out;
+};
+
+// What each part looked like when it was loaded, or last saved. A save writes
+// the parts whose content differs from this and no others — which is why not
+// one of the fifteen call sites had to learn what it was changing.
+function markVaultClean() {
+  S.invBase = {};
+  for (const [part, keys] of VAULT_PARTS) {
+    S.invBase[part] = JSON.stringify(partSlice(S.inv, keys));
+  }
+}
+
 async function loadInv() {
   try {
-    const { vault } = await api('/admin/vault');
-    if (!vault) { S.inv = emptyInv(); S.invVersion = 0; return; }
-    S.invVersion = vault.updated_at || 0;   // what a later save will be checked against
-    S.inv = await openRecord(S.priv, vault, cleanInv);
+    const { vault, parts } = await api('/admin/vault');
+    const rows = parts || [];
+    // The split writes ten rows one after another, and a connection that dies
+    // in the middle would leave some of them behind. Half a split plus the old
+    // blob must not be read as "this vault has been split", or the domains
+    // that never made it would come up empty and the next save would write
+    // that emptiness over the shadow copy too. So while the blob is still
+    // there, the split only counts once every part has arrived.
+    const whole = VAULT_PARTS.every(([p]) => rows.some((r) => r.part === p));
+    if (rows.length && (whole || !vault)) {
+      const inv = emptyInv();
+      S.invVer = {};
+      for (const row of rows) {
+        const def = VAULT_PARTS.find(([p]) => p === row.part);
+        if (!def) continue;                     // a part this client does not know
+        // Each part opens on its own, so one damaged row costs one domain
+        // rather than the whole console.
+        try {
+          Object.assign(inv, partSlice(await openRecord(S.priv, row, cleanInv), def[1]));
+          S.invVer[row.part] = row.updated_at || 0;
+        } catch {
+          toast(`לא ניתן לפענח חלק מנתוני המלאי (${row.part})`, true);
+        }
+      }
+      S.inv = inv;
+      // "Last updated" is now the newest part, taken from the server's own
+      // clock rather than from whichever browser happened to save last.
+      S.inv.updatedAt = Math.max(0, ...Object.values(S.invVer));
+      markVaultClean();
+    } else if (vault) {
+      // Nothing split yet: read the old blob and, if this browser may write,
+      // split it now. Only a browser can do this — the server holds the parts
+      // but cannot read the blob in order to divide it.
+      S.inv = await openRecord(S.priv, vault, cleanInv);
+      // Any parts an interrupted attempt already wrote keep their versions, so
+      // finishing the job is not mistaken for a conflict with it.
+      S.invVer = {};
+      for (const row of rows) S.invVer[row.part] = row.updated_at || 0;
+      S.invBase = {};                           // with no baseline, everything is dirty
+      if (S.role !== 'viewer') {
+        await saveInv();
+        toast('נתוני המלאי חולקו לפי תחומים');
+      } else {
+        markVaultClean();
+      }
+    } else {
+      S.inv = emptyInv();
+      S.invVer = {};
+      markVaultClean();
+    }
     // Publishing on save alone left the soldiers' list empty until somebody
     // happened to save — including right after this feature shipped, when
     // nothing had been saved yet. Opening the console now republishes it, so
@@ -6198,7 +6284,8 @@ async function loadInv() {
     if (S.role !== 'viewer') await publishCards();
   } catch {
     S.inv = emptyInv();
-    S.invVersion = 0;
+    S.invVer = {};
+    markVaultClean();
     toast('לא ניתן לפענח את נתוני המלאי', true);
   }
 }
@@ -6238,33 +6325,83 @@ async function publishCards() {
   await api('/admin/cards', { method: 'PUT', body: { cards, vehicles } }).catch(() => {});
 }
 
+// Hebrew names for the parts, for the one message that has to name one.
+const PART_HE = {
+  stock: 'המלאי', countedAt: 'מועדי הספירה', armon: 'הארמון', armonLog: 'יומן הארמון',
+  comms: 'מחסן הקשר', commsLog: 'יומן הקשר', ammo: 'התחמושת', ammoLog: 'יומן התחמושת',
+  vehicles: 'הרכבים', fuel: 'כרטיסי התדלוק',
+};
+
+/* Saves the domains that actually changed.
+
+   Each part carries its own version, so a save is refused only when someone
+   else touched that same domain — editing vehicles while a second admin
+   counts rifles no longer costs either of them their work. When a part is
+   refused the rest are still saved: the domains are independent of one
+   another, so a partial save leaves each of them whole, which the single
+   blob could never promise.
+
+   The old blob is written afterwards as a shadow copy, so a browser still
+   running yesterday's code — or a rollback — finds current data rather than
+   a snapshot from before the split. It is best-effort and never blocks the
+   save; once every client is on this code it can go. */
 async function saveInv() {
   S.inv.updatedAt = Date.now();
-  const sealed = await seal(S.pubKey, S.inv);
-  try {
-    const res = await api('/admin/vault', {
-      method: 'PUT',
-      body: { ...sealed, baseVersion: S.invVersion },
-    });
-    S.invVersion = res.updatedAt || S.inv.updatedAt;
-    vaultSizeWarn(sealed.ct.length);
-    await publishCards();
-  } catch (e) {
-    if (e.status === 409) {
-      throw new Error('המלאי עודכן על ידי מנהל אחר בזמן שערכתם. לחצו "רענון", בדקו מה השתנה ובצעו את השינוי שוב — לא דרסנו את העבודה שלו.');
+  const dirty = VAULT_PARTS.filter(
+    ([part, keys]) => JSON.stringify(partSlice(S.inv, keys)) !== S.invBase[part]
+  );
+  if (!dirty.length) return;
+
+  let biggest = 0;
+  const refused = [];
+  for (const [part, keys] of dirty) {
+    const sealed = await seal(S.pubKey, partSlice(S.inv, keys));
+    biggest = Math.max(biggest, sealed.ct.length);
+    try {
+      const res = await api(`/admin/vault/${part}`, {
+        method: 'PUT',
+        body: { ...sealed, baseVersion: S.invVer[part] },
+      });
+      S.invVer[part] = res.updatedAt || Date.now();
+      S.invBase[part] = JSON.stringify(partSlice(S.inv, keys));
+    } catch (e) {
+      if (e.status === 409) { refused.push(part); continue; }
+      throw e;
     }
-    throw e;
+  }
+  vaultSizeWarn(biggest);
+  await shadowVault();
+  await publishCards();
+  if (refused.length) {
+    throw new Error(
+      `${refused.map((p) => PART_HE[p] || p).join(' ו')} עודכנו על ידי מנהל אחר בזמן שערכתם — ` +
+      'השאר נשמר. לחצו "רענון", בדקו מה השתנה ובצעו את השינוי הזה שוב.'
+    );
   }
 }
 
-// The vault has a hard ceiling at the server. Silence until the save simply
-// fails is not a warning, so the headroom is reported as it shrinks.
+// The whole inventory in the old single-blob row, kept current for a client
+// that has not been reloaded since the split. No version check: it is a copy,
+// not a source, and a stale copy is the one thing it must never be. Skipped
+// rather than failed if the inventory has outgrown the old ceiling — which is
+// exactly the ceiling the split exists to remove.
+async function shadowVault() {
+  try {
+    const sealed = await seal(S.pubKey, S.inv);
+    if (sealed.ct.length > VAULT_MAX) return;
+    await api('/admin/vault', { method: 'PUT', body: { ...sealed, baseVersion: -1, force: true } });
+  } catch { /* the parts are the record; this is a courtesy copy */ }
+}
+
+// Each part has a ceiling at the server. Silence until a save simply fails is
+// not a warning, so the fullest part is reported as its headroom shrinks.
 const VAULT_MAX = 600000;
+const VAULT_PART_MAX = 400000;
 function vaultSizeWarn(len) {
   S.invBytes = len;
-  const pct = Math.round((len / VAULT_MAX) * 100);
-  if (pct >= 90) toast(`שימו לב: נפח המלאי ${pct}% מהמותר — פנו מקום בקרוב`, true);
-  else if (pct >= 80) toast(`נפח המלאי ${pct}% מהמותר`, true);
+  const pct = Math.round((len / VAULT_PART_MAX) * 100);
+  if (pct >= 90) toast(`שימו לב: החלק הגדול במלאי ${pct}% מהמותר — פנו מקום בקרוב`, true);
+  else if (pct >= 80) toast(`החלק הגדול במלאי ${pct}% מהמותר`, true);
 }
 
 /* ── Action handlers ───────────────────────────────────────────────── */

@@ -26,6 +26,17 @@ const DOC_MAX_B64 = 400000;
 // (צלם / צלם ארמון). ~600 KB of base64 leaves room for a few thousand rows.
 const VAULT_MAX_B64 = 600000;
 
+// The vault, one row per domain. The names are the client's own keys, listed
+// here so a client cannot invent rows the console will never read again.
+// Each part carries its own ceiling, so the movement logs — the only things
+// here that grow without end — can no longer crowd out the vehicles.
+const VAULT_PARTS = [
+  'stock', 'countedAt',
+  'armon', 'armonLog', 'comms', 'commsLog',
+  'ammo', 'ammoLog', 'vehicles', 'fuel',
+];
+const VAULT_PART_MAX_B64 = 400000;
+
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const B64RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -956,12 +967,58 @@ export async function onRequest(context) {
         return json({ ok: true, n });
       }
 
+      // PUT /api/admin/vault/:part — one domain of the vault.
+      //
+      // The version check is per part, which is the whole point: an admin
+      // saving vehicles is no longer refused because someone else saved
+      // ammunition a minute ago. Same envelope, same blindness — the server
+      // knows a part changed and when, never what is in it.
+      if (seg[1] === 'vault' && seg.length === 3 && method === 'PUT') {
+        const part = seg[2];
+        if (!VAULT_PARTS.includes(part)) return err(400, 'בקשה לא תקינה');
+        const b = await readBody(request);
+        if (!b) return err(400, 'בקשה לא תקינה');
+        const { ek, iv, ct } = b;
+        if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, VAULT_PART_MAX_B64)) {
+          return err(400, 'בקשה לא תקינה');
+        }
+        const cur = await db
+          .prepare('SELECT updated_at FROM vault_parts WHERE part = ?1')
+          .bind(part)
+          .first();
+        if (cur && b.baseVersion === undefined) {
+          return err(400, 'חסרה גרסת בסיס — רעננו לפני השמירה');
+        }
+        if (cur && Number(b.baseVersion) !== cur.updated_at) {
+          return json(
+            { error: 'החלק הזה עודכן בינתיים על ידי מנהל אחר — רעננו לפני השמירה', part, current: cur.updated_at },
+            409
+          );
+        }
+        await db
+          .prepare(
+            `INSERT INTO vault_parts (part, ek, iv, ct, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(part) DO UPDATE SET ek = ?2, iv = ?3, ct = ?4, updated_at = ?5`
+          )
+          .bind(part, ek, iv, ct, now)
+          .run();
+        await audit(db, now, session, 'vault', part, `${ct.length} תווים`);
+        return json({ ok: true, updatedAt: now });
+      }
+
       if (seg[1] === 'vault' && seg.length === 2) {
         if (method === 'GET') {
           const v = await db
             .prepare('SELECT ek, iv, ct, updated_at FROM vault WHERE id = 1')
             .first();
-          return json({ vault: v || null });
+          // Both, always: the parts for a client that understands them, and
+          // the old blob for one that does not — and for the first new client
+          // to sign in, which is what turns one into the other.
+          const parts = await db
+            .prepare('SELECT part, ek, iv, ct, updated_at FROM vault_parts')
+            .all()
+            .catch(() => ({ results: [] }));
+          return json({ vault: v || null, parts: (parts && parts.results) || [] });
         }
         if (method === 'PUT') {
           const b = await readBody(request);
@@ -976,6 +1033,28 @@ export async function onRequest(context) {
           // required, not optional — an omitted one was a way to skip the
           // check and clobber the vault, which is exactly what it exists to
           // prevent.
+          // Once the vault has been split, this row is a copy and not the
+          // record. A client still running the pre-split code would write its
+          // work here and nowhere else, and no one would ever read it again —
+          // so it is refused, loudly, rather than accepted and lost. The new
+          // client's own shadow write says `force` and is let through.
+          const split = await db
+            .prepare('SELECT COUNT(*) AS n FROM vault_parts')
+            .first()
+            .catch(() => ({ n: 0 }));
+          if (split && split.n > 0 && b.force !== true) {
+            return err(409, 'המערכת עודכנה — רעננו את הדף לפני השמירה כדי לא לאבד את השינוי');
+          }
+          if (b.force === true) {
+            await db
+              .prepare(
+                `INSERT INTO vault (id, ek, iv, ct, updated_at) VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET ek = ?1, iv = ?2, ct = ?3, updated_at = ?4`
+              )
+              .bind(ek, iv, ct, now)
+              .run();
+            return json({ ok: true, updatedAt: now });
+          }
           const cur = await db.prepare('SELECT updated_at FROM vault WHERE id = 1').first();
           if (cur && b.baseVersion === undefined) {
             return err(400, 'חסרה גרסת בסיס — רעננו לפני השמירה');

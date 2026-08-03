@@ -186,3 +186,36 @@ test('a guarded action never calls another guarded action', () => {
   }
   assert.deepEqual(offenders, []);
 });
+
+test('every part of the vault has a home, on both sides', () => {
+  // The vault is stored one row per domain, and which keys go in which row is
+  // declared once in the client. A key added to the inventory without being
+  // added to that map is a key that is silently never saved: it would be
+  // edited on screen, survive until the next reload, and then be gone.
+  const invKeys = [...app.match(/const emptyInv = \(\) => \(\{[\s\S]*?\n\}\);/)[0]
+    .matchAll(/(\w+):/g)].map(([, k]) => k);
+  const parts = new Function(
+    `return ${app.match(/const VAULT_PARTS = \[[\s\S]*?\n\];/)[0]
+      .replace('const VAULT_PARTS = ', '').replace(/;$/, '')}`
+  )();
+  const housed = new Set(parts.flatMap(([, keys]) => keys));
+
+  for (const key of invKeys) {
+    assert.ok(housed.has(key), `${key} is in the vault but belongs to no part — it would never be saved`);
+  }
+  for (const key of housed) {
+    assert.ok(invKeys.includes(key), `part map claims ${key}, which the vault does not have`);
+  }
+
+  // And the Worker only accepts the parts the client actually writes: an
+  // unknown name would be stored and never read back.
+  const serverParts = new Function(
+    `return ${api.match(/const VAULT_PARTS = \[[\s\S]*?\n\];/)[0]
+      .replace('const VAULT_PARTS = ', '').replace(/;$/, '')}`
+  )();
+  assert.deepEqual(
+    parts.map(([p]) => p).sort(),
+    [...serverParts].sort(),
+    'the client and the Worker disagree about which parts exist'
+  );
+});
