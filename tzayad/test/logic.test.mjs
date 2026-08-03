@@ -80,10 +80,24 @@ test('every mutating admin route is behind the viewer guard', () => {
 });
 
 test('soldier submissions all spend a ticket', () => {
-  // Four public write paths; each must present a ticket or the endpoint is
-  // open to scripted injection.
-  assert.equal((app.match(/ticket: await getTicket\(\)/g) || []).length, 4);
+  // Every write reachable without signing in must present a ticket, or the
+  // endpoint is open to scripted injection. Counting the calls against each
+  // other rather than against a fixed number means adding a public form
+  // cannot quietly skip it — which is exactly what adding the refuelling
+  // report would otherwise have done.
+  const publicWrites = (app.match(/await api\('\/(reports|records)'/g) || []).length;
+  const tickets = (app.match(/ticket: await getTicket\(\)/g) || []).length;
+  assert.ok(publicWrites >= 4, `the public forms should still be there, found ${publicWrites}`);
+  assert.equal(tickets, publicWrites, 'a public write path is not spending a ticket');
   assert.ok(api.includes('spendTicket(db, b.ticket, now)'));
+
+  // /docs is the exception and is bounded differently: it creates no row of
+  // its own, so it can only attach to a record that already exists and is
+  // still pending — and that record cost a ticket. Both guards must stay.
+  const docs = api.slice(api.indexOf("seg[0] === 'docs'"));
+  assert.ok(docs.includes('doc:${ip}'), 'the photo endpoint lost its rate limit');
+  assert.ok(docs.includes('אין רשומה לצרף אליה צילום'), 'the photo endpoint no longer requires a record');
+  assert.ok(docs.includes("owner.status === 'approved'"), 'the photo endpoint accepts writes after approval');
 });
 
 test('a register never accepts another register\'s kinds or places', () => {

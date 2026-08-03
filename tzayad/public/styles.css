@@ -50,9 +50,16 @@
   --warn-tint:  #F7EFD8;
   --bad-tint:   #F6E4DE;
 
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* No webfont may be loaded here — the policy forbids third-party requests —
+     so the stack has to name what each platform actually ships. `system-ui`
+     is what Android resolves (Roboto, then Noto Sans Hebrew for the Hebrew
+     range); the Apple and Windows names come first for the desks that have
+     them, and the explicit Hebrew faces are the backstop on a device whose
+     default sans has no Hebrew coverage. */
+  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Noto Sans Hebrew", "Arial Hebrew", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+          "Roboto Mono", "Noto Sans Mono", "Droid Sans Mono", monospace;
 
   --r-xs: 4px;
   --r-sm: 6px;
@@ -326,6 +333,15 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .bulkbar.on { border-color: var(--pine); background: var(--pine-tint); }
 .bulk-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .bulk-n { font-weight: 700; }
+
+/* the row asking whether it should really go */
+.delask {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+}
+.delask-q { font-size: 12.5px; font-weight: 700; color: var(--bad-ink); }
 
 .rowdetail { padding: 2px 0; }
 .rowdetail ul { margin: 8px 0; }
@@ -1124,6 +1140,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .choice-ico.alt { background: var(--brass-tint); color: #6A5416; }
 .choice-ico.arm { background: var(--bad-tint); color: var(--bad-ink); }
 .choice-ico.bld { background: var(--warn-tint); color: var(--warn-ink); }
+.choice-ico.fuel { background: var(--pine-tint); color: var(--pine); }
 .choice-ico svg { width: 26px; height: 26px; }
 .choice-txt { flex: 1; min-width: 0; }
 .choice-t { display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
@@ -1486,7 +1503,11 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
     color: #000;
     font-size: 11pt;
   }
+  /* Android's print dialog ignores `size` and prints whatever the user picks,
+     so the sheet has to be readable in portrait as well as landscape: the
+     table is told to fit the page rather than to keep its natural widths. */
   @page { size: A4 landscape; margin: 12mm; }
+  .printdoc, .printdoc * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   .pd-head {
     display: flex;
@@ -1502,6 +1523,10 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   .pd-date { font-size: 10pt; margin: 2px 0 0; }
 
   .pd-tbl { width: 100%; border-collapse: collapse; table-layout: auto; }
+  /* Headings wrap on paper. On screen they are kept on one line so a column
+     bids for its width, but a sheet has a fixed width and nothing to bid for
+     — an unwrappable heading there just pushes the table off the page. */
+  .pd-tbl thead th { white-space: normal; }
   .pd-tbl th, .pd-tbl td {
     border: 1px solid #666;
     padding: 4px 6px;
@@ -1509,6 +1534,12 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
     font-size: 9pt;
     word-break: break-word;
   }
+  /* The ledger and the full summary carry seventeen and twenty-two columns.
+     They are meant for landscape, but Android prints whatever the user picks
+     — so past a dozen columns the type steps down far enough to fit a
+     portrait sheet too, rather than run off the edge of it. */
+  .pd-wide th, .pd-wide td { font-size: 6.5pt; padding: 2px 3px; }
+  .pd-wide .pd-n { width: 20px; }
   .pd-tbl thead th { background: #e8e8e8; font-weight: 700; }
   .pd-tbl thead { display: table-header-group; }   /* repeat header per page */
   .pd-tbl tr { break-inside: avoid; }

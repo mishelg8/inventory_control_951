@@ -608,6 +608,37 @@ export async function onRequest(context) {
       }
 
       // GET /api/admin/reports — every shortage report
+      // GET /api/admin/pulse — "has anything arrived?" in one cheap query.
+      // The console asks every few seconds so a soldier's submission shows up
+      // on its own; sending counts and the newest timestamp rather than the
+      // rows themselves keeps that to two aggregates and no ciphertext, and
+      // means the client only re-fetches when the answer actually changed.
+      if (seg[1] === 'pulse' && seg.length === 2 && method === 'GET') {
+        // A count is small but it is still information, so the pulse answers
+        // only for the sources this session is allowed to read at all.
+        const scopes = isRestricted(session.role)
+          ? scopesFor(session.tabs)
+          : new Set(['records', 'vault', 'reports']);
+        const out = {};
+        if (scopes.has('records')) {
+          const r = await db
+            .prepare('SELECT COUNT(*) AS n, IFNULL(MAX(updated_at), 0) AS t FROM records WHERE deleted_at IS NULL')
+            .first();
+          out.rn = r.n; out.rt = r.t;
+        }
+        if (scopes.has('reports')) {
+          const p = await db
+            .prepare('SELECT COUNT(*) AS n, IFNULL(MAX(updated_at), 0) AS t FROM reports WHERE deleted_at IS NULL')
+            .first();
+          out.pn = p.n; out.pt = p.t;
+        }
+        if (scopes.has('vault')) {
+          const v = await db.prepare('SELECT IFNULL(updated_at, 0) AS t FROM vault WHERE id = 1').first();
+          out.vt = v ? v.t : 0;
+        }
+        return json(out);
+      }
+
       if (seg[1] === 'reports' && seg.length === 2 && method === 'GET') {
         const { results } = await db
           .prepare(
@@ -624,7 +655,27 @@ export async function onRequest(context) {
 
         if (method === 'PUT') {
           const b = await readBody(request);
-          if (!b || !['open', 'partial', 'done'].includes(b.status)) {
+          if (!b) return err(400, 'בקשה לא תקינה');
+
+          // Correcting the body: the admin re-sealed it in the browser, so
+          // what arrives is a new envelope and the server still sees nothing.
+          // The status is left alone — a correction is not a state change.
+          if (b.ek !== undefined || b.iv !== undefined || b.ct !== undefined) {
+            const { ek, iv, ct } = b;
+            if (!isB64(ek, 1000) || !isB64(iv, 64) || !isB64(ct, 12000)) {
+              return err(400, 'בקשה לא תקינה');
+            }
+            const r = await db
+              .prepare('UPDATE reports SET ek = ?1, iv = ?2, ct = ?3, updated_at = ?4 ' +
+                       'WHERE id = ?5 AND deleted_at IS NULL')
+              .bind(ek, iv, ct, now, id)
+              .run();
+            if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+            await audit(db, now, session, 'edit-report', id, null);
+            return json({ ok: true });
+          }
+
+          if (!['open', 'partial', 'done'].includes(b.status)) {
             return err(400, 'בקשה לא תקינה');
           }
           const r = await db
