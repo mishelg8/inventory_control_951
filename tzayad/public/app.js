@@ -7662,4 +7662,59 @@ async function boot() {
   renderRoute();
 }
 
+/* ── Noticing that this tab is running yesterday's code ────────────────
+   Every page here is one document that swaps its own contents, and the
+   menu links are hashes — so a tab opened this morning never fetches
+   anything again and keeps running the code it booted with. After a
+   deploy that means looking at a bug that was fixed hours ago, which is
+   a miserable way to use a tool and an even worse way to report one.
+
+   So the tab watches its own script. `app.js` carries an ETag; if the
+   one on the server stops matching the one this tab booted with, there
+   is a newer version and it says so. It never reloads on its own — a
+   soldier half-way through a form would lose it — it offers. */
+
+const VERSION_CHECK_MS = 5 * 60 * 1000;
+let bootTag = null;
+
+async function scriptTag() {
+  try {
+    const r = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+    return r.headers.get('etag') || r.headers.get('last-modified');
+  } catch {
+    return null;   // offline: nothing to say
+  }
+}
+
+function offerReload() {
+  if (document.getElementById('newver')) return;
+  const bar = document.createElement('div');
+  bar.id = 'newver';
+  bar.className = 'newver';
+  bar.innerHTML = `
+    <span>גרסה חדשה של המערכת זמינה.</span>
+    <button class="btn primary small" data-act="reload-now">רענון</button>
+    <button class="linkbtn" data-act="reload-later">לא עכשיו</button>`;
+  bar.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.act === 'reload-now') location.reload();
+    else bar.remove();
+  });
+  document.body.appendChild(bar);
+}
+
+async function versionWatch() {
+  bootTag = await scriptTag();
+  if (!bootTag) return;
+  const look = async () => {
+    if (document.hidden) return;
+    const now = await scriptTag();
+    if (now && now !== bootTag) offerReload();
+  };
+  setInterval(look, VERSION_CHECK_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) look(); });
+}
+
 boot();
+versionWatch();
