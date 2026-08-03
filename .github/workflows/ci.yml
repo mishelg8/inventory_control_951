@@ -14,21 +14,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 22 or newer, and not by accident: `node --test` only expands a
+          # glob pattern from 22 onwards. Pinned to 20, this workflow ran on
+          # every push for a week and failed every single time with
+          # "Could not find .../test/*.test.mjs" — the syntax check passed, the
+          # suite never ran once, and nothing after it ran either.
+          node-version: '24'
 
       # No build step and no runtime dependencies by design, so the checks are
-      # syntax, the unit suite, and the invariants that have actually broken
-      # before: CSP compliance and the schema/migration pairing.
+      # syntax plus the very same `npm test` a developer runs at the desk: the
+      # unit suite, the CSP rule that has broken before, and the
+      # schema/migration pairing. One command, so CI cannot quietly drift from
+      # what was verified locally.
       - name: Syntax
         run: |
-          node --check tzayad/public/app.js
-          node --check "tzayad/functions/api/[[path]].js"
+          node --check public/app.js
+          node --check "functions/api/[[path]].js"
 
-      - name: Unit tests
-        run: node --test "tzayad/test/*.test.mjs"
-
-      - name: No inline styles or scripts (strict CSP)
-        run: node tzayad/test/csp-check.mjs
-
-      - name: Every migration is registered
-        run: node tzayad/test/migrations-check.mjs
+      - name: Tests, CSP and migrations
+        run: npm test

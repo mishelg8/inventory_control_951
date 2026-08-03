@@ -11,7 +11,8 @@
     "test": "node --test \"test/*.test.mjs\" && node test/csp-check.mjs && node test/migrations-check.mjs",
     "db:migrate:local": "for f in migrations/*.sql; do npx wrangler d1 execute tzayad --local --file=\"$f\" || true; done",
     "db:migrate:remote": "for f in migrations/*.sql; do npx wrangler d1 execute tzayad --remote --file=\"$f\" || true; done",
-    "db:backup": "npx wrangler d1 export tzayad --remote --output \"backup-$(date +%Y-%m-%d).sql\""
+    "db:backup": "./scripts/backup-db.sh",
+    "backup:install": "./scripts/install-backup.sh"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
