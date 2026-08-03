@@ -157,6 +157,7 @@ const TAB_NEEDS = {
   faults: ['reports'],
   inv: ['records', 'vault'],
   armon: ['vault', 'reports'],
+  comms: ['vault'],
   tzelem: ['vault'],
   ammo: ['vault'],
   veh: ['vault'],

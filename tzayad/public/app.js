@@ -239,7 +239,12 @@ function cleanReport(raw) {
   };
 }
 
-/* ── Armoury domain ────────────────────────────────────────────────── */
+/* ── Serialised registers: the armoury and the signals store ───────────
+   Both are the same thing — a list of numbered items, each of which is
+   either on the shelf or accounted for somewhere else, with a log of every
+   movement. They differ in what they hold and where an item can be, so
+   that is all a register declares; the screen, the reports and the
+   handlers are one implementation driven by the declaration. */
 
 // Each kind carries the locations it is allowed to be in. Only צל״ם can go out
 // on a mission, and when it does the mission has to be named — an item that is
@@ -263,11 +268,37 @@ const ARM_LOCS = [
   { id: 'lost', name: 'אבוד' },
   { id: 'decom', name: 'מושבת' },
 ];
+
+// Signals kit. Unlike a weapon, a radio is as often fitted in a vehicle as
+// held by a soldier, and a battery or an antenna is worth counting on its own
+// — a company with six radios and two working batteries has two radios.
+const COMMS_PLACES = ['store', 'soldier', 'vehicle', 'mission', ...LIFECYCLE];
+const COMMS_KINDS = [
+  { id: 'radio', name: 'מכשיר קשר', locs: COMMS_PLACES },
+  { id: 'antenna', name: 'אנטנה', locs: COMMS_PLACES },
+  { id: 'battery', name: 'סוללה', locs: COMMS_PLACES },
+  { id: 'charger', name: 'מטען', locs: COMMS_PLACES },
+  { id: 'headset', name: 'דיבורית / אוזניות', locs: COMMS_PLACES },
+  { id: 'cable', name: 'כבל / מתאם', locs: COMMS_PLACES },
+  { id: 'commsAcc', name: 'אביזר נוסף', locs: COMMS_PLACES },
+];
+const COMMS_LOCS = [
+  { id: 'store', name: 'מחסן קשר' },
+  { id: 'soldier', name: 'אצל חייל' },
+  { id: 'vehicle', name: 'ברכב' },
+  { id: 'mission', name: 'במשימה' },
+  { id: 'repair', name: 'בתיקון' },
+  { id: 'lost', name: 'אבוד' },
+  { id: 'decom', name: 'מושבת' },
+];
+
 // States that mean the item is not usable, as opposed to merely elsewhere.
 const ARM_BAD_LOCS = new Set(['lost', 'decom']);
-const kindLocs = (kind) => {
-  const k = ARM_KINDS.find((x) => x.id === kind);
-  return ARM_LOCS.filter((l) => (k ? k.locs : ['armon', 'soldier']).includes(l.id));
+// Locations that are meaningless without a name: "on an operation" or "in a
+// vehicle" is not an answer to where something is until you say which.
+const NAMED_LOCS = {
+  mission: { label: 'שם המשימה', of: 'משימה' },
+  vehicle: { label: 'מספר הרכב', of: 'רכב' },
 };
 // where an item goes when it leaves the armoury for good
 // 'used' is consumption: a gas or stun grenade that was thrown went nowhere
@@ -286,11 +317,42 @@ const ARM_DESTS = [
 ];
 const nameOf = (list, id) => (list.find((x) => x.id === id) || {}).name || '—';
 
-const cleanArmItem = (x) => {
-  const kind = ARM_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'weapon';
+// The two registers. `home` is the location that means "on our shelf"; it is
+// what the stock count counts and what an item returns to. `unique` names the
+// one kind whose serial may not repeat — weapons are serialised individually,
+// while a battery or a scope is logged by מק״ט, a catalogue number every unit
+// of that model shares, so duplicates there are correct.
+const REGISTERS = {
+  armon: {
+    id: 'armon', tab: 'armon', key: 'armon', logKey: 'armonLog',
+    kinds: ARM_KINDS, locs: ARM_LOCS, home: 'armon', unique: 'weapon',
+    deposits: true,
+    title: 'ארמון', place: 'הארמון', placeTo: 'לארמון', placeIn: 'בארמון',
+    addTitle: 'הוספת פריט לארמון',
+    namePh: 'לדוגמה: M4 / משקפת לילה', serialPh: 'M4-10021',
+    stockNote: 'רק מה שנמצא פיזית בארמון עכשיו. ברגע שמסמנים פריט "אצל חייל" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".',
+  },
+  comms: {
+    id: 'comms', tab: 'comms', key: 'comms', logKey: 'commsLog',
+    kinds: COMMS_KINDS, locs: COMMS_LOCS, home: 'store', unique: 'radio',
+    deposits: false,
+    title: 'מחסן קשר', place: 'המחסן', placeTo: 'למחסן', placeIn: 'במחסן',
+    addTitle: 'הוספת פריט קשר',
+    namePh: 'לדוגמה: מדף / אנטנה קצרה', serialPh: 'PRC-77012',
+    stockNote: 'רק מה שנמצא פיזית במחסן הקשר עכשיו. ברגע שמסמנים פריט "אצל חייל", "ברכב" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת — ואז חובה לרשום ברכב או במשימה איזו. שינוי מיקום נשמר עם "שמירת השינויים".',
+  },
+};
+
+const kindLocs = (reg, kind) => {
+  const k = reg.kinds.find((x) => x.id === kind);
+  return reg.locs.filter((l) => (k ? k.locs : [reg.home, 'soldier']).includes(l.id));
+};
+
+const cleanRegItem = (reg) => (x) => {
+  const kind = reg.kinds.some((k) => k.id === (x && x.kind)) ? x.kind : reg.kinds[0].id;
   // A location the kind is not allowed in falls back to 'soldier', never to
-  // 'armon' — an item that was out must not read as present in the cupboard.
-  const allowed = kindLocs(kind).map((l) => l.id);
+  // home — an item that was out must not read as present in the cupboard.
+  const allowed = kindLocs(reg, kind).map((l) => l.id);
   const raw = x && x.loc;
   return {
     id: asText(x && x.id, 40) || rndId(),
@@ -298,7 +360,7 @@ const cleanArmItem = (x) => {
     name: asText(x && x.name, 60),
     serial: asText(x && x.serial, 40),
     owner: asText(x && x.owner, 60),
-    loc: allowed.includes(raw) ? raw : (raw && raw !== 'armon' ? 'soldier' : 'armon'),
+    loc: allowed.includes(raw) ? raw : (raw && raw !== reg.home ? 'soldier' : reg.home),
     mission: asText(x && x.mission, 60),
     note: asText(x && x.note, 120),
     addedAt: asTime(x && x.addedAt),
@@ -409,8 +471,10 @@ function cleanInv(raw) {
     open,
     extra,
     notes: asText(src.notes, 4000),
-    armon: arr(src.armon, cleanArmItem, 4000),
+    armon: arr(src.armon, cleanRegItem(REGISTERS.armon), 4000),
     armonLog: arr(src.armonLog, cleanArmLog, 5000),
+    comms: arr(src.comms, cleanRegItem(REGISTERS.comms), 4000),
+    commsLog: arr(src.commsLog, cleanArmLog, 5000),
     ammo: arr(src.ammo, cleanAmmo, 1000),
     ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
     vehicles: arr(src.vehicles, cleanVehicle, 500),
@@ -575,7 +639,7 @@ const S = {
   repQ: '',                     // search over request name + body
   invQ: '',                     // search over the extra-inventory rows
   regQ: {},                     // section key -> search query
-  armKind: 'all',               // armoury type filter
+  regKind: {},                  // register id -> item-type filter ('all' or a kind)
   tab: 'over',
   filter: 'out',
   q: '',                        // free-text search over name / pn / phone
@@ -1691,6 +1755,7 @@ const TABS = [
   { id: 'faults',  name: 'תקלות בינוי',  needs: ['reports'] },
   { id: 'inv',     name: 'מלאי',         needs: ['records', 'vault'] },
   { id: 'armon',   name: 'ארמון',        needs: ['vault', 'reports'] },
+  { id: 'comms',   name: 'דוח קשר',      needs: ['vault'] },
   { id: 'tzelem',  name: 'דו״ח צלם',     needs: ['vault'] },
   { id: 'ammo',    name: 'תחמושת ואלפא', needs: ['vault'] },
   { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
@@ -1741,6 +1806,7 @@ function renderConsole() {
     ['inv',     'מלאי',         null],
     // a deposit waiting for approval outranks the item count — it needs action
     ['armon',   'ארמון',        openDeposits() || armonCount() || null, openDeposits() > 0],
+    ['comms',   'דוח קשר',      commsAlerts() || commsCount() || null, commsAlerts() > 0],
     ['tzelem',  'דו״ח צלם',     null],
     ['ammo',    'תחמושת ואלפא', null],
     ['veh',     'רכבים',        vehAlerts() || null, true],
@@ -1767,6 +1833,7 @@ function renderConsole() {
   else if (S.tab === 'faults') body = renderFaultsTab();
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'armon') body = renderArmonTab();
+  else if (S.tab === 'comms') body = renderCommsTab();
   else if (S.tab === 'tzelem') body = renderTzelemTab();
   else if (S.tab === 'ammo') body = renderAmmoTab();
   else if (S.tab === 'veh') body = renderVehTab();
@@ -1928,12 +1995,15 @@ function groupByDept(recs) {
 }
 
 // Standalone search box for lists that aren't the soldier roster.
-function plainSearch(act, clearAct, value, placeholder, total, shown) {
+// `data` carries whatever the handler needs to know which list it is searching
+// — two registers share one search action and are told apart by it.
+function plainSearch(act, clearAct, value, placeholder, total, shown, data = {}) {
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
   return `
     <div class="search">
-      <input class="input search-in" type="search" data-act="${act}" value="${esc(value)}"
+      <input class="input search-in" type="search" data-act="${act}"${attrs} value="${esc(value)}"
              placeholder="${esc(placeholder)}" autocomplete="off" enterkeyhint="search">
-      ${value ? `<button class="linkbtn search-clear" data-act="${clearAct}">ניקוי</button>` : ''}
+      ${value ? `<button class="linkbtn search-clear" data-act="${clearAct}"${attrs}>ניקוי</button>` : ''}
     </div>
     ${shown !== total
       ? `<p class="result-count"><span class="num">${shown}</span> מתוך <span class="num">${total}</span></p>`
@@ -2660,6 +2730,37 @@ function weaponsPanel(approved) {
    the CSV and the printable PDF are generated from that description. Adding a
    column to a report can no longer leave its PDF behind. */
 
+// A register's stock report and its movement log, built from the register's
+// own kinds and locations — so the armoury and the signals store each get a
+// correct one without either being written twice.
+const regReport = (reg, name, file) => ({
+  name, file,
+  build() {
+    const all = (S.inv && S.inv[reg.key]) || [];
+    return {
+      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה / רכב', 'תאריך הוספה'],
+      rows: all.map((x) => [
+        nameOf(reg.kinds, x.kind), x.name, x.serial, x.owner, nameOf(reg.locs, x.loc),
+        NAMED_LOCS[x.loc] ? (x.mission || '(ללא שם)') : '',
+        x.addedAt ? fmtDate(x.addedAt) : '',
+      ]),
+      summary: `${all.filter((x) => x.loc === reg.home).length} נמצאים ${reg.placeIn} · ` +
+        `${all.filter((x) => x.loc !== reg.home).length} בחוץ · ${all.length} רשומים`,
+    };
+  },
+});
+
+const regLogReport = (reg, name, file) => ({
+  name, file,
+  build: () => ({
+    head: ['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'יעד', 'הערה'],
+    rows: ((S.inv && S.inv[reg.logKey]) || []).map((e) => [
+      fmtDate(e.t), e.action === 'add' ? 'הוספה' : 'הסרה', nameOf(reg.kinds, e.kind),
+      e.name, e.serial, e.owner, e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note,
+    ]),
+  }),
+});
+
 const REPORTS = {
   stock: {
     name: 'מלאי ציוד', file: 'tzayad-stock',
@@ -2817,33 +2918,10 @@ const REPORTS = {
     },
   },
 
-  armon: {
-    name: 'פריטים בארמון', file: 'tzayad-armon',
-    build() {
-      const all = (S.inv && S.inv.armon) || [];
-      return {
-        head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה', 'תאריך הוספה'],
-        rows: all.map((x) => [
-          nameOf(ARM_KINDS, x.kind), x.name, x.serial, x.owner, nameOf(ARM_LOCS, x.loc),
-          x.loc === 'mission' ? (x.mission || '(ללא שם)') : '',
-          x.addedAt ? fmtDate(x.addedAt) : '',
-        ]),
-        summary: `${all.filter((x) => x.loc === 'armon').length} נמצאים בארמון · ` +
-          `${all.filter((x) => x.loc !== 'armon').length} בחוץ · ${all.length} רשומים`,
-      };
-    },
-  },
-
-  armonLog: {
-    name: 'יומן פעולות ארמון', file: 'tzayad-armon-log',
-    build: () => ({
-      head: ['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'יעד', 'הערה'],
-      rows: ((S.inv && S.inv.armonLog) || []).map((e) => [
-        fmtDate(e.t), e.action === 'add' ? 'הוספה' : 'הסרה', nameOf(ARM_KINDS, e.kind),
-        e.name, e.serial, e.owner, e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note,
-      ]),
-    }),
-  },
+  armon: regReport(REGISTERS.armon, 'פריטים בארמון', 'tzayad-armon'),
+  armonLog: regLogReport(REGISTERS.armon, 'יומן פעולות ארמון', 'tzayad-armon-log'),
+  comms: regReport(REGISTERS.comms, 'ציוד קשר', 'tzayad-comms'),
+  commsLog: regLogReport(REGISTERS.comms, 'יומן פעולות קשר', 'tzayad-comms-log'),
 
   tzelem: {
     name: 'דו״ח צלם', file: 'tzayad-tzelem',
@@ -3115,7 +3193,8 @@ function ledgerPanel(approved) {
 
 const emptyInv = () => ({
   open: {}, extra: [], notes: '',
-  armon: [], armonLog: [], ammo: [], ammoLog: [], vehicles: [], fuel: [], countedAt: {},
+  armon: [], armonLog: [], comms: [], commsLog: [],
+  ammo: [], ammoLog: [], vehicles: [], fuel: [], countedAt: {},
 });
 
 // The two counting registers are the same thing with different names, so they
@@ -3308,6 +3387,7 @@ function renderOverviewTab() {
   // from here and only get looked at when something has already gone wrong.
   const armon = inv.armon || [];
   const armOut = armon.filter((x) => x.kind === 'weapon' && x.loc !== 'armon');
+  const comms = inv.comms || [];
   const ammo = inv.ammo || [];
   const ammoEmpty = ammo.filter((x) => x.qty <= 0);
   const vehicles = inv.vehicles || [];
@@ -3320,6 +3400,8 @@ function renderOverviewTab() {
   const logistics = [
     kpi(armon.filter((x) => x.loc === 'armon').length, 'פריטים בארמון', null,
         `${armon.length} רשומים · ${armon.length - armon.filter((x) => x.loc === 'armon').length} בחוץ`),
+    kpi(comms.filter((x) => x.loc === 'store').length, 'פריטי קשר במחסן', commsAlerts() ? 'warn' : null,
+        `${comms.length} רשומים · ${comms.length - comms.filter((x) => x.loc === 'store').length} בחוץ`),
     kpi(ammo.reduce((s, x) => s + x.qty, 0), 'יחידות תחמושת', ammoEmpty.length ? 'warn' : null,
         ammoEmpty.length ? `${ammoEmpty.length} פריטים אזלו` : `${ammo.length} סוגים`),
     kpi(vehicles.length, 'רכבים', vehLate.length ? 'bad' : vehKitShort.length ? 'warn' : 'ok',
@@ -3361,6 +3443,15 @@ function renderOverviewTab() {
     armon.filter((x) => x.loc === 'repair').length && {
       n: armon.filter((x) => x.loc === 'repair').length, tone: 'warn', tab: 'armon',
       t: 'פריטים בתיקון', s: 'ממתינים לחזרה מהמעבדה' },
+    comms.filter((x) => ARM_BAD_LOCS.has(x.loc)).length && {
+      n: comms.filter((x) => ARM_BAD_LOCS.has(x.loc)).length, tone: 'bad', tab: 'comms',
+      t: 'ציוד קשר אבוד או מושבת', s: 'דורש דיווח או החלפה' },
+    comms.filter((x) => x.loc === 'repair').length && {
+      n: comms.filter((x) => x.loc === 'repair').length, tone: 'warn', tab: 'comms',
+      t: 'ציוד קשר בתיקון', s: 'ממתין לחזרה מהמעבדה' },
+    comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length && {
+      n: comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length, tone: 'warn', tab: 'comms',
+      t: 'ציוד קשר בלי ציון מקום', s: 'מסומן ברכב או במשימה בלי לרשום איזה' },
     c.damaged && { n: c.damaged, tone: 'bad', tab: 'sec',
       t: 'רשומות פגומות', s: 'הפענוח נכשל — חשד לשיבוש נתונים' },
   ].filter(Boolean);
@@ -3394,11 +3485,15 @@ function renderOverviewTab() {
       <td class="num warn">${x.out}</td>
     </tr>`).join('');
 
-  // Latest movements across both registers, merged into one timeline.
+  // Latest movements across every register, merged into one timeline.
   const feed = [
     ...(inv.armonLog || []).slice(0, 12).map((e) => ({
       t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
       txt: `${e.action === 'add' ? 'נכנס לארמון' : 'יצא מהארמון'}: ${e.name} (${e.serial})${e.owner ? ` — ${e.owner}` : ''}${e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : ''}`,
+    })),
+    ...(inv.commsLog || []).slice(0, 12).map((e) => ({
+      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
+      txt: `${e.action === 'add' ? 'נכנס למחסן קשר' : 'יצא ממחסן קשר'}: ${e.name} (${e.serial})${e.owner ? ` — ${e.owner}` : ''}${e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : ''}`,
     })),
     ...(inv.ammoLog || []).slice(0, 12).map((e) => ({
       t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
@@ -3700,13 +3795,14 @@ const depApprove = (id) =>
 // `where` splits the register into what is physically on the shelf and what has
 // gone out. The true index is carried through so edits still target the right
 // entry after filtering.
-function armonVisible(where) {
-  const rows = (S.inv && S.inv.armon) || [];
-  const q = (S.regQ.armon || '').trim().toLowerCase();
+function regVisible(reg, where) {
+  const rows = (S.inv && S.inv[reg.key]) || [];
+  const q = (S.regQ[reg.key] || '').trim().toLowerCase();
+  const kind = S.regKind[reg.id] || 'all';
   return rows
     .map((x, i) => ({ x, i }))
-    .filter(({ x }) => (where === 'here' ? x.loc === 'armon' : x.loc !== 'armon'))
-    .filter(({ x }) => S.armKind === 'all' || x.kind === S.armKind)
+    .filter(({ x }) => (where === 'here' ? x.loc === reg.home : x.loc !== reg.home))
+    .filter(({ x }) => kind === 'all' || x.kind === kind)
     .filter(({ x }) =>
       !q ||
       (x.name || '').toLowerCase().includes(q) ||
@@ -3715,41 +3811,49 @@ function armonVisible(where) {
     );
 }
 
-function renderArmonTab() {
-  const all = (S.inv && S.inv.armon) || [];
-  const log = (S.inv && S.inv.armonLog) || [];
-  const vis = armonVisible('here');
-  const p = paged('armon', vis);
-  const visOut = armonVisible('out');
-  const pOut = paged('armonOut', visOut);
-  const here = all.filter((x) => x.loc === 'armon');
-  const out = all.filter((x) => x.loc !== 'armon');
-  const byKind = ARM_KINDS.map((k) => ({
+const renderArmonTab = () => renderRegisterTab(REGISTERS.armon);
+const renderCommsTab = () => renderRegisterTab(REGISTERS.comms);
+
+function renderRegisterTab(reg) {
+  const all = (S.inv && S.inv[reg.key]) || [];
+  const log = (S.inv && S.inv[reg.logKey]) || [];
+  const vis = regVisible(reg, 'here');
+  const p = paged(reg.key, vis);
+  const visOut = regVisible(reg, 'out');
+  const pOut = paged(`${reg.key}Out`, visOut);
+  const here = all.filter((x) => x.loc === reg.home);
+  const out = all.filter((x) => x.loc !== reg.home);
+  const byKind = reg.kinds.map((k) => ({
     ...k,
     here: here.filter((x) => x.kind === k.id).length,
     out: out.filter((x) => x.kind === k.id).length,
   }));
-  const noMission = all.filter((x) => x.loc === 'mission' && !x.mission).length;
+  // A location that means nothing without a name, left unnamed.
+  const unnamed = all.filter((x) => NAMED_LOCS[x.loc] && !x.mission);
   const unusable = all.filter((x) => ARM_BAD_LOCS.has(x.loc));
+  const kindSel = S.regKind[reg.id] || 'all';
 
-  const kindChips = [['all', 'הכל'], ...ARM_KINDS.map((k) => [k.id, k.name])]
+  const kindChips = [['all', 'הכל'], ...reg.kinds.map((k) => [k.id, k.name])]
     .map(([id, label]) =>
-      `<button class="filter" aria-pressed="${S.armKind === id}" data-act="arm-kind" data-k="${id}">${esc(label)}</button>`)
+      `<button class="filter" aria-pressed="${kindSel === id}" data-act="arm-kind" data-reg="${reg.id}" data-k="${id}">${esc(label)}</button>`)
     .join('');
 
-  const armRow = ({ x, i }) => `
+  const armRow = ({ x, i }) => {
+    const named = NAMED_LOCS[x.loc];
+    return `
     <tr>
-      <td>${esc(nameOf(ARM_KINDS, x.kind))}</td>
+      <td>${esc(nameOf(reg.kinds, x.kind))}</td>
       <td>${esc(x.name)}</td>
       <td class="num wpn">${esc(x.serial)}</td>
       <td>${esc(x.owner)}</td>
       <td>
-        <select class="input mini select-mini" data-act="arm-loc" data-i="${i}" aria-label="מיקום">
-          ${kindLocs(x.kind).map((l) => `<option value="${l.id}"${x.loc === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
+        <select class="input mini select-mini" data-act="arm-loc" data-reg="${reg.id}" data-i="${i}" aria-label="מיקום">
+          ${kindLocs(reg, x.kind).map((l) => `<option value="${l.id}"${x.loc === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
         </select>
-        ${x.loc === 'mission'
+        ${named
           ? `<input class="input mini mt-xs" type="text" maxlength="60" value="${esc(x.mission)}"
-                    data-act="arm-mission" data-i="${i}" aria-label="שם המשימה" placeholder="שם המשימה">`
+                    data-act="arm-mission" data-reg="${reg.id}" data-i="${i}"
+                    aria-label="${esc(named.label)}" placeholder="${esc(named.label)}">`
           : ''}
       </td>
       <td class="num">${x.addedAt ? esc(fmtDay(new Date(x.addedAt).toISOString().slice(0, 10))) : '—'}</td>
@@ -3762,9 +3866,10 @@ function renderArmonTab() {
           <input class="input mini mt-xs" type="text" maxlength="120"
                  value="${esc((S.armDraft[x.id] || {}).note || '')}"
                  data-act="arm-note" data-id="${esc(x.id)}" placeholder="הערה (רשות)" aria-label="הערה">
-          <button class="btn danger small mt-xs" data-act="arm-remove" data-i="${i}">אישור הסרה</button>` : ''}
+          <button class="btn danger small mt-xs" data-act="arm-remove" data-reg="${reg.id}" data-i="${i}">אישור הסרה</button>` : ''}
       </td>
     </tr>`;
+  };
   const rows = p.slice.map(armRow).join('');
   const rowsOut = pOut.slice.map(armRow).join('');
 
@@ -3772,7 +3877,7 @@ function renderArmonTab() {
     <tr>
       <td class="num">${esc(fmtDate(e.t))}</td>
       <td class="${e.action === 'add' ? 'ok' : 'bad'}">${e.action === 'add' ? '+ הוספה' : '− הסרה'}</td>
-      <td>${esc(nameOf(ARM_KINDS, e.kind))}</td>
+      <td>${esc(nameOf(reg.kinds, e.kind))}</td>
       <td>${esc(e.name)}</td>
       <td class="num wpn">${esc(e.serial)}</td>
       <td>${esc(e.owner || '—')}</td>
@@ -3781,26 +3886,26 @@ function renderArmonTab() {
     </tr>`).join('');
 
   return `
-    ${depositsPanel()}
+    ${reg.deposits ? depositsPanel() : ''}
 
     <section class="panel">
-      <h2 class="panel-title">הוספת פריט לארמון</h2>
+      <h2 class="panel-title">${esc(reg.addTitle)}</h2>
       <p class="panel-sub">כל פריט נכנס עם סוג, מספר סידורי ושם מלא של מי שהוא רשום עליו. כל הוספה והסרה נרשמות ביומן.</p>
-      <form data-form="arm-add" novalidate>
+      <form data-form="arm-add" data-reg="${reg.id}" novalidate>
         <div class="grid2">
           <label class="field">
             <span class="field-label">סוג פריט <span class="req">*</span></span>
             <select class="input select" name="kind" required>
-              ${ARM_KINDS.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('')}
+              ${reg.kinds.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('')}
             </select>
           </label>
           <label class="field">
             <span class="field-label">שם הפריט <span class="req">*</span></span>
-            <input class="input" name="name" maxlength="60" placeholder="לדוגמה: M4 / משקפת לילה" required>
+            <input class="input" name="name" maxlength="60" placeholder="${esc(reg.namePh)}" required>
           </label>
           <label class="field">
             <span class="field-label">מספר סידורי / מק״ט <span class="req">*</span></span>
-            <input class="input num" name="serial" maxlength="40" placeholder="M4-10021" required>
+            <input class="input num" name="serial" maxlength="40" placeholder="${esc(reg.serialPh)}" required>
           </label>
           <label class="field">
             <span class="field-label">שם מלא של בעל הפריט <span class="req">*</span></span>
@@ -3808,26 +3913,27 @@ function renderArmonTab() {
           </label>
         </div>
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">הוספה לארמון</button>
+        <button class="btn primary wide" type="submit">הוספה ${esc(reg.placeTo)}</button>
       </form>
     </section>
 
     <section class="panel">
-      <h2 class="panel-title">מלאי הארמון <span class="pill ok num">${here.length}</span></h2>
-      <p class="panel-sub">רק מה שנמצא פיזית בארמון עכשיו. ברגע שמסמנים פריט "אצל חייל" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".</p>
+      <h2 class="panel-title">מלאי ${esc(reg.place)} <span class="pill ok num">${here.length}</span></h2>
+      <p class="panel-sub">${esc(reg.stockNote)}</p>
       <div class="kpis">
-        ${kpi(here.length, 'נמצאים בארמון', 'ok', `${all.length} רשומים · ${out.length} בחוץ`)}
-        ${byKind.map((k) => kpi(k.here, k.name, k.out ? 'warn' : null, k.out ? `${k.out} בחוץ` : 'הכול בארמון')).join('')}
+        ${kpi(here.length, `נמצאים ${reg.placeIn}`, 'ok', `${all.length} רשומים · ${out.length} בחוץ`)}
+        ${byKind.map((k) => kpi(k.here, k.name, k.out ? 'warn' : null, k.out ? `${k.out} בחוץ` : `הכול ${reg.placeIn}`)).join('')}
       </div>
-      ${noMission
-        ? `<div class="callout risk"><p class="mb0"><strong class="num">${noMission}</strong> פריטים מסומנים "במשימה" בלי שם משימה — מלאו את שם המשימה בשורה.</p></div>`
+      ${unnamed.length
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${unnamed.length}</strong> פריטים מסומנים במיקום שדורש שם — ${esc([...new Set(unnamed.map((x) => NAMED_LOCS[x.loc].label))].join(' / '))} — בלי שמילאו אותו. השלימו בשורה.</p></div>`
         : ''}
       ${unusable.length
-        ? `<div class="callout risk"><p class="mb0"><strong class="num">${unusable.length}</strong> פריטים אבודים או מושבתים: ${unusable.slice(0, 6).map((x) => `${esc(x.name)} (${esc(x.serial)}) — ${esc(nameOf(ARM_LOCS, x.loc))}`).join(' · ')}${unusable.length > 6 ? ' …' : ''}</p></div>`
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${unusable.length}</strong> פריטים אבודים או מושבתים: ${unusable.slice(0, 6).map((x) => `${esc(x.name)} (${esc(x.serial)}) — ${esc(nameOf(reg.locs, x.loc))}`).join(' · ')}${unusable.length > 6 ? ' …' : ''}</p></div>`
         : ''}
       ${all.length > 4
-        ? plainSearch('arm-search', 'arm-qclear', S.regQ.armon || '',
-                      'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length + visOut.length)
+        ? plainSearch('arm-search', 'arm-qclear', S.regQ[reg.key] || '',
+                      'חיפוש לפי שם, מספר סידורי או בעלים', all.length, vis.length + visOut.length,
+                      { reg: reg.id })
         : ''}
       <div class="filters">${kindChips}</div>
       ${vis.length
@@ -3840,19 +3946,19 @@ function renderArmonTab() {
                <tbody>${rows}</tbody>
              </table>
            </div>
-           ${pager('armon', p)}`
-        : `<p class="empty">${here.length ? 'אין פריט בארמון שתואם את החיפוש.' : all.length ? 'אין פריטים בארמון — כולם בחוץ.' : 'הארמון ריק. הוסיפו פריט למעלה.'}</p>`}
+           ${pager(reg.key, p)}`
+        : `<p class="empty">${here.length ? `אין פריט ${reg.placeIn} שתואם את החיפוש.` : all.length ? `אין פריטים ${reg.placeIn} — כולם בחוץ.` : `${reg.place} ריק. הוסיפו פריט למעלה.`}</p>`}
       <div class="rec-actions mt">
-        <button class="btn ghost" data-act="rep-csv" data-r="armon">ייצוא ל-CSV</button>
-        <button class="btn ghost" data-act="rep-pdf" data-r="armon">הפקת PDF</button>
+        <button class="btn ghost" data-act="rep-csv" data-r="${reg.key}">ייצוא ל-CSV</button>
+        <button class="btn ghost" data-act="rep-pdf" data-r="${reg.key}">הפקת PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
     </section>
 
     ${out.length ? `
     <section class="panel">
-      <h2 class="panel-title">פריטים שאינם בארמון <span class="pill bad num">${out.length}</span></h2>
-      <p class="panel-sub">פריטים שיצאו מהארמון ורשומים על מישהו. הם אינם נספרים במלאי הארמון, אך נשארים ברישום. החזרת המיקום ל"ארמון" מחזירה אותם לרשימה למעלה.</p>
+      <h2 class="panel-title">פריטים שאינם ${esc(reg.placeIn)} <span class="pill bad num">${out.length}</span></h2>
+      <p class="panel-sub">פריטים שיצאו מ${esc(reg.place)} ורשומים על מישהו. הם אינם נספרים במלאי, אך נשארים ברישום. החזרת המיקום ל"${esc(nameOf(reg.locs, reg.home))}" מחזירה אותם לרשימה למעלה.</p>
       ${visOut.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="2,3,-1">
@@ -3863,7 +3969,7 @@ function renderArmonTab() {
                <tbody>${rowsOut}</tbody>
              </table>
            </div>
-           ${pager('armonOut', pOut)}
+           ${pager(`${reg.key}Out`, pOut)}
            <div class="rec-actions mt">
              <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
            </div>`
@@ -3883,7 +3989,7 @@ function renderArmonTab() {
                <tbody>${logRows}</tbody>
              </table>
            </div>
-           ${reportButtons('armonLog')}`
+           ${reportButtons(reg.logKey)}`
         : '<p class="empty">טרם בוצעו פעולות.</p>'}
     </section>`;
 }
@@ -4504,27 +4610,34 @@ const logPush = (key, entry) => {
   S.inv[key] = [entry, ...(S.inv[key] || [])].slice(0, 5000);
 };
 
+// Which register a control belongs to. Unknown or missing falls back to the
+// armoury, which is what every one of these controls meant before there were
+// two registers — and it is a read of a screen the user is already on, never
+// a privilege decision.
+const regOf = (el) => REGISTERS[(el && el.dataset && el.dataset.reg) || ''] || REGISTERS.armon;
+
 function armAdd(form) {
+  const reg = regOf(form);
   const kind = form.kind.value;
   const name = form.name.value.trim();
   const serial = form.serial.value.trim();
   const owner = form.owner.value.trim();
-  if (!ARM_KINDS.some((k) => k.id === kind)) return setFormErr(form, 'נא לבחור סוג פריט');
+  if (!reg.kinds.some((k) => k.id === kind)) return setFormErr(form, 'נא לבחור סוג פריט');
   if (name.length < 2) return setFormErr(form, 'נא למלא שם פריט');
   if (serial.length < 2) return setFormErr(form, 'נא למלא מספר סידורי');
   if (owner.length < 2) return setFormErr(form, 'נא למלא שם מלא של בעל הפריט');
-  // Weapon serials are unique. Accessories are logged by מק״ט — a catalogue
+  // Serialised kinds are unique. Accessories are logged by מק״ט — a catalogue
   // number shared by every unit of that model — so duplicates are expected there.
-  if (kind === 'weapon') {
-    const dup = (S.inv.armon || []).find(
-      (x) => x.kind === 'weapon' && x.serial.toLowerCase() === serial.toLowerCase()
+  if (kind === reg.unique) {
+    const dup = (S.inv[reg.key] || []).find(
+      (x) => x.kind === reg.unique && x.serial.toLowerCase() === serial.toLowerCase()
     );
-    if (dup) return setFormErr(form, `מספר סידורי ${serial} כבר קיים בארמון (${dup.name})`);
+    if (dup) return setFormErr(form, `מספר סידורי ${serial} כבר קיים ${reg.placeIn} (${dup.name})`);
   }
   setFormErr(form, '');
   const now = Date.now();
-  S.inv.armon = [...(S.inv.armon || []), { id: rndId(), kind, name, serial, owner, loc: 'armon', note: '', addedAt: now }];
-  logPush('armonLog', { t: now, action: 'add', kind, name, serial, owner, dest: '', note: '' });
+  S.inv[reg.key] = [...(S.inv[reg.key] || []), { id: rndId(), kind, name, serial, owner, loc: reg.home, note: '', addedAt: now }];
+  logPush(reg.logKey, { t: now, action: 'add', kind, name, serial, owner, dest: '', note: '' });
   invSave();
 }
 
@@ -4532,14 +4645,14 @@ function armAdd(form) {
 // destination and the note are chosen in the row, next to the item they
 // describe, so the answer is given before the button is pressed rather than
 // after it in a dialog.
-function armRemove(i) {
-  const it = (S.inv.armon || [])[i];
+function armRemove(reg, i) {
+  const it = (S.inv[reg.key] || [])[i];
   if (!it) return;
   const d = S.armDraft[it.id] || {};
   const dest = ARM_DESTS.find((x) => x.id === d.dest);
   if (!dest) { toast('נא לבחור לאן הפריט מועבר', true); return; }
-  S.inv.armon = S.inv.armon.filter((_, n) => n !== i);
-  logPush('armonLog', {
+  S.inv[reg.key] = S.inv[reg.key].filter((_, n) => n !== i);
+  logPush(reg.logKey, {
     t: Date.now(), action: 'remove', kind: it.kind, name: it.name,
     serial: it.serial, owner: it.owner, dest: dest.id, note: (d.note || '').slice(0, 120),
   });
@@ -4641,6 +4754,13 @@ const openFaults = () => faultReports().filter((r) => r.status !== 'done').lengt
 // registered, but counting it as present is how a shortage goes unnoticed.
 const armonHere = () => ((S.inv && S.inv.armon) || []).filter((x) => x.loc === 'armon');
 const armonCount = () => armonHere().length;
+
+const commsCount = () => ((S.inv && S.inv.comms) || []).filter((x) => x.loc === 'store').length;
+// What the signals store needs someone to look at: kit that is unusable, out
+// for repair, or filed somewhere unnamed.
+const commsAlerts = () => ((S.inv && S.inv.comms) || []).filter(
+  (x) => ARM_BAD_LOCS.has(x.loc) || x.loc === 'repair' || (NAMED_LOCS[x.loc] && !x.mission)
+).length;
 
 // Vehicles missing any kit item, or overdue for service.
 function vehAlerts() {
@@ -6136,9 +6256,9 @@ $app.addEventListener('input', (e) => {
     // name and notes don't affect any computed figure — no re-render needed
     case 'inv-xname': S.inv.extra[i].name = el.value; break;
     case 'inv-notes': S.inv.notes = el.value; break;
-    case 'arm-search':  S.regQ = { ...S.regQ, armon: el.value };  S.page = {}; rerenderKeepFocus(el); break;
+    case 'arm-search':  S.regQ = { ...S.regQ, [regOf(el).key]: el.value }; S.page = {}; rerenderKeepFocus(el); break;
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
-    case 'arm-mission': S.inv.armon[+el.dataset.i].mission = el.value; break;
+    case 'arm-mission': S.inv[regOf(el).key][+el.dataset.i].mission = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
@@ -6199,9 +6319,11 @@ $app.addEventListener('change', (e) => {
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'arm-loc') {
-    const it = S.inv.armon[+el.dataset.i];
+    const it = S.inv[regOf(el).key][+el.dataset.i];
     it.loc = el.value;
-    if (it.loc !== 'mission') it.mission = '';   // the mission name belongs to the mission
+    // the name belongs to the place: move it out of a mission or a vehicle and
+    // the mission's name or the vehicle's number means nothing any more
+    if (!NAMED_LOCS[it.loc]) it.mission = '';
     renderConsole();
     return;
   }
@@ -6337,9 +6459,11 @@ function dispatch(act, el) {
       break;
     case 'inv-save': invSave(); break;
     // armoury
-    case 'arm-kind': S.armKind = el.dataset.k; S.page = {}; renderConsole(); break;
-    case 'arm-remove': armRemove(+el.dataset.i); break;
-    case 'arm-qclear': S.regQ = { ...S.regQ, armon: '' }; S.page = {}; renderConsole(); break;
+    case 'arm-kind':
+      S.regKind = { ...S.regKind, [regOf(el).id]: el.dataset.k };
+      S.page = {}; renderConsole(); break;
+    case 'arm-remove': armRemove(regOf(el), +el.dataset.i); break;
+    case 'arm-qclear': S.regQ = { ...S.regQ, [regOf(el).key]: '' }; S.page = {}; renderConsole(); break;
     // tzelem report
     case 'tz-qclear': S.regQ = { ...S.regQ, tzelem: '' }; renderConsole(); break;
     case 'tz-wa': tzelemWa(); break;
