@@ -146,6 +146,53 @@ const getUser = (db, username) =>
 // without escaping surprises, and so a typo cannot become a wildcard.
 const isUsername = (v) => typeof v === 'string' && /^[a-z0-9][a-z0-9._-]{1,30}$/.test(v);
 
+const SERIAL_FIELDS = ['weapon', 'amral', 'scope'];
+const FIELD_HE = { weapon: 'מספר הנשק', amral: 'מק״ט האמר״ל', scope: 'מק״ט הכוונת' };
+const STATE_HE = {
+  pending: 'ממתין לאישור', approved: 'רשום על חייל',
+  deposit: 'הופקד בארמון וממתין לקליטה', armoury: 'רשום בארמון',
+};
+
+// Claim the numbers on one submission. Equal numbers give equal tags, so the
+// primary key is what actually stops the second soldier — the check the form
+// ran a moment earlier is only there to say so before they press send.
+// Re-filing the same slip must not collide with itself, hence the owner test.
+async function claimSerials(db, tags, kind, ownerId, state, now) {
+  if (!Array.isArray(tags)) return null;
+  const clean = tags
+    .filter((t) => t && isHex(t.tag, HEX32) && SERIAL_FIELDS.includes(t.field))
+    .slice(0, SERIAL_FIELDS.length);
+  if (clean.length !== (tags || []).length) return { bad: true };
+
+  for (const t of clean) {
+    const held = await db.prepare('SELECT owner_kind, owner_id, state FROM serial_tags WHERE tag = ?1')
+      .bind(t.tag).first();
+    if (held && !(held.owner_kind === kind && held.owner_id === ownerId)) {
+      return { field: t.field, state: held.state };
+    }
+  }
+  // The slip may have been edited, so its old numbers are released first.
+  await db.prepare('DELETE FROM serial_tags WHERE owner_kind = ?1 AND owner_id = ?2')
+    .bind(kind, ownerId).run();
+  for (const t of clean) {
+    try {
+      await db.prepare(
+        'INSERT INTO serial_tags (tag, field, state, owner_kind, owner_id, created_at) ' +
+        'VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
+      ).bind(t.tag, t.field, state, kind, ownerId, now).run();
+    } catch {
+      // Two submissions in the same instant: the index decides, and the
+      // loser is told exactly what the winner would have been told.
+      return { field: t.field, state };
+    }
+  }
+  return null;
+}
+
+const releaseSerials = (db, kind, ownerId) =>
+  db.prepare('DELETE FROM serial_tags WHERE owner_kind = ?1 AND owner_id = ?2')
+    .bind(kind, ownerId).run().catch(() => {});
+
 // Which data sources each console screen actually reads. The tab list a user
 // is given is turned into this set, and the endpoint guard below enforces it —
 // screens that share a source cannot be separated any finer than the source.
@@ -322,6 +369,43 @@ export async function onRequest(context) {
       return json({ exists: true, status: row.status });
     }
 
+    // ── GET /api/cards ───────────────────────────────────────────────
+    // The fuel cards a soldier may report against. Ids and masked labels
+    // only — the full number never leaves the admin's vault — and a card the
+    // admin has credited or removed is not in here at all, which is what
+    // makes it unpickable rather than merely discouraged.
+    if (seg[0] === 'cards' && seg.length === 1 && method === 'GET') {
+      const { results } = await db
+        .prepare('SELECT id, label FROM pub_cards ORDER BY sort')
+        .all()
+        .catch(() => ({ results: [] }));
+      return json({ cards: results || [] });
+    }
+
+    // ── GET /api/serial?tag=… ────────────────────────────────────────
+    // "Is this number already on the books?" answered without the server ever
+    // seeing a number: the client sends the blind index, the server looks it
+    // up. The answer carries the state — pending, with a soldier, in the
+    // armoury — because a soldier told "already registered" needs to know
+    // whether that is their own slip from ten minutes ago or someone else's
+    // rifle. It never carries who, which stays encrypted.
+    //
+    // This is an oracle over a low-entropy space, so it is rate-limited per
+    // IP like every other public read here. It only ever confirms what the
+    // submit path would refuse anyway.
+    if (seg[0] === 'serial' && seg.length === 1 && method === 'GET') {
+      if (!(await allow(db, `ser:${ip}`, 120, SUB_WINDOW_MS, now))) {
+        return err(429, 'יותר מדי בדיקות, נסו שוב מאוחר יותר');
+      }
+      const tag = url.searchParams.get('tag') || '';
+      if (!isHex(tag, HEX32)) return err(400, 'בקשה לא תקינה');
+      const row = await db
+        .prepare('SELECT field, state FROM serial_tags WHERE tag = ?1')
+        .bind(tag)
+        .first();
+      return json(row ? { taken: true, field: row.field, state: row.state } : { taken: false });
+    }
+
     // ── POST /api/records ────────────────────────────────────────────
     if (seg[0] === 'records' && seg.length === 1 && method === 'POST') {
       if (!(await allow(db, `sub:${ip}`, SUB_LIMIT, SUB_WINDOW_MS, now))) {
@@ -342,6 +426,12 @@ export async function onRequest(context) {
         .first();
       if (existing && existing.status === 'approved') {
         return err(409, 'הרשומה כבר אושרה ואינה ניתנת לעדכון — פנו למנהל הציוד');
+      }
+      const clash = await claimSerials(db, b.tags, 'record', rid, 'pending', now);
+      if (clash) {
+        if (clash.bad) return err(400, 'בקשה לא תקינה');
+        return err(409, `${FIELD_HE[clash.field]} כבר קיים במערכת (${STATE_HE[clash.state] || clash.state}). ` +
+          'בדקו שהקלדתם נכון, ואם המספר באמת שלכם פנו למנהל הציוד.');
       }
       if (existing) {
         await db
@@ -376,8 +466,16 @@ export async function onRequest(context) {
       if (!(await spendTicket(db, b.ticket, now))) {
         return err(403, 'ההרשאה לשליחה פגה — רעננו את הדף ונסו שוב');
       }
-      const clash = await db.prepare('SELECT id FROM reports WHERE id = ?1').bind(id).first();
-      if (clash) return err(409, 'מזהה כפול — נסו שוב');
+      const dupId = await db.prepare('SELECT id FROM reports WHERE id = ?1').bind(id).first();
+      if (dupId) return err(409, 'מזהה כפול — נסו שוב');
+      // A weapon deposit carries the same numbers a sign-out does, so it
+      // claims them the same way. Reports with no numbers send no tags.
+      const clash = await claimSerials(db, b.tags, 'report', id, 'deposit', now);
+      if (clash) {
+        if (clash.bad) return err(400, 'בקשה לא תקינה');
+        return err(409, `${FIELD_HE[clash.field]} כבר קיים במערכת (${STATE_HE[clash.state] || clash.state}). ` +
+          'בדקו שהקלדתם נכון, ואם המספר באמת שלכם פנו למנהל הציוד.');
+      }
       await db
         .prepare(
           'INSERT INTO reports (id, ek, iv, ct, status, created_at, updated_at) ' +
@@ -401,20 +499,32 @@ export async function onRequest(context) {
       const { rid, kind, ek, iv, ct } = b;
       if (
         !isHex(rid, HEX32) ||
-        (kind !== 'civil' && kind !== 'military') ||
+        !['civil', 'military', 'refuel'].includes(kind) ||
         !isB64(ek, 1000) ||
         !isB64(iv, 64) ||
         !isB64(ct, DOC_MAX_B64)
       ) {
         return err(400, 'בקשה לא תקינה');
       }
-      const owner = await db
-        .prepare('SELECT status FROM records WHERE rid = ?1')
-        .bind(rid)
-        .first();
-      if (!owner) return err(409, 'אין רשומה לצרף אליה צילום');
-      if (owner.status === 'approved') {
-        return err(409, 'הרשומה כבר אושרה — פנו למנהל הציוד');
+      // A refuelling receipt hangs off the report, not off a sign-out record,
+      // and the same rule applies: it may be attached while the report is
+      // still open and not once the office has filed it.
+      if (kind === 'refuel') {
+        const rep = await db
+          .prepare('SELECT status FROM reports WHERE id = ?1 AND deleted_at IS NULL')
+          .bind(rid)
+          .first();
+        if (!rep) return err(409, 'אין דיווח לצרף אליו קבלה');
+        if (rep.status === 'done') return err(409, 'הדיווח כבר נקלט — פנו למנהל הרכב');
+      } else {
+        const owner = await db
+          .prepare('SELECT status FROM records WHERE rid = ?1')
+          .bind(rid)
+          .first();
+        if (!owner) return err(409, 'אין רשומה לצרף אליה צילום');
+        if (owner.status === 'approved') {
+          return err(409, 'הרשומה כבר אושרה — פנו למנהל הציוד');
+        }
       }
       await db
         .prepare(
@@ -692,6 +802,7 @@ export async function onRequest(context) {
             .bind(now, id)
             .run();
           if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+          await releaseSerials(db, 'report', id);     // the numbers are free again
           await audit(db, now, session, 'delete-report', id, null);
           return json({ ok: true });
         }
@@ -738,6 +849,33 @@ export async function onRequest(context) {
       }
 
       // GET | PUT /api/admin/vault — the encrypted inventory blob
+      // PUT /api/admin/cards — republish the roster the refuelling form offers.
+      // Sent by the admin's browser whenever the vault is saved, since only it
+      // can read the cards. The whole list is replaced each time, so a card
+      // that has been credited or deleted disappears by simply not being sent.
+      if (seg[1] === 'cards' && seg.length === 2 && method === 'PUT') {
+        if (isRestricted(session.role) && !scopesFor(session.tabs).has('vault')) {
+          return err(403, 'אין הרשאה לנתונים אלה');
+        }
+        const b = await readBody(request);
+        const list = Array.isArray(b && b.cards) ? b.cards.slice(0, 300) : null;
+        if (!list) return err(400, 'בקשה לא תקינה');
+        for (const c of list) {
+          if (!c || typeof c.id !== 'string' || c.id.length > 40 ||
+              typeof c.label !== 'string' || c.label.length > 60) {
+            return err(400, 'בקשה לא תקינה');
+          }
+        }
+        await db.prepare('DELETE FROM pub_cards').run();
+        for (let i = 0; i < list.length; i += 1) {
+          await db
+            .prepare('INSERT OR REPLACE INTO pub_cards (id, label, sort, updated_at) VALUES (?1, ?2, ?3, ?4)')
+            .bind(list[i].id, list[i].label, i, now)
+            .run();
+        }
+        return json({ ok: true, n: list.length });
+      }
+
       if (seg[1] === 'vault' && seg.length === 2) {
         if (method === 'GET') {
           const v = await db
@@ -882,7 +1020,15 @@ export async function onRequest(context) {
             .bind(ek, iv, ct, status, now, rid)
             .run();
           if (!r.meta.changes) return err(404, 'הרשומה לא נמצאה');
+          // An admin correction may have changed the numbers, and approving
+          // moves them from 'pending' to 'with a soldier'. The console has
+          // already refused a duplicate, so a clash here is a race — and the
+          // record is written either way; only the claim is reported.
+          const held = await claimSerials(db, b.tags, 'record', rid, status === 'approved' ? 'approved' : 'pending', now);
           await audit(db, now, session, status === 'approved' ? 'approve' : 'update', rid, null);
+          if (held && !held.bad) {
+            return err(409, `${FIELD_HE[held.field]} כבר קיים במערכת (${STATE_HE[held.state] || held.state})`);
+          }
           return json({ ok: true });
         }
 
@@ -894,6 +1040,7 @@ export async function onRequest(context) {
             .bind(now, rid)
             .run();
           if (!r.meta.changes) return err(404, 'הרשומה לא נמצאה');
+          await releaseSerials(db, 'record', rid);   // the numbers are free again
           await audit(db, now, session, 'delete-record', rid, null);
           return json({ ok: true });
         }
