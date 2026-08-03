@@ -336,6 +336,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 
 /* A number that is already on the books. Loud on purpose: this is the one
    error that, missed, puts the same rifle on two soldiers. */
+/* `hidden` is a UA rule, and any author `display` beats it — so the empty
+   boxes showed under every serial field before a single one was typed. */
+.field-bad[hidden] { display: none; }
 .field-bad {
   display: block;
   margin-top: 5px;
