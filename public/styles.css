@@ -334,6 +334,36 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .bulk-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .bulk-n { font-weight: 700; }
 
+/* A number that is already on the books. Loud on purpose: this is the one
+   error that, missed, puts the same rifle on two soldiers. */
+.field-bad {
+  display: block;
+  margin-top: 5px;
+  padding: 7px 9px;
+  border: 1px solid var(--bad-fill);
+  border-radius: var(--r-sm);
+  background: var(--bad-tint);
+  color: var(--bad-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.input.is-bad {
+  border-color: var(--bad-fill);
+  background: var(--bad-tint);
+}
+
+/* ── Going back ────────────────────────────────────────────────────── */
+.backbar { margin: 0 0 10px; }
+.backbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+/* the arrow points the way it reads: right is backwards in Hebrew */
+.backbtn > span { font-size: 15px; line-height: 1; }
+
 /* the row asking whether it should really go */
 .delask {
   display: inline-flex;
@@ -582,8 +612,11 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   margin-bottom: 14px;
   flex-wrap: wrap;
 }
-.conbar-title { font-size: 21px; font-weight: 700; letter-spacing: -0.015em; }
+.conbar-title { font-size: 21px; font-weight: 700; letter-spacing: -0.015em; margin-inline-end: auto; }
 .conbar-actions { display: flex; gap: 7px; }
+/* back sits before the title and the title takes the slack, so the actions
+   stay pinned to the far edge however long the screen's name is */
+.conbar > .backbtn { order: -1; flex: 0 0 auto; }
 
 .console { display: block; }
 .cmain { min-width: 0; }

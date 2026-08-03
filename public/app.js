@@ -141,6 +141,26 @@ async function deriveRid(pn, idSaltB64) {
   return hex(bits).slice(0, 32);
 }
 
+// The three numbers a soldier signs for. Named here because both the
+// crypto helpers below and the duplicate checks further down need them.
+const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
+
+// Blind index of a serial number, so the server can refuse a duplicate it
+// cannot read. Same construction and salt as the record id, with a domain
+// prefix so a serial can never collide with a personal number.
+const normSerial = (v) => String(v || '').trim().toLowerCase().replace(/[\s-]+/g, '');
+const deriveSerialTag = (value, idSaltB64) => deriveRid(`serial:${normSerial(value)}`, idSaltB64);
+
+// The tags for one submission: one per number the soldier actually filled in.
+async function serialTags(d, idSaltB64) {
+  const out = [];
+  for (const [field] of SERIAL_FIELDS) {
+    if (!normSerial(d[field])) continue;
+    out.push({ tag: await deriveSerialTag(d[field], idSaltB64), field });
+  }
+  return out;
+}
+
 const importPubKey = (jwk) =>
   crypto.subtle.importKey('jwk', jwk, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
 
@@ -598,6 +618,8 @@ const S = {
   // refuelling report (soldier-facing, filed against a fuel card by the admin)
   rf: null,                     // draft { name, phone, card, litres, plate }
   rfSent: false,
+  rfPhoto: null,                // the receipt the soldier attached, before sending
+  cards: [],                    // fuel cards a soldier may report against
   rfPick: {},                   // report id -> the card the admin picked for it
 
   // shortage reporting (soldier-facing, separate flow)
@@ -666,6 +688,9 @@ const S = {
   openRows: new Set(),          // rows whose folded-away columns are open on a phone
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
+  serialWarn: {},               // serial field -> "already taken" message, or ''
+  serialSeen: {},               // serial field -> the value last checked
+  tabHist: [],                  // screens visited, so "חזרה" retraces them
   askDel: '',                   // the one row currently asking "delete?"
   armEdit: '',                  // register item id whose fields are open for correction
   recEdit: '',                  // rid whose identity fields are open for correction
@@ -1023,6 +1048,14 @@ window.addEventListener('resize', () => {
   fitTimer = setTimeout(() => renderRoute(), 150);
 });
 
+// A way out of every soldier page. The footer link at the bottom is fine once
+// you have read the page; a form opened by mistake needs the way out at the
+// top, where you are already looking.
+const backBar = () => `
+  <div class="backbar">
+    <a class="btn ghost small backbtn" href="#"><span aria-hidden="true">→</span> חזרה לתפריט</a>
+  </div>`;
+
 // The banner names whichever side of the app you are on: soldiers see the
 // form they were sent to fill in, the office sees the register it manages.
 const ADMIN_TITLE = 'לוגיסטיקה פלוגה ג';
@@ -1179,6 +1212,7 @@ function renderReport() {
   }
   const v = S.rep || { name: '', phone: '', text: '' };
   render(`
+    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">בקשת ציוד / דיווח חוסר</h1>
@@ -1261,6 +1295,7 @@ function renderFault() {
   }
   const v = S.flt || { name: '', phone: '', text: '' };
   render(`
+    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תקלות בינוי</h1>
@@ -1332,7 +1367,16 @@ async function faultSubmit(form) {
    the same reason a weapon deposit waits for approval, and it is a feature
    — a report from an anonymous page is a claim, not a fact. */
 
+// The roster is fetched once when the page opens and the form re-renders with
+// it. Asking inside the render itself would refetch on every keystroke.
+let cardsAsked = false;
 function renderRefuel() {
+  if (!cardsAsked && S.config && S.config.ready) {
+    cardsAsked = true;
+    api('/cards')
+      .then((r) => { S.cards = r.cards || []; if (S.route === 'refuel') renderRefuel(); })
+      .catch(() => { /* the form already says there is nothing to pick */ });
+  }
   if (!S.config || !S.config.ready) {
     render(`
       <section class="panel center">
@@ -1354,6 +1398,7 @@ function renderRefuel() {
   }
   const v = S.rf || { name: '', phone: '', card: '', litres: '', plate: '' };
   render(`
+    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תדלוק</h1>
@@ -1371,10 +1416,15 @@ function renderRefuel() {
                    maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
           </label>
           <label class="field">
-            <span class="field-label">מספר כרטיס התדלוק <span class="req">*</span></span>
-            <input class="input num" name="card" inputmode="numeric" maxlength="30"
-                   value="${esc(v.card)}" placeholder="המספר המודפס על הכרטיס" required>
-            <span class="field-hint">העתיקו את המספר מהכרטיס עצמו — לפיו נדע מאיזה כרטיס לרדת.</span>
+            <span class="field-label">כרטיס התדלוק <span class="req">*</span></span>
+            <select class="input select" name="card" required>
+              <option value="">בחרו כרטיס…</option>
+              ${(S.cards || []).map((c) =>
+                `<option value="${esc(c.id)}"${v.card === c.id ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}
+            </select>
+            <span class="field-hint">${(S.cards || []).length
+              ? 'הכרטיסים שמופיעים כאן הם אלה שפעילים כרגע. כרטיס שזוכה או הוסר לא יופיע.'
+              : 'אין כרגע כרטיסים פעילים במערכת — פנו למנהל הרכב.'}</span>
           </label>
           <label class="field">
             <span class="field-label">כמה ליטרים <span class="req">*</span></span>
@@ -1387,6 +1437,25 @@ function renderRefuel() {
           <input class="input num" name="plate" inputmode="numeric" maxlength="20"
                  value="${esc(v.plate)}" placeholder="12-345-67" required>
         </label>
+
+        <fieldset class="lic-set">
+          <legend class="field-label">קבלת התדלוק <span class="req">*</span></legend>
+          <p class="field-hint">בלי קבלה אי אפשר להצדיק את הליטרים מול קצין הרכב, ולכן היא חובה.</p>
+          <div class="rec-actions">
+            <label class="btn ghost small">📷 צילום הקבלה
+              <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                     data-act="rf-photo"></label>
+            <label class="btn ghost small">🖼 בחירה מהגלריה
+              <input class="vis-hidden" type="file" accept="image/*" data-act="rf-photo"></label>
+          </div>
+          ${S.rfPhoto
+            ? `<div class="fp">
+                 <span>✓ קבלה מצורפת (${Math.round(S.rfPhoto.size / 1024)}KB)</span>
+                 <button type="button" class="linkbtn danger-link" data-act="rf-photo-clear">הסרה</button>
+               </div>`
+            : '<p class="field-hint mb0">טרם צורפה קבלה.</p>'}
+        </fieldset>
+
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת הדיווח</button>
       </form>
@@ -1402,24 +1471,35 @@ async function refuelSubmit(form) {
   const litres = parseInt(String(form.litres.value).replace(/\D/g, ''), 10);
   if (name.length < 2) return setFormErr(form, 'נא למלא את שם המתדלק');
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
-  if (card.length < 4) return setFormErr(form, 'נא למלא את מספר כרטיס התדלוק');
+  const picked = (S.cards || []).find((c) => c.id === card);
+  if (!picked) return setFormErr(form, 'נא לבחור כרטיס תדלוק מהרשימה');
   if (!Number.isFinite(litres) || litres < 1) return setFormErr(form, 'נא למלא כמות ליטרים');
   if (litres > 500) return setFormErr(form, 'כמות הליטרים נראית שגויה — בדקו שוב');
   if (plate.length < 5) return setFormErr(form, 'נא למלא את מספר הרכב');
+  if (!S.rfPhoto) return setFormErr(form, 'נא לצרף צילום של הקבלה');
   setFormErr(form, '');
   S.rf = { name, phone, card, litres: String(litres), plate };
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'שולח…';
   await withBusy(async () => {
-    const sealed = await seal(await importPubKey(S.config.pub), {
-      kind: 'refuel', name, phone, card, litres, plate, text: '', createdAt: Date.now(),
+    const pubKey = await importPubKey(S.config.pub);
+    const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+    // `card` is the id the admin's browser can resolve; the label rides along
+    // so the office can read the report without opening the vault first.
+    const sealed = await seal(pubKey, {
+      kind: 'refuel', name, phone, card, cardLabel: picked.label,
+      litres, plate, text: '', createdAt: Date.now(),
     });
-    await api('/reports', {
-      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+    await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
+    // The receipt goes separately, like a licence photo, so the report list
+    // never drags image data around with it.
+    await api('/docs', {
+      body: { rid: id, kind: 'refuel', ...(await sealBytes(pubKey, S.rfPhoto.bytes)) },
     });
     S.rfSent = true;
     S.rf = null;
+    S.rfPhoto = null;
     renderRefuel();
   });
   if (!S.rfSent) {
@@ -1452,6 +1532,7 @@ function renderDeposit() {
   }
   const v = S.dep || { pn: '', name: '', phone: '', weapon: '', amral: '', scope: '' };
   render(`
+    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">אפסון נשק בארמון</h1>
@@ -1475,8 +1556,9 @@ function renderDeposit() {
           </label>
           <label class="field">
             <span class="field-label">מספר נשק <span class="req">*</span></span>
-            <input class="input num" name="weapon" autocomplete="off" maxlength="20"
+            <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
                    value="${esc(v.weapon)}" placeholder="7145732" required>
+            ${serialWarnBox('weapon')}
           </label>
         </div>
         <fieldset class="lic-set">
@@ -1484,13 +1566,15 @@ function renderDeposit() {
           <div class="grid2">
             <label class="field">
               <span class="field-label">מק״ט אמר״ל</span>
-              <input class="input num" name="amral" autocomplete="off" maxlength="20"
+              <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
                      value="${esc(v.amral)}">
+              ${serialWarnBox('amral')}
             </label>
             <label class="field">
               <span class="field-label">מק״ט כוונת יום</span>
-              <input class="input num" name="scope" autocomplete="off" maxlength="20"
+              <input class="input num" name="scope" data-act="ser-chk" data-f="scope" autocomplete="off" maxlength="20"
                      value="${esc(v.scope)}">
+              ${serialWarnBox('scope')}
             </label>
           </div>
           <span class="field-hint">אם לא מסרתם אמר״ל או כוונת — השאירו ריק.</span>
@@ -1501,6 +1585,66 @@ function renderDeposit() {
       <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
     </section>`);
 }
+
+/* ── Telling a soldier the number is taken, before they press send ──────
+   The server refuses a duplicate either way, but finding that out after
+   filling in a whole form is no way to find it out. Each serial field
+   checks itself once the soldier leaves it: the number is masked in the
+   browser and only the mask is sent, so the answer costs nothing.
+
+   What comes back is a state, never a name — "already with a soldier" is
+   what someone needs in order to tell their own mistyping from someone
+   else's rifle, and whose it is stays encrypted. */
+
+const SERIAL_STATE_HE = {
+  pending: 'ממתין לאישור', approved: 'רשום על חייל אחר',
+  deposit: 'הופקד בארמון וממתין לקליטה', armoury: 'רשום בארמון',
+};
+
+async function checkSerial(field, value, label) {
+  const v = normSerial(value);
+  if (!S.config || !S.config.idSalt) return;
+  if (S.serialSeen[field] === v) return;              // already answered for this value
+  S.serialSeen = { ...S.serialSeen, [field]: v };
+  if (!v) { S.serialWarn = { ...S.serialWarn, [field]: '' }; paintSerialWarnings(); return; }
+  try {
+    const tag = await deriveSerialTag(value, S.config.idSalt);
+    const r = await api(`/serial?tag=${tag}`);
+    S.serialWarn = {
+      ...S.serialWarn,
+      [field]: r.taken
+        ? `⛔ ${label} ${value} כבר קיים במערכת — ${SERIAL_STATE_HE[r.state] || r.state}. ` +
+          'בדקו שלא טעיתם בהקלדה; אם המספר באמת שלכם, פנו למנהל הציוד.'
+        : '',
+    };
+  } catch {
+    S.serialWarn = { ...S.serialWarn, [field]: '' };   // a failed check must not block
+  }
+  paintSerialWarnings();
+}
+
+// Written straight into the DOM rather than through a re-render: the soldier
+// is in the middle of a form, and rebuilding it under their hands is exactly
+// the kind of thing this feature exists to spare them.
+function paintSerialWarnings() {
+  for (const [field] of SERIAL_FIELDS) {
+    const box = $app.querySelector(`[data-warn="${field}"]`);
+    if (!box) continue;
+    const msg = (S.serialWarn || {})[field] || '';
+    box.textContent = msg;
+    box.hidden = !msg;
+    const input = $app.querySelector(`[name="${field}"]`);
+    if (input) input.classList.toggle('is-bad', !!msg);
+  }
+  const form = $app.querySelector('form[data-form="deposit"]');
+  if (!form) return;
+  const btn = form.querySelector('button[type=submit]');
+  if (btn) btn.disabled = SERIAL_FIELDS.some(([f]) => (S.serialWarn || {})[f]);
+}
+
+const serialWarnBox = (field) => `<span class="field-bad" data-warn="${field}" hidden></span>`;
+
+const anySerialTaken = () => SERIAL_FIELDS.some(([f]) => (S.serialWarn || {})[f]);
 
 async function depositSubmit(form) {
   const pn = form.pn.value.trim();
@@ -1522,6 +1666,10 @@ async function depositSubmit(form) {
   if (scope && !serialRe.test(scope)) {
     return setFormErr(form, 'מק״ט כוונת יום: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
   }
+  // The field checks already said so in red; this is the gate that acts on it.
+  if (anySerialTaken()) {
+    return setFormErr(form, 'אחד המספרים כבר קיים במערכת — תקנו אותו לפני השליחה');
+  }
   setFormErr(form, '');
   S.dep = { pn, name, phone, weapon, amral, scope };
   const btn = form.querySelector('button[type=submit]');
@@ -1532,7 +1680,10 @@ async function depositSubmit(form) {
       kind: 'deposit', pn, name, phone, weapon, amral, scope, createdAt: Date.now(),
     });
     await api('/reports', {
-      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+      body: {
+        id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed,
+        tags: await serialTags({ weapon, amral, scope }, S.config.idSalt),
+      },
     });
     S.depSent = true;
     S.dep = null;
@@ -1651,6 +1802,7 @@ function renderSoldierStep1() {
   ).join('');
   render(`
     ${stepsBar(1)}
+    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">רישום ציוד אישי</h1>
@@ -1683,18 +1835,21 @@ function renderSoldierStep1() {
           <div class="grid2">
             <label class="field">
               <span class="field-label">מספר סידורי של הנשק</span>
-              <input class="input num" name="weapon" autocomplete="off" maxlength="20"
+              <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
                      value="${esc(v.weapon || '')}" placeholder="1234567">
+              ${serialWarnBox('weapon')}
             </label>
             <label class="field">
               <span class="field-label">מספר אמר״ל</span>
-              <input class="input num" name="amral" autocomplete="off" maxlength="20"
+              <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
                      value="${esc(v.amral || '')}" placeholder="1234567">
+              ${serialWarnBox('amral')}
             </label>
             <label class="field">
               <span class="field-label">מספר כוונת</span>
-              <input class="input num" name="scope" autocomplete="off" maxlength="20"
+              <input class="input num" name="scope" data-act="ser-chk" data-f="scope" autocomplete="off" maxlength="20"
                      value="${esc(v.scope || '')}" placeholder="1234567">
+              ${serialWarnBox('scope')}
             </label>
           </div>
           <span class="field-hint">אם לא קיבלתם — אפשר להשאיר ריק.</span>
@@ -2036,6 +2191,11 @@ function renderConsole() {
 
   render(`
     <div class="conbar">
+      ${S.tabHist.length
+        ? `<button class="btn ghost small backbtn" data-act="tab-back">
+             <span aria-hidden="true">→</span> חזרה
+           </button>`
+        : ''}
       <span class="conbar-title">${esc(title)}</span>
       <div class="conbar-actions">
         <span class="who-tag">${esc(S.me || '')}</span>
@@ -4747,7 +4907,10 @@ function refuelPanel() {
   const norm = (v) => String(v || '').replace(/\D/g, '');
   const rows = open.map((r) => {
     const d = r.data;
-    const match = cards.find((c) => norm(c.no) && norm(c.no) === norm(d.card));
+    // The form now sends the card's own id. Older reports carry a typed
+    // number, so those still fall back to matching on the digits.
+    const match = cards.find((c) => c.id === d.card)
+      || cards.find((c) => norm(c.no) && norm(c.no) === norm(d.card));
     const picked = S.rfPick[r.id] || (match ? match.id : '');
     const target = cards.find((c) => c.id === picked);
     return `
@@ -4758,7 +4921,7 @@ function refuelPanel() {
           ${esc(S.revealed.has(r.id) ? d.phone : maskPhone(d.phone))}
           <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
         </td>
-        <td class="num wpn">${esc(d.card)}</td>
+        <td>${esc(d.cardLabel || d.card)}</td>
         <td class="num"><strong>${d.litres}</strong></td>
         <td class="num">${esc(d.plate)}</td>
         <td>
@@ -4808,12 +4971,26 @@ const refuelFile = (id) =>
     const picked = S.rfPick[id];
     const card = picked
       ? cards.find((c) => c.id === picked)
-      : cards.find((c) => norm(c.no) && norm(c.no) === norm(rec.data.card));
+      : (cards.find((c) => c.id === rec.data.card)
+        || cards.find((c) => norm(c.no) && norm(c.no) === norm(rec.data.card)));
     if (!card) { toast('לא נבחר כרטיס', true); return; }
 
     const d = rec.data;
     card.uses = [{ t: d.createdAt || Date.now(), who: d.name, litres: d.litres, plate: d.plate }, ...(card.uses || [])];
     card.litres = Math.max(0, card.litres - d.litres);
+    // The soldier's receipt was filed against the report; filing moves it onto
+    // the card, where the vehicle officer will look for it. The image is never
+    // decrypted on the way — the same envelope is written under a new id.
+    const got = await api(`/admin/docs/${id}`).catch(() => ({ docs: [] }));
+    const shot = (got.docs || []).find((x) => x.kind === 'refuel');
+    if (shot) {
+      const docId = hex(crypto.getRandomValues(new Uint8Array(16)));   // the docs route wants 32 hex
+      await api(`/admin/docs/${docId}/fuel`, {
+        method: 'PUT',
+        body: { ek: shot.ek, iv: shot.iv, ct: shot.ct },
+      }).catch(() => {});
+      card.receipts = [...(card.receipts || []), { id: docId, at: d.createdAt || Date.now() }];
+    }
     await invSave();
     await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: 'done' } });
     rec.status = 'done';
@@ -5938,6 +6115,28 @@ async function loadInv() {
 // The vault is one blob shared by every admin. Sending the version it was
 // loaded at lets the server refuse a save that would overwrite someone else's
 // work, instead of silently discarding it.
+/* The list of cards the refuelling form may offer. Only this browser can read
+   the vault, so only this browser can publish it — which happens on every
+   save, so crediting or deleting a card takes it off the soldiers' form at
+   the same moment it leaves the table.
+
+   The label is masked. A fuel card is a payment instrument and the form it
+   appears on is open to anyone with the link, so what goes out is the fuel
+   type and the last four digits — enough for a soldier holding the card to
+   recognise it, and not enough to use it. */
+const cardLabel = (c) => {
+  const no = String(c.no || '').replace(/\s+/g, '');
+  const tail = no.length > 4 ? `••${no.slice(-4)}` : no || 'ללא מספר';
+  return `${nameOf(FUEL_KINDS, c.kind)} · ${tail}`;
+};
+
+async function publishCards() {
+  const cards = ((S.inv && S.inv.fuel) || [])
+    .filter((c) => !c.credited)          // credited at the vehicle office — done with
+    .map((c) => ({ id: c.id, label: cardLabel(c) }));
+  await api('/admin/cards', { method: 'PUT', body: { cards } }).catch(() => {});
+}
+
 async function saveInv() {
   S.inv.updatedAt = Date.now();
   const sealed = await seal(S.pubKey, S.inv);
@@ -5948,6 +6147,7 @@ async function saveInv() {
     });
     S.invVersion = res.updatedAt || S.inv.updatedAt;
     vaultSizeWarn(sealed.ct.length);
+    await publishCards();
   } catch (e) {
     if (e.status === 409) {
       throw new Error('המלאי עודכן על ידי מנהל אחר בזמן שערכתם. לחצו "רענון", בדקו מה השתנה ובצעו את השינוי שוב — לא דרסנו את העבודה שלו.');
@@ -6014,6 +6214,15 @@ async function soldierIdentSubmit(form) {
   }
   if (scope && !serialRe.test(scope)) {
     return setFormErr(form, 'מספר כוונת: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  }
+  // A number already on the books stops the soldier here, at step one,
+  // rather than after they have gone on to tick their equipment.
+  for (const [f, label] of SERIAL_FIELDS) {
+    await checkSerial(f, { weapon, amral, scope }[f], label);
+  }
+  if (anySerialTaken()) {
+    const first = SERIAL_FIELDS.map(([f]) => S.serialWarn[f]).find(Boolean);
+    return setFormErr(form, first);
   }
   setFormErr(form, '');
   const btn = form.querySelector('button[type=submit]');
@@ -6106,6 +6315,24 @@ async function licFile(kind, input) {
   }
 }
 
+// The refuelling receipt, compressed and held in memory until the report is
+// sent. Same path as a licence photo — the office should never have to take
+// a soldier's word for the litres.
+async function refuelPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!/^image\//.test(file.type)) { toast('יש לבחור קובץ תמונה', true); return; }
+  toast('מעבד את התמונה…');
+  try {
+    const { bytes, size } = await compressImage(file);
+    S.rfPhoto = { bytes, size };
+    renderRefuel();
+    toast('הקבלה נקלטה');
+  } catch (e) {
+    toast(e.message || 'עיבוד התמונה נכשל', true);
+  }
+}
+
 function soldierToggle(itemId) {
   const item = itemById(itemId);
   if (itemId in S.sel) delete S.sel[itemId];
@@ -6165,7 +6392,14 @@ async function soldierSubmit() {
 
     const pubKey = await importPubKey(S.config.pub);
     const sealed = await seal(pubKey, payload);
-    await api('/records', { body: { rid: S.rid, ticket: await getTicket(), ...sealed } });
+    await api('/records', {
+      body: {
+        rid: S.rid, ticket: await getTicket(), ...sealed,
+        // blind indexes of the numbers, so the server can refuse a serial
+        // that is already taken without ever seeing one
+        tags: await serialTags(payload, S.config.idSalt),
+      },
+    });
 
     // Photos ride separately so listing soldiers never pulls image data.
     for (const k of LIC_KINDS) {
@@ -6327,7 +6561,6 @@ function editDistance(a, b) {
   return prev[b.length];
 }
 
-const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
 
 // Every serial already in use, excluding one record (the one being approved).
 // Every serial the unit already has on its books, from wherever it is held.
@@ -6950,6 +7183,15 @@ $app.addEventListener('input', (e) => {
   }
 });
 
+// A serial is checked when the soldier leaves the field, not per keystroke:
+// a half-typed number is nearly always free, and saying so would be noise.
+$app.addEventListener('focusout', (e) => {
+  const el = e.target.closest('[data-act="ser-chk"]');
+  if (!el || !$app.contains(el)) return;
+  const label = (SERIAL_FIELDS.find(([f]) => f === el.dataset.f) || [, ''])[1];
+  checkSerial(el.dataset.f, el.value.trim(), label);
+});
+
 // Checkboxes and file pickers report via 'change', not 'input'.
 $app.addEventListener('change', (e) => {
   const el = e.target.closest('[data-act]');
@@ -6958,6 +7200,7 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
+  if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
   if (el.dataset.act === 'rf-pick') {
     S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
     renderConsole();
@@ -7074,7 +7317,25 @@ function dispatch(act, el) {
     case 's-reset': resetSoldier(); renderSoldier(); break;
     case 'lic-clear': licClear(el.dataset.kind); break;
     // admin console
-    case 'tab': S.tab = el.dataset.tab; renderConsole(); break;
+    // Moving between screens keeps a trail, so "חזרה" goes back the way you
+    // came rather than always to the overview. Re-picking the screen you are
+    // already on is not a move and must not stack up.
+    case 'tab':
+      if (el.dataset.tab !== S.tab) {
+        S.tabHist = [...S.tabHist, S.tab].slice(-20);
+        S.tab = el.dataset.tab;
+        S.page = {};
+      }
+      renderConsole();
+      break;
+    case 'tab-back':
+      if (S.tabHist.length) {
+        S.tab = S.tabHist[S.tabHist.length - 1];
+        S.tabHist = S.tabHist.slice(0, -1);
+        S.page = {};
+      }
+      renderConsole();
+      break;
     case 'filter': S.filter = el.dataset.filter; S.page = {}; renderConsole(); break;
     // reports — one definition, two outputs
     case 'rep-csv': reportCsv(el.dataset.r); break;
@@ -7328,7 +7589,8 @@ function dispatch(act, el) {
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
-    case 'rf-again': S.rfSent = false; S.rf = null; renderRefuel(); break;
+    case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
+    case 'rf-photo-clear': S.rfPhoto = null; renderRefuel(); break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
