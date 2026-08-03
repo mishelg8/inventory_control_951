@@ -223,7 +223,13 @@ function cleanRecord(raw) {
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
-    kind: raw.kind === 'deposit' || raw.kind === 'fault' ? raw.kind : 'report',
+    kind: ['deposit', 'fault', 'refuel'].includes(raw.kind) ? raw.kind : 'report',
+    // refuelling: which card, how much, into which vehicle. The litres are a
+    // count and nothing else — a soldier's browser is not trusted to send a
+    // number, so it is coerced to one here as everything else is.
+    card: asText(raw.card, 30),
+    litres: asCount(raw.litres, 9999),
+    plate: asText(raw.plate, 20),
     name: asText(raw.name, 60),
     text: asText(raw.text, 1500),
     // legacy reports carried identity fields; keep them if present
@@ -580,6 +586,7 @@ function routeFromHash() {
   if (h === '#report') return 'report';
   if (h === '#deposit') return 'deposit';
   if (h === '#fault') return 'fault';
+  if (h === '#refuel') return 'refuel';
   if (h === '#sign') return 'soldier';
   return 'home';   // the link a soldier is given lands on the chooser
 }
@@ -587,6 +594,11 @@ function routeFromHash() {
 const S = {
   config: null,                 // { ready, pub?, idSalt? }
   route: routeFromHash(),
+
+  // refuelling report (soldier-facing, filed against a fuel card by the admin)
+  rf: null,                     // draft { name, phone, card, litres, plate }
+  rfSent: false,
+  rfPick: {},                   // report id -> the card the admin picked for it
 
   // shortage reporting (soldier-facing, separate flow)
   rep: null,                    // draft { pn, name, phone, dept, text }
@@ -654,6 +666,12 @@ const S = {
   openRows: new Set(),          // rows whose folded-away columns are open on a phone
   expanded: new Set(),          // record rids expanded in the pending/track tables
   picked: new Set(),            // rids ticked for a bulk action
+  askDel: '',                   // the one row currently asking "delete?"
+  armEdit: '',                  // register item id whose fields are open for correction
+  recEdit: '',                  // rid whose identity fields are open for correction
+  recDraft: null,               // that editor's pending changes
+  repEdit: '',                  // report id whose fields are open for correction
+  repDraft: null,
   sort: { key: 'date', dir: 'desc' },   // roster table ordering
   invVersion: 0,                // vault updated_at at load, for conflict detection
   invBytes: 0,                  // sealed vault size, for the headroom gauge
@@ -702,6 +720,7 @@ function lock() {
   S.expanded.clear();
   S.picked.clear();
   clearTimeout(idleTimer);
+  stopPulse();
   api('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
   if (S.route === 'admin') {
     S.adminView = S.config && S.config.ready ? 'login' : 'setup';
@@ -1004,13 +1023,30 @@ window.addEventListener('resize', () => {
   fitTimer = setTimeout(() => renderRoute(), 150);
 });
 
+// The banner names whichever side of the app you are on: soldiers see the
+// form they were sent to fill in, the office sees the register it manages.
+const ADMIN_TITLE = 'לוגיסטיקה פלוגה ג';
+const ADMIN_SUB = 'מסייעת 951 · ניהול ציוד, ארמון, קשר ורכב';
+const SOLDIER_TITLE = 'רישום ראשוני';
+const SOLDIER_SUB = 'מסייעת 951 · רישום ומעקב ציוד אישי';
+
+function setBanner(admin) {
+  const t = document.getElementById('topTitle');
+  const s = document.getElementById('topSub');
+  if (t) t.textContent = admin ? ADMIN_TITLE : SOLDIER_TITLE;
+  if (s) s.textContent = admin ? ADMIN_SUB : SOLDIER_SUB;
+  document.title = admin ? ADMIN_TITLE : SOLDIER_TITLE;
+}
+
 function renderRoute() {
+  setBanner(S.route === 'admin');
   // the console needs a wide column for tables; soldier pages stay narrow
   $app.classList.toggle('wide', S.route === 'admin' && !!S.priv);
   if (S.route === 'admin') renderAdmin();
   else if (S.route === 'report') renderReport();
   else if (S.route === 'deposit') renderDeposit();
   else if (S.route === 'fault') renderFault();
+  else if (S.route === 'refuel') renderRefuel();
   else if (S.route === 'home') renderHome();
   else renderSoldier();
 }
@@ -1072,6 +1108,25 @@ function renderHome() {
         <span class="choice-txt">
           <span class="choice-t">אפסון נשק בארמון</span>
           <span class="choice-s">מוסרים נשק לאחסון? רשמו את הפרטים ומנהל הארמון יקלוט אותו.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#refuel">
+        <span class="choice-ico fuel" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 21V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v16"/>
+            <path d="M3 21h11"/>
+            <path d="M5.5 8.5h6"/>
+            <path d="M13 12h3.5a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V9l-2.5-2.5"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">דיווח תדלוק</span>
+          <span class="choice-s">תדלקתם רכב בכרטיס תדלוק? רשמו כמה וכרטיס איזה, וזה ייקלט אצל מנהל הרכב.</span>
         </span>
         <span class="choice-go" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
@@ -1260,6 +1315,114 @@ async function faultSubmit(form) {
     renderFault();
   });
   if (!S.fltSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת הדיווח';
+  }
+}
+
+/* ── Refuelling report (soldier-facing) ────────────────────────────────
+   The soldier who fills the tank is the only one who knows how much went
+   in, and until now that reached the office as a message someone had to
+   retype. Here it arrives as a report, and the vehicle officer files it
+   against the card in one press — the litres come off the balance and the
+   use is logged, exactly as if it had been typed in the console.
+
+   It cannot write to the card directly: the fuel register lives in the
+   admin's encrypted vault, which only a key-holder can rewrite. That is
+   the same reason a weapon deposit waits for approval, and it is a feature
+   — a report from an anonymous page is a claim, not a fact. */
+
+function renderRefuel() {
+  if (!S.config || !S.config.ready) {
+    render(`
+      <section class="panel center">
+        <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
+        <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר לדווח.</p>
+      </section>`);
+    return;
+  }
+  if (S.rfSent) {
+    render(`
+      <section class="panel center">
+        <div class="big-ok" aria-hidden="true"></div>
+        <h1 class="panel-title">התדלוק דווח</h1>
+        <p class="panel-sub">הדיווח נקלט. מנהל הרכב יאשר אותו והליטרים יירדו מיתרת הכרטיס.</p>
+        <button class="btn ghost wide mt" data-act="rf-again">דיווח תדלוק נוסף</button>
+        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      </section>`);
+    return;
+  }
+  const v = S.rf || { name: '', phone: '', card: '', litres: '', plate: '' };
+  render(`
+    <section class="panel center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
+      <h1 class="panel-title center">דיווח תדלוק</h1>
+      <p class="panel-sub center">תדלקתם רכב בכרטיס תדלוק? רשמו כאן מיד אחרי התדלוק — כך היתרה בכרטיס נשארת נכונה.</p>
+      <form data-form="refuel" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">שם המתדלק <span class="req">*</span></span>
+            <input class="input" name="name" autocomplete="off" maxlength="60"
+                   value="${esc(v.name)}" required>
+          </label>
+          <label class="field">
+            <span class="field-label">טלפון <span class="req">*</span></span>
+            <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                   maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+          </label>
+          <label class="field">
+            <span class="field-label">מספר כרטיס התדלוק <span class="req">*</span></span>
+            <input class="input num" name="card" inputmode="numeric" maxlength="30"
+                   value="${esc(v.card)}" placeholder="המספר המודפס על הכרטיס" required>
+            <span class="field-hint">העתיקו את המספר מהכרטיס עצמו — לפיו נדע מאיזה כרטיס לרדת.</span>
+          </label>
+          <label class="field">
+            <span class="field-label">כמה ליטרים <span class="req">*</span></span>
+            <input class="input num" name="litres" inputmode="numeric" maxlength="4"
+                   value="${esc(v.litres)}" placeholder="0" required>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">מספר הרכב שתודלק <span class="req">*</span></span>
+          <input class="input num" name="plate" inputmode="numeric" maxlength="20"
+                 value="${esc(v.plate)}" placeholder="12-345-67" required>
+        </label>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחת הדיווח</button>
+      </form>
+      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+    </section>`);
+}
+
+async function refuelSubmit(form) {
+  const name = form.name.value.trim();
+  const phone = form.phone.value.trim();
+  const card = form.card.value.trim();
+  const plate = form.plate.value.trim();
+  const litres = parseInt(String(form.litres.value).replace(/\D/g, ''), 10);
+  if (name.length < 2) return setFormErr(form, 'נא למלא את שם המתדלק');
+  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
+  if (card.length < 4) return setFormErr(form, 'נא למלא את מספר כרטיס התדלוק');
+  if (!Number.isFinite(litres) || litres < 1) return setFormErr(form, 'נא למלא כמות ליטרים');
+  if (litres > 500) return setFormErr(form, 'כמות הליטרים נראית שגויה — בדקו שוב');
+  if (plate.length < 5) return setFormErr(form, 'נא למלא את מספר הרכב');
+  setFormErr(form, '');
+  S.rf = { name, phone, card, litres: String(litres), plate };
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const sealed = await seal(await importPubKey(S.config.pub), {
+      kind: 'refuel', name, phone, card, litres, plate, text: '', createdAt: Date.now(),
+    });
+    await api('/reports', {
+      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
+    });
+    S.rfSent = true;
+    S.rf = null;
+    renderRefuel();
+  });
+  if (!S.rfSent) {
     btn.disabled = false;
     btn.textContent = 'שליחת הדיווח';
   }
@@ -1840,7 +2003,7 @@ function renderConsole() {
     ['comms',   'דוח קשר',      commsAlerts() || commsCount() || null, commsAlerts() > 0],
     ['tzelem',  'דו״ח צלם',     null],
     ['ammo',    'תחמושת ואלפא', null],
-    ['veh',     'רכבים',        vehAlerts() || null, true],
+    ['veh',     'רכבים',        (openRefuels() + vehAlerts()) || null, openRefuels() > 0],
     ['sum',     'דוחות',        null],
     ['sec',     'אבטחה',        null],
   ];
@@ -1964,6 +2127,103 @@ function extrasRow(rec) {
   return bits.join('');
 }
 
+/* ── Correcting what a soldier typed ───────────────────────────────────
+   The form is filled in on a phone, in the dark, by someone in a hurry, so
+   a wrong digit in a personal number or a weapon serial is routine. The
+   editor lives inside the record's own drawer and re-seals the record on
+   save; nothing is written until then, so closing it changes nothing.
+
+   `rid` is derived from the personal number and is what stops the same
+   soldier filing twice, so it cannot follow a correction — the record
+   keeps the id it was created under. That matters only if the number was
+   wrong from the start, and the note in the editor says so. */
+
+function recEditor(rec) {
+  const d = S.recDraft || {};
+  if (S.recEdit !== rec.rid) {
+    return `<div class="rec-meta">
+      <button class="linkbtn" data-act="rec-edit" data-rid="${esc(rec.rid)}">✎ תיקון פרטים</button>
+    </div>`;
+  }
+  const f = (name, label, value, extra = '') => `
+    <label class="field mb0">
+      <span class="field-label">${esc(label)}</span>
+      <input class="input mini${extra.includes('num') ? ' num' : ''}" type="text"
+             value="${esc(value)}" data-act="rec-f" data-k="${name}" maxlength="60"
+             aria-label="${esc(label)}">
+    </label>`;
+  return `
+    <div class="receditor">
+      <div class="fuel-entry">
+        ${f('name', 'שם מלא', d.name)}
+        ${f('pn', 'מספר אישי', d.pn, 'num')}
+        ${f('phone', 'טלפון', d.phone, 'num')}
+        <label class="field mb0">
+          <span class="field-label">מחלקה</span>
+          <select class="input mini select-mini" data-act="rec-f-dept" aria-label="מחלקה">
+            <option value="">—</option>
+            ${DEPTS.map((x) => `<option value="${x.id}"${d.dept === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div class="fuel-entry">
+        ${f('weapon', 'מספר נשק', d.weapon, 'num')}
+        ${f('amral', 'מק״ט אמר״ל', d.amral, 'num')}
+        ${f('scope', 'מק״ט כוונת', d.scope, 'num')}
+      </div>
+      <p class="field-hint">המספר האישי מזהה את הרשומה במערכת. תיקון שלו משנה את מה שמוצג ומיוצא לדוחות, אך הרשומה נשארת תחת המזהה שנוצר בהרשמה.</p>
+      <div class="rec-actions">
+        <button class="btn primary small" data-act="rec-save" data-rid="${esc(rec.rid)}">שמירת התיקון</button>
+        <button class="btn ghost small" data-act="rec-cancel">ביטול</button>
+      </div>
+    </div>`;
+}
+
+/* The same correction for a report, a deposit or a building fault. Which
+   fields it offers follows the kind — a deposit carries serial numbers, a
+   fault carries none — and the free text is always correctable, since that
+   is where a soldier in a hurry gets it wrong most often. */
+// The link that opens it sits with the row's other actions; the form itself
+// needs a block of its own, so they are separate pieces.
+const repEditLink = (rec) =>
+  `<button class="linkbtn" data-act="${S.repEdit === rec.id ? 'rep-cancel' : 'rep-edit'}"
+           data-id="${esc(rec.id)}">${S.repEdit === rec.id ? 'סגירה' : '✎ תיקון פרטים'}</button>`;
+
+function repEditor(rec) {
+  if (S.repEdit !== rec.id) return '';
+  const d = S.repDraft || {};
+  const f = (name, label, num = false) => `
+    <label class="field mb0">
+      <span class="field-label">${esc(label)}</span>
+      <input class="input mini${num ? ' num' : ''}" type="text" maxlength="60"
+             value="${esc(d[name] || '')}" data-act="rep-f" data-k="${name}" aria-label="${esc(label)}">
+    </label>`;
+  return `
+    <div class="receditor">
+      <div class="fuel-entry">
+        ${f('name', 'שם המדווח')}
+        ${f('phone', 'טלפון', true)}
+        ${d.kind === 'report' ? f('pn', 'מספר אישי', true) : ''}
+      </div>
+      ${d.kind === 'deposit'
+        ? `<div class="fuel-entry">
+             ${f('weapon', 'מספר נשק', true)}
+             ${f('amral', 'מק״ט אמר״ל', true)}
+             ${f('scope', 'מק״ט כוונת', true)}
+           </div>`
+        : ''}
+      <label class="field">
+        <span class="field-label">${d.kind === 'fault' ? 'תיאור התקלה' : 'תוכן הדיווח'}</span>
+        <textarea class="input area" rows="3" maxlength="1500"
+                  data-act="rep-f" data-k="text">${esc(d.text || '')}</textarea>
+      </label>
+      <div class="rec-actions">
+        <button class="btn primary small" data-act="rep-save" data-id="${esc(rec.id)}">שמירת התיקון</button>
+        <button class="btn ghost small" data-act="rep-cancel">ביטול</button>
+      </div>
+    </div>`;
+}
+
 function phoneRow(rec) {
   const shown = S.revealed.has(rec.rid);
   return `<div class="rec-meta">טלפון:
@@ -2028,6 +2288,27 @@ function groupByDept(recs) {
 // Standalone search box for lists that aren't the soldier roster.
 // `data` carries whatever the handler needs to know which list it is searching
 // — two registers share one search action and are told apart by it.
+/* ── Removing a row ────────────────────────────────────────────────────
+   Anything entered by hand can be entered wrongly, so every row in the
+   console can be deleted — and the row itself is what asks, never a
+   browser dialog. The first press arms that one row; the confirm is a
+   second, differently labelled control, so a mis-tap on ✕ cannot delete
+   anything. Arming a row disarms whichever was armed before, so there is
+   never more than one live "yes" on the screen. */
+
+function delCell(key, act, data = {}, label = '✕', aria = 'מחיקה', note = '') {
+  if (S.askDel !== key) {
+    return `<button class="linkbtn danger-link" data-act="ask-del" data-key="${esc(key)}"
+                    aria-label="${esc(aria)}" title="${esc(aria)}">${label}</button>`;
+  }
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
+  return `<span class="delask">
+      <span class="delask-q">${esc(note || 'למחוק?')}</span>
+      <button class="btn danger small" data-act="${esc(act)}"${attrs}>כן, למחוק</button>
+      <button class="linkbtn" data-act="ask-cancel">ביטול</button>
+    </span>`;
+}
+
 function plainSearch(act, clearAct, value, placeholder, total, shown, data = {}) {
   const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
   return `
@@ -2193,7 +2474,7 @@ function damagedCard(rec) {
       </header>
       <p class="muted-txt">לא ניתן לפענח את הרשומה — ייתכן שהנתונים שובשו בצד השרת.</p>
       <div class="rec-actions">
-        <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
+        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
       </div>
       ${fpStrip(rec.rid)}
     </article>`;
@@ -2235,11 +2516,12 @@ function pendingCard(rec) {
         ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
         : ''}
       ${phoneRow(rec)}
-          ${extrasRow(rec)}
+      ${extrasRow(rec)}
+      ${recEditor(rec)}
       <ul>${rows}</ul>
       <div class="rec-actions">
         <button class="btn primary" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
-        <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
+        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
       </div>
       ${fpStrip(rec.rid)}
     </article>`;
@@ -2326,7 +2608,7 @@ function renderPendingTab() {
         <td class="num">${esc(fmtShort(d.createdAt))}</td>
         <td class="nowrap">
           <button class="btn primary small" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
-          <button class="linkbtn danger-link" data-act="del" data-rid="${esc(rec.rid)}">מחיקה</button>
+          ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
         </td>
       </tr>
       ${open ? `<tr class="sub"><td colspan="7">${pendingDetail(rec)}</td></tr>` : ''}`;
@@ -2401,6 +2683,7 @@ function pendingDetail(rec) {
       <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
       ${phoneRow(rec)}
       ${extrasRow(rec)}
+      ${recEditor(rec)}
       <ul>${rows}</ul>
       ${fpStrip(rec.rid)}
     </div>`;
@@ -2453,6 +2736,8 @@ function renderTrackTab() {
             : ''}
           <a class="btn wa small" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
              data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>
+          ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, '✕', 'מחיקת הרשומה',
+                    'למחוק את הרשומה?')}
         </td>
       </tr>
       ${open ? `<tr class="sub"><td colspan="8">${trackDetail(rec)}</td></tr>` : ''}`;
@@ -2520,6 +2805,7 @@ function trackDetail(rec) {
         : '<span class="unsent">הודעת רישום טרם נשלחה</span>'}${
         d.returnNotified ? ' · <span class="sent">✓ הודעת זיכוי נשלחה</span>' : ''}</div>
       ${extrasRow(rec)}
+      ${recEditor(rec)}
       <ul>${rows}</ul>
       <div class="rec-actions">
         ${anyBack
@@ -2528,7 +2814,7 @@ function trackDetail(rec) {
                   d.returnNotified ? 'זיכוי — שליחה חוזרת' : 'הודעת זיכוי'
                 }</a>`
           : ''}
-        <button class="btn danger" data-act="del" data-rid="${esc(rec.rid)}">מחיקת הרשומה</button>
+        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקת הרשומה', 'מחיקת הרשומה')}
       </div>
       ${fpStrip(rec.rid)}
     </div>`;
@@ -3102,7 +3388,7 @@ function printDoc({ title, meta, head, rows, summary }) {
         <p class="pd-date">${esc(meta)}</p>
       </div>
     </header>
-    <table class="pd-tbl">
+    <table class="pd-tbl${head.length > 12 ? ' pd-wide' : ''}">
       <thead><tr><th class="pd-n">#</th>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
       <tbody>
         ${rows.map((r, i) => `<tr>
@@ -3286,7 +3572,7 @@ function renderInvTab() {
         <td><input class="input mini num" type="text" inputmode="numeric" maxlength="4" value="${Number(x.out) || 0}"
                    data-act="inv-xout" data-i="${i}" aria-label="בשימוש"></td>
         <td class="num ${(x.open - x.out) < 0 ? 'bad' : 'ok'}">${(Number(x.open) || 0) - (Number(x.out) || 0)}</td>
-        <td><button class="linkbtn danger-link" data-act="inv-xdel" data-i="${i}" aria-label="מחיקת שורה">✕</button></td>
+        <td>${delCell(`inv-x:${i}`, 'inv-xdel', { i }, '✕', 'מחיקת שורה')}</td>
       </tr>`
     )
     .join('');
@@ -3462,6 +3748,8 @@ function renderOverviewTab() {
       t: 'רכבים עם טיפול שעבר', s: vehLate.map((v) => v.plate).filter(Boolean).join(', ') || 'ללא מספר רכב' },
     vehKitShort.length && { n: vehKitShort.length, tone: 'warn', tab: 'veh',
       t: 'רכבים עם ציוד חסר', s: VEH_KIT.map((k) => k.name).join(', ') },
+    openRefuels() && { n: openRefuels(), tone: 'bad', tab: 'veh',
+      t: 'דיווחי תדלוק ממתינים לקליטה', s: 'עד שייקלטו, היתרה בכרטיסים אינה מעודכנת' },
     fuelLow.length && { n: fuelLow.length, tone: 'warn', tab: 'veh',
       t: 'כרטיסי תדלוק במלאי נמוך', s: `מתחת ל-${FUEL_LOW} ליטר` },
     ammoEmpty.length && { n: ammoEmpty.length, tone: 'warn', tab: 'ammo',
@@ -3731,9 +4019,11 @@ function depositsPanel() {
         ${done
           ? ''
           : `<button class="btn primary small" data-act="dep-approve" data-id="${esc(r.id)}">אישור וקליטה</button>`}
-        <button class="btn danger small" data-act="rep-del" data-id="${esc(r.id)}">מחיקה</button>
+        ${repEditLink(r)}
+        ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, 'מחיקה', 'מחיקת הדיווח')}
       </td>
-    </tr>`;
+    </tr>
+    ${S.repEdit === r.id ? `<tr class="sub"><td colspan="9">${repEditor(r)}</td></tr>` : ''}`;
   }).join('');
 
   const waiting = openDeposits();
@@ -3771,10 +4061,12 @@ const depApprove = (id) =>
     if (!rec || !isDeposit(rec) || rec.status === 'done') return;
     if (!S.inv) { toast('נתוני המלאי עדיין נטענים', true); return; }
     const d = rec.data;
-    const dup = (S.inv.armon || []).find(
-      (x) => x.kind === 'weapon' && x.serial.toLowerCase() === d.weapon.toLowerCase()
-    );
-    if (dup) { toast(`מספר נשק ${d.weapon} כבר רשום בארמון על שם ${dup.owner}`, true); return; }
+    // Every number on the slip has to be free — the weapon and each accessory
+    // — and the deposit itself is excluded so it does not collide with itself.
+    for (const [f, label] of SERIAL_FIELDS) {
+      const clash = serialTaken(d[f], rec.id);
+      if (clash) { toast(`${label}: ${clash}`, true); return; }
+    }
     const extra = [d.amral && `אמר״ל ${d.amral}`, d.scope && `כוונת ${d.scope}`].filter(Boolean).join(', ');
     if (!window.confirm(
       `לאשר אפסון של ${d.name} (מ״א ${d.pn})?\nנשק ${d.weapon}${extra ? `\nובנוסף: ${extra}` : ''}\n\nהפריטים ייקלטו לארמון.`
@@ -3871,12 +4163,29 @@ function renderRegisterTab(reg) {
 
   const armRow = ({ x, i }) => {
     const named = NAMED_LOCS[x.loc];
+    // A row is read until you say otherwise. Correcting a mistyped serial is
+    // rarer than reading the register, so the fields appear only for the one
+    // row being corrected — otherwise every row is a form again.
+    const ed = S.armEdit === x.id;
     return `
-    <tr>
-      <td>${esc(nameOf(reg.kinds, x.kind))}</td>
-      <td>${esc(x.name)}</td>
-      <td class="num wpn">${esc(x.serial)}</td>
-      <td>${esc(x.owner)}</td>
+    <tr${ed ? ' class="is-open"' : ''}>
+      <td>${ed
+        ? `<select class="input mini select-mini" data-act="arm-e-kind" data-reg="${reg.id}" data-i="${i}" aria-label="סוג">
+             ${reg.kinds.map((k) => `<option value="${k.id}"${x.kind === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}
+           </select>`
+        : esc(nameOf(reg.kinds, x.kind))}</td>
+      <td>${ed
+        ? `<input class="input mini" type="text" maxlength="60" value="${esc(x.name)}"
+                  data-act="arm-e-name" data-reg="${reg.id}" data-i="${i}" aria-label="שם הפריט">`
+        : esc(x.name)}</td>
+      <td class="num wpn">${ed
+        ? `<input class="input mini num wide" type="text" maxlength="40" value="${esc(x.serial)}"
+                  data-act="arm-e-serial" data-reg="${reg.id}" data-i="${i}" aria-label="מספר סידורי">`
+        : esc(x.serial)}</td>
+      <td>${ed
+        ? `<input class="input mini" type="text" maxlength="60" value="${esc(x.owner)}"
+                  data-act="arm-e-owner" data-reg="${reg.id}" data-i="${i}" aria-label="בעלים">`
+        : esc(x.owner)}</td>
       <td>
         <select class="input mini select-mini" data-act="arm-loc" data-reg="${reg.id}" data-i="${i}" aria-label="מיקום">
           ${kindLocs(reg, x.kind).map((l) => `<option value="${l.id}"${x.loc === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
@@ -3899,12 +4208,19 @@ function renderRegisterTab(reg) {
                  data-act="arm-note" data-id="${esc(x.id)}" placeholder="הערה (רשות)" aria-label="הערה">
           <button class="btn danger small mt-xs" data-act="arm-remove" data-reg="${reg.id}" data-i="${i}">אישור הסרה</button>` : ''}
       </td>
+      <td class="nowrap">
+        ${ed
+          ? `<button class="btn primary small" data-act="arm-e-done" data-reg="${reg.id}">סיום עריכה</button>`
+          : `<button class="linkbtn" data-act="arm-edit" data-id="${esc(x.id)}" title="תיקון פרטי הפריט">✎ עריכה</button>`}
+        ${delCell(`arm:${x.id}`, 'arm-del', { reg: reg.id, i }, '✕', 'מחיקת השורה',
+                  'למחוק את השורה לגמרי?')}
+      </td>
     </tr>`;
   };
   const rows = p.slice.map(armRow).join('');
   const rowsOut = pOut.slice.map(armRow).join('');
 
-  const logRows = log.slice(0, 200).map((e) => `
+  const logRows = log.slice(0, 200).map((e, n) => `
     <tr>
       <td class="num">${esc(fmtDate(e.t))}</td>
       <td class="${e.action === 'add' ? 'ok' : 'bad'}">${e.action === 'add' ? '+ הוספה' : '− הסרה'}</td>
@@ -3914,6 +4230,8 @@ function renderRegisterTab(reg) {
       <td>${esc(e.owner || '—')}</td>
       <td>${e.dest ? esc(nameOf(ARM_DESTS, e.dest)) : '—'}</td>
       <td>${esc(e.note || '')}</td>
+      <td>${delCell(`${reg.logKey}:${n}`, 'arm-log-del', { reg: reg.id, n }, '✕',
+                    'מחיקת שורת היומן', 'למחוק את שורת היומן?')}</td>
     </tr>`).join('');
 
   return `
@@ -3972,7 +4290,7 @@ function renderRegisterTab(reg) {
              <table class="tbl" data-phone="2,4,-1">
                <thead><tr>
                  <th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>בעלים</th>
-                 <th>מיקום</th><th class="num">נוסף</th><th></th>
+                 <th>מיקום</th><th class="num">נוסף</th><th>הסרה</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -3995,7 +4313,7 @@ function renderRegisterTab(reg) {
              <table class="tbl" data-phone="2,3,-1">
                <thead><tr>
                  <th>סוג</th><th>פריט</th><th class="num">מס׳ סידורי</th><th>אצל מי</th>
-                 <th>מיקום</th><th class="num">נוסף</th><th></th>
+                 <th>מיקום</th><th class="num">נוסף</th><th>הסרה</th><th></th>
                </tr></thead>
                <tbody>${rowsOut}</tbody>
              </table>
@@ -4015,7 +4333,7 @@ function renderRegisterTab(reg) {
              <table class="tbl" data-phone="0,1,4">
                <thead><tr>
                  <th class="num">תאריך</th><th>פעולה</th><th>סוג</th><th>פריט</th>
-                 <th class="num">מס׳ סידורי</th><th>בעלים</th><th>יעד</th><th>הערה</th>
+                 <th class="num">מס׳ סידורי</th><th>בעלים</th><th>יעד</th><th>הערה</th><th></th>
                </tr></thead>
                <tbody>${logRows}</tbody>
              </table>
@@ -4121,7 +4439,8 @@ function renderAmmoTab() {
     const dest = AMMO_DESTS.find((d) => d.id === draft.dest) || AMMO_DESTS[0];
     const usedUp = Math.max(0, x.open - x.qty);
     return `<tr${x.qty === 0 ? ' class="row-short"' : ''}>
-      <td>${esc(x.name)}</td>
+      <td><input class="input mini" type="text" maxlength="60" value="${esc(x.name)}"
+                 data-act="ammo-name" data-i="${i}" aria-label="שם הפריט"></td>
       <td class="num">
         <input class="input mini num" type="text" inputmode="numeric" maxlength="6"
                value="${x.open}" data-act="ammo-open" data-i="${i}" aria-label="כמות התחלתית ${esc(x.name)}">
@@ -4148,12 +4467,12 @@ function renderAmmoTab() {
       <td class="nowrap">
         <button class="btn ghost small" data-act="ammo-issue" data-i="${i}" ${x.qty === 0 ? 'disabled' : ''}>− הוצאה</button>
         <button class="btn ghost small" data-act="ammo-add-qty" data-i="${i}">+ הוספה</button>
-        <button class="linkbtn danger-link" data-act="ammo-del" data-i="${i}">✕</button>
+        ${delCell(`ammo:${x.id}`, 'ammo-del', { i }, '✕', 'מחיקת הפריט')}
       </td>
     </tr>`;
   }).join('');
 
-  const logRows = log.slice(0, 200).map((e) => `
+  const logRows = log.slice(0, 200).map((e, n) => `
     <tr>
       <td class="num">${esc(fmtDate(e.t))}</td>
       <td class="${e.action === 'add' ? 'ok' : 'bad'}">${e.action === 'add' ? '+ כניסה' : '− הוצאה'}</td>
@@ -4162,6 +4481,8 @@ function renderAmmoTab() {
       <td>${e.dest ? esc(nameOf(AMMO_DESTS, e.dest)) : '—'}</td>
       <td>${esc(e.who || '')}</td>
       <td>${esc(e.note || '')}</td>
+      <td>${delCell(`ammoLog:${n}`, 'ammo-log-del', { n }, '✕',
+                    'מחיקת שורת היומן', 'למחוק את שורת היומן?')}</td>
     </tr>`).join('');
 
   return `
@@ -4215,7 +4536,7 @@ function renderAmmoTab() {
       ${log.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,2,3">
-               <thead><tr><th class="num">תאריך</th><th>פעולה</th><th>פריט</th><th class="num">כמות</th><th>יעד</th><th>למי</th><th>הערה</th></tr></thead>
+               <thead><tr><th class="num">תאריך</th><th>פעולה</th><th>פריט</th><th class="num">כמות</th><th>יעד</th><th>למי</th><th>הערה</th><th></th></tr></thead>
                <tbody>${logRows}</tbody>
              </table>
            </div>
@@ -4260,7 +4581,7 @@ function renderVehTab() {
       <td class="${late ? 'bad' : missing.length ? 'warn' : 'ok'}">${
         late ? '⚠ טיפול עבר' : missing.length ? `חסר: ${missing.map((k) => k.name).join(', ')}` : '✓ תקין'
       }</td>
-      <td><button class="linkbtn danger-link" data-act="veh-del" data-i="${i}" aria-label="מחיקת רכב">✕</button></td>
+      <td>${delCell(`veh:${i}`, 'veh-del', { i }, '✕', 'מחיקת הרכב')}</td>
     </tr>`;
   }).join('');
 
@@ -4297,6 +4618,7 @@ function renderVehTab() {
       </div>
     </section>
 
+    ${refuelPanel()}
     ${fuelPanel()}`;
 }
 
@@ -4363,7 +4685,7 @@ function fuelPanel() {
           ? `<span class="muted-txt num">${esc(new Date(x.creditedAt).toLocaleDateString('he-IL'))}</span>`
           : ''}
       </td>
-      <td><button class="linkbtn danger-link" data-act="fuel-del" data-i="${i}" aria-label="מחיקת כרטיס">✕</button></td>
+      <td>${delCell(`fuel:${x.id}`, 'fuel-del', { i }, '✕', 'מחיקת הכרטיס')}</td>
     </tr>
     ${open ? `<tr class="sub"><td colspan="8">${fuelDetail(x, i)}</td></tr>` : ''}`;
   }).join('');
@@ -4412,6 +4734,94 @@ function fuelPanel() {
 // The expanded row: who used the card, and the receipts. Thumbnails are fetched
 // and decrypted one at a time, so opening a card with twenty receipts does not
 // pull twenty images at once.
+/* Refuelling reports waiting to be filed against a card. The soldier typed a
+   card number, and a typo there must not quietly take litres off the wrong
+   card — so the number is matched, and where it does not match exactly the
+   admin picks the card before anything moves. */
+function refuelPanel() {
+  const all = refuelReports();
+  const open = all.filter((r) => r.status !== 'done');
+  if (!all.length) return '';
+
+  const cards = (S.inv && S.inv.fuel) || [];
+  const norm = (v) => String(v || '').replace(/\D/g, '');
+  const rows = open.map((r) => {
+    const d = r.data;
+    const match = cards.find((c) => norm(c.no) && norm(c.no) === norm(d.card));
+    const picked = S.rfPick[r.id] || (match ? match.id : '');
+    const target = cards.find((c) => c.id === picked);
+    return `
+      <tr${target ? '' : ' class="row-short"'}>
+        <td class="num">${esc(fmtDate(d.createdAt))}</td>
+        <td>${esc(d.name)}</td>
+        <td class="num">
+          ${esc(S.revealed.has(r.id) ? d.phone : maskPhone(d.phone))}
+          <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
+        </td>
+        <td class="num wpn">${esc(d.card)}</td>
+        <td class="num"><strong>${d.litres}</strong></td>
+        <td class="num">${esc(d.plate)}</td>
+        <td>
+          ${match && !S.rfPick[r.id]
+            ? `<span class="ok">✓ ${esc(nameOf(FUEL_KINDS, match.kind))}</span>`
+            : `<select class="input mini select-mini" data-act="rf-pick" data-id="${esc(r.id)}" aria-label="לאיזה כרטיס">
+                 <option value="">כרטיס לא זוהה — בחרו</option>
+                 ${cards.map((c) => `<option value="${esc(c.id)}"${picked === c.id ? ' selected' : ''}>${esc(nameOf(FUEL_KINDS, c.kind))} · ${esc(c.no || 'ללא מספר')}</option>`).join('')}
+               </select>`}
+        </td>
+        <td class="nowrap">
+          <button class="btn primary small" data-act="rf-file" data-id="${esc(r.id)}"
+                  ${target ? '' : 'disabled'}>קליטה לכרטיס</button>
+          ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, '✕', 'מחיקת הדיווח', 'למחוק את הדיווח?')}
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">דיווחי תדלוק ${open.length ? `<span class="pill bad num">${open.length}</span>` : ''}</h2>
+      <p class="panel-sub">מה שחיילים דיווחו מהשטח דרך "דיווח תדלוק". קליטה מורידה את הליטרים מיתרת הכרטיס ורושמת את השימוש. שורה באדום — מספר הכרטיס לא זוהה, בחרו כרטיס לפני הקליטה.</p>
+      ${open.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="1,4,-1">
+               <thead><tr>
+                 <th class="num">דווח</th><th>מי תדלק</th><th class="num">טלפון</th>
+                 <th class="num">מספר כרטיס</th><th class="num">ליטרים</th><th class="num">רכב</th>
+                 <th>כרטיס במערכת</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">כל הדיווחים נקלטו.</p>'}
+    </section>`;
+}
+
+// Filing one report against a card: the litres come off the balance and the
+// use is logged with the soldier's own name, so the card's history reads the
+// same whether it was typed here or reported from the field.
+const refuelFile = (id) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec || !rec.data) return;
+    const cards = S.inv.fuel || [];
+    const norm = (v) => String(v || '').replace(/\D/g, '');
+    const picked = S.rfPick[id];
+    const card = picked
+      ? cards.find((c) => c.id === picked)
+      : cards.find((c) => norm(c.no) && norm(c.no) === norm(rec.data.card));
+    if (!card) { toast('לא נבחר כרטיס', true); return; }
+
+    const d = rec.data;
+    card.uses = [{ t: d.createdAt || Date.now(), who: d.name, litres: d.litres, plate: d.plate }, ...(card.uses || [])];
+    card.litres = Math.max(0, card.litres - d.litres);
+    await invSave();
+    await api(`/admin/reports/${id}`, { method: 'PUT', body: { status: 'done' } });
+    rec.status = 'done';
+    delete S.rfPick[id];
+    renderConsole();
+    toast(`נקלט — ${d.litres} ליטר ירדו מהכרטיס`);
+  });
+
 function fuelDetail(card, i) {
   const draft = S.fuelDraft[card.id] || {};
 
@@ -4461,7 +4871,7 @@ function fuelDetail(card, i) {
              <td>${esc(u.who)}</td>
              <td class="num">${u.litres}</td>
              <td class="num">${u.plate ? esc(u.plate) : '—'}</td>
-             <td><button class="linkbtn danger-link" data-act="fuel-use-del" data-i="${i}" data-n="${n}">✕</button></td>
+             <td>${delCell(`fuse:${card.id}:${n}`, 'fuel-use-del', { i, n }, '✕', 'מחיקת השימוש')}</td>
            </tr>`).join('')}</tbody>
        </table>`
     : '<p class="empty mb0">טרם נרשם שימוש בכרטיס.</p>';
@@ -4480,7 +4890,7 @@ function fuelDetail(card, i) {
                <figcaption>
                  <span class="num">${esc(fmtDate(r.at))}</span>
                  <button class="linkbtn" data-act="fuel-dl-one" data-i="${i}" data-r="${esc(r.id)}">הורדה</button>
-                 <button class="linkbtn danger-link" data-act="fuel-doc-del" data-i="${i}" data-r="${esc(r.id)}">מחיקה</button>
+                 ${delCell(`frcpt:${r.id}`, 'fuel-doc-del', { i, r: r.id }, 'מחיקה', 'מחיקת הקבלה')}
                </figcaption>
              </figure>`;
          }).join('')}
@@ -4509,7 +4919,6 @@ const fuelDelete = (i) =>
     const card = (S.inv.fuel || [])[i];
     if (!card) return;
     const n = card.receipts.length;
-    if (!window.confirm(`למחוק את כרטיס ${card.no || 'התדלוק'}${n ? ` ואת ${n} הקבלות המצורפות` : ''}?`)) return;
     for (const r of card.receipts) {
       await api(`/admin/docs/${r.id}/fuel`, { method: 'DELETE' }).catch(() => {});
       delete S.docs[`${r.id}:fuel`];
@@ -4587,7 +4996,6 @@ const fuelDocDelete = (i, docId) =>
   withBusy(async () => {
     const card = (S.inv.fuel || [])[i];
     if (!card) return;
-    if (!window.confirm('למחוק את הקבלה? הפעולה אינה הפיכה.')) return;
     await api(`/admin/docs/${docId}/fuel`, { method: 'DELETE' });
     delete S.docs[`${docId}:fuel`];
     card.receipts = card.receipts.filter((r) => r.id !== docId);
@@ -4690,14 +5098,12 @@ function armAdd(form) {
   if (name.length < 2) return setFormErr(form, 'נא למלא שם פריט');
   if (serial.length < 2) return setFormErr(form, 'נא למלא מספר סידורי');
   if (owner.length < 2) return setFormErr(form, 'נא למלא שם מלא של בעל הפריט');
-  // Serialised kinds are unique. Accessories are logged by מק״ט — a catalogue
-  // number shared by every unit of that model — so duplicates are expected there.
-  if (kind === reg.unique) {
-    const dup = (S.inv[reg.key] || []).find(
-      (x) => x.kind === reg.unique && x.serial.toLowerCase() === serial.toLowerCase()
-    );
-    if (dup) return setFormErr(form, `מספר סידורי ${serial} כבר קיים ${reg.placeIn} (${dup.name})`);
-  }
+  // A number identifies one physical item, so it may exist once across the
+  // whole unit — not once per register, and not once per kind. A מק״ט typed
+  // twice is either the same item entered twice or a transcription error, and
+  // both are worth stopping at the point of entry.
+  const taken = serialTaken(serial);
+  if (taken) return setFormErr(form, taken);
   setFormErr(form, '');
   const now = Date.now();
   S.inv[reg.key] = [...(S.inv[reg.key] || []), { id: rndId(), kind, name, serial, owner, loc: reg.home, note: '', addedAt: now }];
@@ -4797,12 +5203,20 @@ function tzelemWa() {
 // Deposits and building faults ride the same pipe as shortage reports; each
 // tab sees only its own kind, and damaged rows stay with the shortage tab so
 // they are never silently dropped.
+// What each kind of report is called when it is listed outside its own tab.
+const REPORT_KIND = {
+  deposit: 'אפסון נשק', fault: 'תקלת בינוי', refuel: 'דיווח תדלוק', report: 'בקשת חוסר',
+};
+
 const isKind = (r, k) => !r.damaged && !!r.data && r.data.kind === k;
 const isDeposit = (r) => isKind(r, 'deposit');
 const isFault = (r) => isKind(r, 'fault');
-const shortageReports = () => S.reports.filter((r) => !isDeposit(r) && !isFault(r));
+const isRefuel = (r) => isKind(r, 'refuel');
+const shortageReports = () => S.reports.filter((r) => !isDeposit(r) && !isFault(r) && !isRefuel(r));
 const depositReports = () => S.reports.filter(isDeposit);
 const faultReports = () => S.reports.filter(isFault);
+const refuelReports = () => S.reports.filter(isRefuel);
+const openRefuels = () => refuelReports().filter((r) => r.status !== 'done').length;
 
 // 'open' and 'partial' both still need the admin's attention.
 const openReports = () => shortageReports().filter((r) => r.status !== 'done' && !r.damaged).length;
@@ -4885,7 +5299,7 @@ function renderReportsTab() {
         return `<article class="rec broken">
             <header class="rec-head"><div class="rec-name">דיווח פגום</div><span class="state live">שגיאה</span></header>
             <p class="muted-txt">לא ניתן לפענח את הדיווח.</p>
-            <div class="rec-actions"><button class="btn danger" data-act="rep-del" data-id="${esc(rec.id)}">מחיקה</button></div>
+            <div class="rec-actions">${delCell(`rep:${rec.id}`, 'rep-del', { id: rec.id }, 'מחיקה', 'מחיקת הדיווח')}</div>
           </article>`;
       }
       const d = rec.data;
@@ -4932,8 +5346,10 @@ function renderReportsTab() {
             ${canMsg && st === 'open'
               ? `<a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>`
               : ''}
-            <button class="btn danger" data-act="rep-del" data-id="${esc(rec.id)}">מחיקה</button>
+            ${repEditLink(rec)}
+            ${delCell(`rep:${rec.id}`, 'rep-del', { id: rec.id }, 'מחיקה', 'מחיקת הדיווח')}
           </div>
+          ${repEditor(rec)}
         </article>`;
     })
     .join('');
@@ -5008,8 +5424,10 @@ function renderFaultsTab() {
         <div class="rec-actions">
           <a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}"
              target="_blank" rel="noopener noreferrer">וואטסאפ למדווח</a>
-          <button class="btn danger" data-act="rep-del" data-id="${esc(r.id)}">מחיקה</button>
+          ${repEditLink(r)}
+          ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, 'מחיקה', 'מחיקת הדיווח')}
         </div>
+        ${repEditor(r)}
       </article>`;
   }).join('');
 
@@ -5112,6 +5530,71 @@ const adminRefreshQuiet = async () => {
   if (scopes.has('reports')) await loadReports();
 };
 
+/* ── Watching for what arrives while you are looking at the screen ──────
+   A soldier fills in a form and the desk should show it, not wait to be
+   told to look. Every few seconds the console asks the server one small
+   question — how many records and reports there are and when they last
+   changed — and only when that answer moves does it fetch and decrypt
+   anything. A quiet unit costs two aggregate queries a tick and nothing
+   else; the expensive part happens exactly when there is news.
+
+   It will not redraw under someone's hands: if a field has focus or an
+   editor is open, the refresh waits for the next tick. */
+
+const PULSE_MS = 3000;
+let pulseTimer = null;
+let pulseSig = null;
+let pulseBusy = false;
+
+const editorOpen = () =>
+  !!(S.recEdit || S.repEdit || S.armEdit || S.userEdit || S.askDel);
+
+// Typing, or a menu the user is part-way through — either way, not now.
+const handsOn = () => {
+  const a = document.activeElement;
+  return !!a && $app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+};
+
+function startPulse() {
+  stopPulse();
+  pulseSig = null;
+  pulseTimer = setInterval(pulseTick, PULSE_MS);
+}
+
+function stopPulse() {
+  clearInterval(pulseTimer);
+  pulseTimer = null;
+}
+
+async function pulseTick() {
+  // Not while locked out, not on a soldier page, not on top of a slow tick,
+  // and not while the tab is in the background burning someone's battery.
+  if (!S.priv || S.route !== 'admin' || S.adminView !== 'console') return;
+  if (pulseBusy || S.busy || document.hidden) return;
+  pulseBusy = true;
+  try {
+    const p = await api('/admin/pulse');
+    const sig = `${p.rn}:${p.rt}:${p.pn}:${p.pt}:${p.vt}`;
+    if (pulseSig === null) { pulseSig = sig; return; }   // first tick just learns
+    if (sig === pulseSig) return;
+    if (handsOn() || editorOpen()) return;               // try again next tick
+    pulseSig = sig;
+    const scopes = allowedScopes();
+    if (scopes.has('records')) await loadRecords();
+    if (scopes.has('reports')) await loadReports();
+    // The vault is this admin's own writing, so a change is almost always
+    // their own save echoing back; reloading it would fight with unsaved edits.
+    renderConsole();
+  } catch {
+    /* a dropped tick is not worth a message — the next one will tell us */
+  } finally {
+    pulseBusy = false;
+  }
+}
+
+// Coming back to the tab should feel instant rather than up to three seconds stale.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pulseTick(); });
+
 const loadAudit = () =>
   withBusy(async () => {
     const { audit } = await api('/admin/audit');
@@ -5124,6 +5607,7 @@ const AUDIT_LABEL = {
   'delete-report': 'מחיקת דיווח', 'restore-record': 'שחזור רשומה',
   'restore-report': 'שחזור דיווח', vault: 'שמירת מלאי', 'user-create': 'יצירת משתמש',
   'user-update': 'עדכון משתמש', 'user-delete': 'מחיקת משתמש',
+  'edit-report': 'תיקון דיווח',
 };
 
 // Users. Every account carries its own copy of the private key, wrapped under
@@ -5145,7 +5629,7 @@ function usersPanel() {
         <button class="btn ghost small" data-act="uedit-open" data-u="${esc(u.username)}">
           ${S.userEdit === u.username ? 'סגירה' : 'עריכה'}
         </button>
-        ${isMe ? '' : `<button class="linkbtn danger-link" data-act="user-del" data-u="${esc(u.username)}">מחיקה</button>`}
+        ${isMe ? '' : `${delCell(`user:${u.username}`, 'user-del', { u: u.username }, 'מחיקה', 'מחיקת המשתמש')}`}
       </td>
     </tr>
     ${S.userEdit === u.username ? `<tr class="sub"><td colspan="5">${userEditRow(u)}</td></tr>` : ''}`;
@@ -5248,7 +5732,7 @@ function trashPanel() {
                      <td><button class="btn ghost small" data-act="trash-restore" data-kind="record" data-id="${esc(r.rid)}">שחזור</button></td>
                    </tr>`).join('')}
                    ${t.reports.map((r) => `<tr>
-                     <td>${r.damaged ? 'דיווח' : r.data.kind === 'deposit' ? 'אפסון נשק' : r.data.kind === 'fault' ? 'תקלת בינוי' : 'בקשת חוסר'}</td>
+                     <td>${r.damaged ? 'דיווח' : REPORT_KIND[r.data.kind] || 'בקשת חוסר'}</td>
                      <td>${r.damaged ? '<span class="bad">פגום</span>' : esc(r.data.name)}</td>
                      <td class="num">${esc(fmtDate(r.deleted_at))}</td>
                      <td><button class="btn ghost small" data-act="trash-restore" data-kind="report" data-id="${esc(r.id)}">שחזור</button></td>
@@ -5404,9 +5888,33 @@ function repMarkSent(id) {
   renderConsole();
 }
 
+// Saving a corrected report. It is re-sealed here, in the browser, exactly as
+// the soldier's original was — the server receives a new envelope and learns
+// nothing from the correction.
+const repSave = (id) =>
+  withBusy(async () => {
+    const rec = S.reports.find((r) => r.id === id);
+    if (!rec || !S.repDraft) return;
+    if ((S.repDraft.name || '').trim().length < 2) { toast('נא למלא שם מדווח', true); return; }
+
+    const next = cleanReport({ ...rec.data, ...S.repDraft, name: S.repDraft.name.trim() });
+    const prev = rec.data;
+    rec.data = next;
+    try {
+      await api(`/admin/reports/${id}`, { method: 'PUT', body: await seal(S.pubKey, next) });
+    } catch {
+      rec.data = prev;
+      toast('השמירה נכשלה — הדיווח לא שונה', true);
+      return;
+    }
+    S.repEdit = '';
+    S.repDraft = null;
+    renderConsole();
+    toast('הדיווח עודכן');
+  });
+
 const repDelete = (id) =>
   withBusy(async () => {
-    if (!window.confirm('למחוק את הדיווח? הפעולה אינה הפיכה.')) return;
     await api(`/admin/reports/${id}`, { method: 'DELETE' });
     S.reports = S.reports.filter((r) => r.id !== id);
     renderConsole();
@@ -5766,6 +6274,7 @@ async function loginSubmit(form) {
       if (S.role === 'admin') await loadUsers();
       S.tab = allowedTabs()[0] || 'over';
       armIdle();
+      startPulse();
       renderConsole();
     } catch (e) {
       setFormErr(form, e.status === 401 ? 'שם משתמש או סיסמה שגויים' : e.message);
@@ -5821,20 +6330,43 @@ function editDistance(a, b) {
 const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
 
 // Every serial already in use, excluding one record (the one being approved).
-function serialIndex(exceptRid) {
+// Every serial the unit already has on its books, from wherever it is held.
+// A number identifies one physical thing, so it may appear once — a weapon
+// serial, a מק״ט of an אמר״ל, a sight, an item in either register. `except`
+// drops the row being edited, so a record does not collide with itself.
+function serialIndex(except) {
   const out = [];
   for (const rec of S.recs) {
-    if (rec.rid === exceptRid || rec.damaged || !rec.data || rec.status !== 'approved') continue;
+    if (rec.rid === except || rec.damaged || !rec.data || rec.status !== 'approved') continue;
     for (const [f, label] of SERIAL_FIELDS) {
       if (rec.data[f]) out.push({ v: String(rec.data[f]), label, who: rec.data.name, kind: 'חייל' });
     }
   }
-  for (const x of (S.inv && S.inv.armon) || []) {
-    if (x.kind === 'weapon' && x.serial) {
-      out.push({ v: String(x.serial), label: 'נשק', who: x.owner, kind: 'ארמון' });
+  for (const reg of Object.values(REGISTERS)) {
+    for (const x of (S.inv && S.inv[reg.key]) || []) {
+      if (x.id === except || !x.serial) continue;
+      out.push({ v: String(x.serial), label: nameOf(reg.kinds, x.kind), who: x.owner, kind: reg.title });
+    }
+  }
+  // A deposit that has been filed is already in the register; one still
+  // waiting is not, and its numbers are just as taken.
+  for (const r of S.reports) {
+    if (r.id === except || r.damaged || !r.data) continue;
+    if (r.data.kind !== 'deposit' || r.status === 'done') continue;
+    for (const [f, label] of SERIAL_FIELDS) {
+      if (r.data[f]) out.push({ v: String(r.data[f]), label, who: r.data.name, kind: 'אפסון ממתין' });
     }
   }
   return out;
+}
+
+// The blocking half of the check: an exact match anywhere is a refusal, not
+// a warning. Returns the message to show, or '' if the number is free.
+function serialTaken(value, except) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return '';
+  const hit = serialIndex(except).find((o) => o.v.trim().toLowerCase() === v);
+  return hit ? `⛔ ${value} כבר רשום על ${hit.who || 'ללא שם'} (${hit.kind}) — מספר חייב להיות ייחודי` : '';
 }
 
 // Returns [] when nothing is suspicious, otherwise a list of human sentences.
@@ -5856,6 +6388,37 @@ function serialWarnings(d, exceptRid) {
   }
   return out;
 }
+
+// Saving a correction. The same duplicate and near-miss checks the approval
+// path runs apply here — a serial corrected into someone else's serial is the
+// mistake this whole feature exists to catch, not one to wave through.
+const recSave = (rid) =>
+  withBusy(async () => {
+    const rec = findRec(rid);
+    if (!rec || !S.recDraft) return;
+    const d = S.recDraft;
+    if ((d.name || '').trim().length < 2) { toast('נא למלא שם', true); return; }
+    if (!/^\d{5,9}$/.test(String(d.pn || '').trim())) { toast('מספר אישי — 5 עד 9 ספרות', true); return; }
+
+    const next = cleanRecord({ ...rec.data, ...d, pn: String(d.pn).trim(), name: d.name.trim() });
+    const warns = serialWarnings(next, rid);
+    const blocking = warns.filter((w) => w.startsWith('⛔'));
+    if (blocking.length) { toast(blocking[0], true); return; }
+
+    const prev = rec.data;
+    rec.data = next;
+    try {
+      await saveRec(rec);
+    } catch {
+      rec.data = prev;                       // the server refused; the screen must not lie
+      toast('השמירה נכשלה — הנתונים לא שונו', true);
+      return;
+    }
+    S.recEdit = '';
+    S.recDraft = null;
+    renderConsole();
+    toast(warns.length ? `נשמר · ${warns[0]}` : 'הפרטים עודכנו');
+  });
 
 // Approving one record. Split out of the click handler so a bulk run can call
 // it repeatedly without nesting withBusy or firing a toast per soldier.
@@ -6019,7 +6582,6 @@ const adminDelete = (rid) =>
     const rec = findRec(rid);
     if (!rec) return;
     const who = rec.damaged ? 'הרשומה הפגומה' : `הרשומה של ${rec.data.name}`;
-    if (!window.confirm(`למחוק את ${who}? הפעולה אינה הפיכה.`)) return;
     await api(`/admin/records/${rid}`, { method: 'DELETE' });
     S.recs = S.recs.filter((r) => r.rid !== rid);
     renderConsole();
@@ -6220,7 +6782,6 @@ function userEditRow(u) {
 
 const userDelete = (username) =>
   withBusy(async () => {
-    if (!window.confirm(`למחוק את המשתמש ${username}? הוא ינותק מיד ולא יוכל להתחבר.`)) return;
     await api(`/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
     await loadUsers();
     renderConsole();
@@ -6272,6 +6833,14 @@ $app.addEventListener('click', (e) => {
   const act = el.dataset.act;
   // toggling an equipment row shouldn't fire when a stepper button inside it was hit
   if (act === 's-toggle' && e.target.closest('.step-btn')) return;
+  // An armed row stays armed only for the press that answers it. Anything
+  // else the user does is an answer of "no", which is the safe default and
+  // saves every delete handler from having to remember to disarm.
+  if (S.askDel && act !== 'ask-del' && !el.closest('.delask')) {
+    S.askDel = '';
+    renderConsole();
+    if (act === 'ask-cancel') return;
+  }
   dispatch(act, el);
 });
 
@@ -6359,6 +6928,13 @@ $app.addEventListener('input', (e) => {
     case 'arm-note':
       S.armDraft[el.dataset.id] = { ...(S.armDraft[el.dataset.id] || {}), note: el.value };
       break;
+    // correcting a register row in place — saved when the editor is closed
+    case 'arm-e-name':   S.inv[regOf(el).key][+el.dataset.i].name = el.value; break;
+    case 'arm-e-serial': S.inv[regOf(el).key][+el.dataset.i].serial = el.value; break;
+    case 'arm-e-owner':  S.inv[regOf(el).key][+el.dataset.i].owner = el.value; break;
+    case 'ammo-name':    S.inv.ammo[+el.dataset.i].name = el.value; break;
+    case 'rec-f':        if (S.recDraft) S.recDraft[el.dataset.k] = el.value; break;
+    case 'rep-f':        if (S.repDraft) S.repDraft[el.dataset.k] = el.value; break;
     case 'ammo-open':
       S.inv.ammo[+el.dataset.i].open =
         Math.max(0, Math.min(999999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
@@ -6382,6 +6958,24 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
+  if (el.dataset.act === 'rf-pick') {
+    S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
+    renderConsole();
+    return;
+  }
+  if (el.dataset.act === 'rec-f-dept') {
+    if (S.recDraft) S.recDraft.dept = el.value;
+    return;
+  }
+  if (el.dataset.act === 'arm-e-kind') {
+    const reg = regOf(el);
+    const it = S.inv[reg.key][+el.dataset.i];
+    it.kind = el.value;
+    // the new kind may not allow where the item currently is
+    if (!kindLocs(reg, it.kind).some((l) => l.id === it.loc)) it.loc = reg.home;
+    renderConsole();
+    return;
+  }
   if (el.dataset.act === 'arm-loc') {
     const it = S.inv[regOf(el).key][+el.dataset.i];
     it.loc = el.value;
@@ -6445,6 +7039,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'report') reportSubmit(form);
   else if (kind === 'deposit') depositSubmit(form);
   else if (kind === 'fault') faultSubmit(form);
+  else if (kind === 'refuel') refuelSubmit(form);
   else if (kind === 'arm-add') armAdd(form);
   else if (kind === 'ammo-add') ammoAdd(form);
 });
@@ -6517,8 +7112,36 @@ function dispatch(act, el) {
       renderConsole();
       focusLast('[data-act="inv-xname"]');
       break;
+    case 'ask-del':    S.askDel = el.dataset.key; renderConsole(); break;
+    case 'ask-cancel': S.askDel = ''; renderConsole(); break;
+    // correcting a soldier's record
+    case 'rec-edit': {
+      const rec = findRec(el.dataset.rid);
+      if (!rec || !rec.data) break;
+      S.recEdit = el.dataset.rid;
+      const { name, pn, phone, dept, weapon, amral, scope } = rec.data;
+      S.recDraft = { name, pn, phone, dept, weapon, amral, scope };
+      renderConsole();
+      break;
+    }
+    case 'rec-cancel': S.recEdit = ''; S.recDraft = null; renderConsole(); break;
+    case 'rec-save': recSave(el.dataset.rid); break;
+    // correcting a shortage request, a deposit or a building fault
+    case 'rep-edit': {
+      const rep = S.reports.find((r) => r.id === el.dataset.id);
+      if (!rep || !rep.data) break;
+      S.repEdit = el.dataset.id;
+      const { kind, name, pn, phone, text, weapon, amral, scope } = rep.data;
+      S.repDraft = { kind, name, pn, phone, text, weapon, amral, scope };
+      renderConsole();
+      break;
+    }
+    case 'rep-cancel': S.repEdit = ''; S.repDraft = null; renderConsole(); break;
+    case 'rep-save': repSave(el.dataset.id); break;
+    case 'rf-file': refuelFile(el.dataset.id); break;
     case 'inv-xdel':
       S.inv.extra.splice(parseInt(el.dataset.i, 10), 1);
+      S.askDel = '';
       renderConsole();
       break;
     case 'inv-save': invSave(); break;
@@ -6527,6 +7150,40 @@ function dispatch(act, el) {
       S.regKind = { ...S.regKind, [regOf(el).id]: el.dataset.k };
       S.page = {}; renderConsole(); break;
     case 'arm-remove': armRemove(regOf(el), +el.dataset.i); break;
+    case 'arm-edit':   S.armEdit = el.dataset.id; renderConsole(); break;
+    case 'arm-e-done': {
+      // A serial corrected into one that already exists is the collision this
+      // check exists for, so the editor stays open until it is resolved.
+      const reg = regOf(el);
+      const it = (S.inv[reg.key] || []).find((x) => x.id === S.armEdit);
+      const clash = it ? serialTaken(it.serial, it.id) : '';
+      if (clash) { toast(clash, true); break; }
+      S.armEdit = '';
+      invSave();
+      break;
+    }
+    // Deleting the row outright, as opposed to moving the item somewhere:
+    // this is for a line that should never have been written, so it leaves
+    // no movement in the log either.
+    case 'arm-del': {
+      const reg = regOf(el);
+      S.inv[reg.key].splice(+el.dataset.i, 1);
+      S.askDel = '';
+      invSave();
+      break;
+    }
+    case 'arm-log-del': {
+      const reg = regOf(el);
+      S.inv[reg.logKey].splice(+el.dataset.n, 1);
+      S.askDel = '';
+      invSave();
+      break;
+    }
+    case 'ammo-log-del':
+      S.inv.ammoLog.splice(+el.dataset.n, 1);
+      S.askDel = '';
+      invSave();
+      break;
     case 'arm-qclear': S.regQ = { ...S.regQ, [regOf(el).key]: '' }; S.page = {}; renderConsole(); break;
     // tzelem report
     case 'tz-qclear': S.regQ = { ...S.regQ, tzelem: '' }; renderConsole(); break;
@@ -6535,7 +7192,7 @@ function dispatch(act, el) {
     case 'ammo-issue': ammoMove(+el.dataset.i, true); break;
     case 'ammo-add-qty': ammoMove(+el.dataset.i, false); break;
     case 'ammo-del':
-      if (window.confirm('למחוק את הפריט מהמלאי?')) { S.inv.ammo.splice(+el.dataset.i, 1); invSave(); }
+      S.inv.ammo.splice(+el.dataset.i, 1); S.askDel = ''; invSave();
       break;
     case 'ammo-qclear': S.regQ = { ...S.regQ, ammo: '' }; renderConsole(); break;
     // vehicles
@@ -6546,7 +7203,7 @@ function dispatch(act, el) {
       focusLast('[data-act="veh-plate"]');
       break;
     case 'veh-del':
-      if (window.confirm('למחוק את הרכב?')) { S.inv.vehicles.splice(+el.dataset.i, 1); renderConsole(); }
+      S.inv.vehicles.splice(+el.dataset.i, 1); S.askDel = ''; renderConsole();
       break;
     case 'veh-kit':
       S.inv.vehicles[+el.dataset.i][el.dataset.k] = el.checked;
@@ -6567,10 +7224,9 @@ function dispatch(act, el) {
     case 'fuel-dl-all': fuelDownloadAll(+el.dataset.i); break;
     case 'fuel-use': fuelUse(+el.dataset.i); break;
     case 'fuel-use-del':
-      if (window.confirm('למחוק את רישום השימוש? הליטרים לא יוחזרו ליתרה אוטומטית.')) {
-        S.inv.fuel[+el.dataset.i].uses.splice(+el.dataset.n, 1);
-        invSave();
-      }
+      S.inv.fuel[+el.dataset.i].uses.splice(+el.dataset.n, 1);
+      S.askDel = '';
+      invSave();
       break;
     case 'fuel-credit': fuelCredit(+el.dataset.i); break;
     case 'fuel-office':
@@ -6672,6 +7328,7 @@ function dispatch(act, el) {
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
+    case 'rf-again': S.rfSent = false; S.rf = null; renderRefuel(); break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
