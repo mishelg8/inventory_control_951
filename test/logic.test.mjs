@@ -85,3 +85,60 @@ test('soldier submissions all spend a ticket', () => {
   assert.equal((app.match(/ticket: await getTicket\(\)/g) || []).length, 4);
   assert.ok(api.includes('spendTicket(db, b.ticket, now)'));
 });
+
+test('a register never accepts another register\'s kinds or places', () => {
+  // The vault is written by whoever holds the public key, so an item arriving
+  // with a foreign kind or a foreign location is an expected input, not an
+  // impossible one. Two properties matter: it is coerced rather than kept,
+  // and it never lands at home — an item that was out must not come back
+  // reading as present on the shelf.
+  const consts = app.match(/const LIFECYCLE = [\s\S]*?const NAMED_LOCS = \{[\s\S]*?\n\};/)[0];
+  const regs = app.match(/const REGISTERS = \{[\s\S]*?\n\};/)[0];
+  const helpers = `
+    ${consts}
+    ${regs}
+    ${app.match(/const kindLocs = [\s\S]*?\n\};/)[0]}
+    const asText = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+    const asTime = (v) => (Number.isFinite(v) ? v : 0);
+    const rndId = () => 'id';
+  `;
+  const cleanRegItem = new Function(
+    `${helpers}\n${app.match(/const cleanRegItem = [\s\S]*?\n\};/)[0]}\nreturn cleanRegItem;`
+  )();
+  const REGISTERS = new Function(`${helpers}\nreturn REGISTERS;`)();
+
+  const comms = cleanRegItem(REGISTERS.comms);
+  const armon = cleanRegItem(REGISTERS.armon);
+
+  // a weapon smuggled into the signals store becomes the store's first kind
+  assert.equal(comms({ kind: 'weapon', loc: 'armon' }).kind, 'radio');
+  assert.equal(comms({ kind: 'weapon', loc: 'armon' }).loc, 'soldier');
+  // and a radio smuggled into the armoury becomes a weapon
+  assert.equal(armon({ kind: 'radio', loc: 'store' }).kind, 'weapon');
+  assert.equal(armon({ kind: 'radio', loc: 'store' }).loc, 'soldier');
+  // a weapon may not be sent on a mission even inside its own register
+  assert.equal(armon({ kind: 'weapon', loc: 'mission' }).loc, 'soldier');
+  // each register's own values survive untouched
+  assert.equal(comms({ kind: 'battery', loc: 'vehicle' }).loc, 'vehicle');
+  assert.equal(armon({ kind: 'tzelem', loc: 'mission' }).loc, 'mission');
+  // an empty item rests at home, which is where a newly registered item is
+  assert.equal(comms({}).loc, 'store');
+  assert.equal(armon({}).loc, 'armon');
+});
+
+test('the client and the Worker agree on what each screen reads', () => {
+  // The client hides a screen; the Worker refuses the data. If the two lists
+  // ever drift, a screen is either unreachable or reachable without the
+  // permission it needs.
+  const clientTabs = [...app.match(/const TABS = \[[\s\S]*?\n\];/)[0]
+    .matchAll(/\{ id: '(\w+)',\s*name: '[^']*',\s*needs: \[([^\]]*)\]/g)]
+    .map(([, id, needs]) => [id, needs.replace(/['\s]/g, '').split(',').filter(Boolean).sort().join(',')]);
+  const workerNeeds = new Function(
+    `return ${api.match(/const TAB_NEEDS = \{[\s\S]*?\n\};/)[0].replace('const TAB_NEEDS = ', '').replace(/;$/, '')}`
+  )();
+  assert.equal(clientTabs.length, Object.keys(workerNeeds).length);
+  for (const [id, needs] of clientTabs) {
+    assert.ok(id in workerNeeds, `${id} is offered by the client but unknown to the Worker`);
+    assert.equal(needs, [...workerNeeds[id]].sort().join(','), `${id} needs different data on each side`);
+  }
+});
