@@ -6105,6 +6105,11 @@ async function loadInv() {
     if (!vault) { S.inv = emptyInv(); S.invVersion = 0; return; }
     S.invVersion = vault.updated_at || 0;   // what a later save will be checked against
     S.inv = await openRecord(S.priv, vault, cleanInv);
+    // Publishing on save alone left the soldiers' list empty until somebody
+    // happened to save — including right after this feature shipped, when
+    // nothing had been saved yet. Opening the console now republishes it, so
+    // the list is right from the first time an admin signs in.
+    if (S.role !== 'viewer') await publishCards();
   } catch {
     S.inv = emptyInv();
     S.invVersion = 0;
