@@ -893,6 +893,46 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .fp-code { letter-spacing: 1.5px; }
 
+/* ── Signing with a finger ─────────────────────────────────────────────
+   `touch-action: none` is what makes this work at all on a phone: without
+   it the browser reads the first drag as a scroll and the page moves out
+   from under the finger instead of taking a line. The canvas keeps a fixed
+   600×220 drawing buffer and is shown at whatever width there is, so the
+   stroke is the same weight on every screen. */
+.sigwrap {
+  position: relative;
+  margin-top: 4px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  background: #fff;
+  overflow: hidden;
+}
+.sigpad {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+/* the baseline you sign on, drawn rather than imagined */
+.sigwrap::after {
+  content: '';
+  position: absolute;
+  inset-inline: 12%;
+  bottom: 22%;
+  border-bottom: 1px solid var(--line);
+  pointer-events: none;
+}
+.sig-hint {
+  position: absolute;
+  inset-inline-start: 50%;
+  bottom: 24%;
+  transform: translateX(50%);
+  color: var(--muted-2);
+  font-size: 13px;
+  pointer-events: none;
+}
+
 /* ── Steppers ──────────────────────────────────────────────────────── */
 .step { display: inline-flex; align-items: center; gap: 4px; }
 .step-btn {
@@ -1337,6 +1377,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   margin-top: 3px;
   animation: rise 0.25s var(--ease) both;
 }
+/* a signature is line art on white — it should read as ink on paper, not as a
+   photograph in a frame */
+.doc-img.sig-img { max-height: 190px; background: #fff; object-fit: contain; }
 
 /* ── Report text ───────────────────────────────────────────────────── */
 .rep-text {

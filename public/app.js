@@ -183,6 +183,7 @@ const S = {
   route: routeFromHash(),
 
   // refuelling report (soldier-facing, filed against a fuel card by the admin)
+  sig: null,                    // the soldier's signature: { bytes, size, preview }
   rf: null,                     // draft { name, phone, card, litres, plate }
   rfSent: false,
   rfPhoto: null,                // the receipt the soldier attached, before sending
@@ -340,6 +341,7 @@ function resetSoldier() {
   S.licNo = '';
   S.licExp = '';
   S.licPhoto = {};
+  S.sig = null;                 // the next soldier signs for themselves
 }
 
 /* ── Rendering ─────────────────────────────────────────────────────── */
@@ -1568,10 +1570,140 @@ function renderSoldierConfirm() {
 
       <h2 class="field-label">הציוד שאתם חותמים עליו</h2>
       <div class="confirm-list">${rows}</div>
+      ${signPad()}
+
       <p class="form-err" data-err></p>
       <button class="btn primary wide" data-act="s-submit">אישור ושליחה</button>
       <button class="btn ghost wide mt" data-act="s-edit">חזרה לעריכת הציוד</button>
     </section>`, 'sign-3');
+  mountSignPad();
+}
+
+/* ── Signing for it ────────────────────────────────────────────────────
+   A finger on the screen, on the last page, next to the list of what is
+   being signed for. It is the soldier's own hand and it is what makes the
+   slip a slip rather than a form somebody filled in.
+
+   The drawing is sealed like a licence photo and rides in the docs table:
+   the console never pulls it while listing soldiers, and the server holds a
+   picture it cannot see. It is a PNG because a signature is line art — black
+   on white compresses to a few kilobytes and stays sharp, which JPEG does
+   not manage at that size.
+
+   Nothing here is a verified signature in the cryptographic sense, and it is
+   not sold as one. It is the paper equivalent: a mark the person made, held
+   next to what they made it on. */
+function signPad() {
+  return `
+    <fieldset class="lic-set">
+      <legend class="field-label">חתימה <span class="req">*</span></legend>
+      <p class="field-hint">חתמו באצבע במסגרת. זו החתימה שלכם על הציוד שלמעלה.</p>
+      <div class="sigwrap">
+        <canvas class="sigpad" width="600" height="220"
+                aria-label="שדה חתימה — ציירו את חתימתכם באצבע"></canvas>
+        ${S.sig ? '' : '<span class="sig-hint" aria-hidden="true">חתמו כאן</span>'}
+      </div>
+      <div class="rec-actions">
+        <button type="button" class="btn ghost small" data-act="sig-clear">ניקוי החתימה</button>
+        ${S.sig ? '<span class="fp mb0">✓ נחתם</span>' : ''}
+      </div>
+    </fieldset>`;
+}
+
+/* The canvas has to be wired after the HTML lands, and it draws with pointer
+   events so a finger, a stylus and a mouse are all the same thing. The page
+   must not scroll under the finger while it draws — that is `touch-action`,
+   set in the stylesheet, and it is the whole reason this works on a phone. */
+function mountSignPad() {
+  const pad = $app.querySelector('.sigpad');
+  if (!pad) return;
+  const ctx = pad.getContext('2d');
+  // The canvas is a fixed 600×220 buffer shown at whatever width the phone
+  // has; drawing in buffer coordinates keeps the line the same weight on
+  // every screen instead of hairline on a big one and fat on a small one.
+  const scale = () => pad.width / pad.getBoundingClientRect().width;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#14210f';
+  if (S.sig && S.sig.preview) {
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0);
+    img.src = S.sig.preview;                       // came back from a re-render
+  }
+
+  let drawing = false;
+  const at = (e) => {
+    const r = pad.getBoundingClientRect();
+    const k = scale();
+    return [(e.clientX - r.left) * k, (e.clientY - r.top) * k];
+  };
+  pad.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    pad.setPointerCapture(e.pointerId);
+    const [x, y] = at(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 0.1, y);                        // a dot, so a tap leaves a mark
+    ctx.stroke();
+    hideSigHint();
+  });
+  pad.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const [x, y] = at(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  });
+  const end = () => {
+    if (!drawing) return;
+    drawing = false;
+    captureSignature(pad);
+  };
+  pad.addEventListener('pointerup', end);
+  pad.addEventListener('pointercancel', end);
+  pad.addEventListener('pointerleave', end);
+}
+
+function hideSigHint() {
+  const hint = $app.querySelector('.sig-hint');
+  if (hint) hint.remove();
+}
+
+// Is there anything on it, or did a stray tap leave a single dot?
+function padInk(pad) {
+  const d = pad.getContext('2d').getImageData(0, 0, pad.width, pad.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+  return n;
+}
+
+// Held as PNG bytes plus a data URL, so a re-render of the page can put the
+// drawing back rather than asking for it again.
+function captureSignature(pad) {
+  return new Promise((resolve) => {
+    if (padInk(pad) < 40) { resolve(null); return; }   // blank, or an accidental dot
+    pad.toBlob(async (blob) => {
+      if (!blob) { resolve(null); return; }
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      S.sig = { bytes, size: bytes.length, preview: pad.toDataURL('image/png') };
+      resolve(S.sig);
+    }, 'image/png');
+  });
+}
+
+/* Reading the pad at the moment of sending, rather than trusting what the
+   last stroke left behind. Turning a canvas into bytes is asynchronous, so a
+   soldier who signs and presses send in the same breath could otherwise be
+   told to sign — with their signature on the screen in front of them. */
+async function ensureSignature() {
+  const pad = $app.querySelector('.sigpad');
+  if (pad) await captureSignature(pad);
+  return S.sig;
+}
+
+function clearSignature() {
+  S.sig = null;
+  renderSoldier();
 }
 
 function renderSoldierDone() {
@@ -1594,8 +1726,8 @@ function renderSoldierDone() {
       <h1 class="panel-title">${S.suppMode ? 'ההשלמה נשלחה' : 'הרישום נשלח'}</h1>
       <p class="panel-sub">${
         S.suppMode
-          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך ותקבל הודעת וואטסאפ מעודכנת.'
-          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל תקבל הודעת וואטסאפ עם פירוט הציוד שהוחתם.'
+          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך.'
+          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — מנהל הציוד יאשר אותה ויעדכן אתכם.'
       }</p>
       <div class="tags center">${list}</div>
       ${serials ? `<div class="tags center">${serials}</div>` : ''}
@@ -1886,6 +2018,21 @@ function extrasRow(rec) {
       </div>`;
   });
   if (chips.length) bits.push(`<div class="licv-wrap">${chips.join('')}</div>`);
+
+  // The soldier's own hand on the slip. Opened only when asked for, like the
+  // licences — it is an image, and a roster should not drag images around.
+  if (d.signed) {
+    const key = `${rec.rid}:signature`;
+    const shown = S.docs[key];
+    bits.push(`
+      <div class="licv">
+        <span class="tagi lic-chip">✍ נחתם ${esc(fmtDate(d.signed))}</span>
+        <button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="signature">${
+          shown ? 'הסתרה' : 'הצגת החתימה'
+        }</button>
+        ${shown ? `<img class="doc-img sig-img" src="${shown}" alt="חתימת ${esc(d.name)}">` : ''}
+      </div>`);
+  }
   return bits.join('');
 }
 
@@ -6286,6 +6433,13 @@ async function soldierSubmit() {
     if (errEl) errEl.textContent = 'יש לסמן פריט אחד לפחות';
     return;
   }
+  // Without a signature it is a form, not a slip.
+  if (!(await ensureSignature())) {
+    if (errEl) errEl.textContent = 'נא לחתום באצבע במסגרת החתימה';
+    const pad = $app.querySelector('.sigwrap');
+    if (pad) pad.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return;
+  }
   await withBusy(async () => {
     const now = Date.now();
     const items = {};
@@ -6313,6 +6467,7 @@ async function soldierSubmit() {
       }
     }
     if (Object.keys(lic).length) payload.lic = lic;
+    payload.signed = now;                       // the console shows there is one to open
     if (S.suppMode) payload.supp = true;
 
     const pubKey = await importPubKey(S.config.pub);
@@ -6333,6 +6488,8 @@ async function soldierSubmit() {
       const sealedDoc = await sealBytes(pubKey, shot.bytes);
       await api('/docs', { body: { rid: S.rid, kind: k.id, ...sealedDoc } });
     }
+    // The signature travels the same way, for the same reason.
+    await api('/docs', { body: { rid: S.rid, kind: 'signature', ...await sealBytes(pubKey, S.sig.bytes) } });
     S.sStep = 4;
     renderSoldier();
   });
@@ -7514,6 +7671,7 @@ function dispatch(act, el) {
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
+    case 'sig-clear': clearSignature(); break;
     case 'rf-photo-clear': captureRefuelForm(); S.rfPhoto = null; renderRefuel(); break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;

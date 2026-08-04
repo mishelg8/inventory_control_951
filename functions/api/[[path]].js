@@ -547,7 +547,11 @@ export async function onRequest(context) {
       const { rid, kind, ek, iv, ct } = b;
       if (
         !isHex(rid, HEX32) ||
-        !['civil', 'military', 'refuel'].includes(kind) ||
+        // 'signature' is the soldier's own hand on the sign-out slip. It
+        // hangs off the record like a licence photo and is sealed the same
+        // way — the server stores a picture it cannot see, of a signature it
+        // could not verify anyway.
+        !['civil', 'military', 'refuel', 'signature'].includes(kind) ||
         !isB64(ek, 1000) ||
         !isB64(iv, 64) ||
         !isB64(ct, DOC_MAX_B64)

@@ -60,6 +60,7 @@ function cleanRecord(raw) {
     approvedAt: asTime(raw.approvedAt),
     notified: asTime(raw.notified),
     returnNotified: asTime(raw.returnNotified),
+    signed: asTime(raw.signed),          // when they signed; the signature itself is a doc
     supp: !!raw.supp,
     log: Array.isArray(raw.log) ? raw.log.slice(-50) : [],
   };
