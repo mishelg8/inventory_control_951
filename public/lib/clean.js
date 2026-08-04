@@ -1,0 +1,228 @@
+// The trust boundary.
+//
+// The RSA public key is public by design — that is what lets any soldier
+// submit without an account. The consequence is that ANYONE can encrypt an
+// arbitrary payload and POST it, so a decrypted record is untrusted input,
+// not our own data. Everything here coerces a payload to the shape the UI
+// expects: strings are capped, numbers are real finite numbers, ids are
+// whitelisted. Without this, a crafted quantity like "<img …>" flows into
+// innerHTML in the admin console — where the private key lives.
+
+import { ITEMS, DEPTS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS } from './catalog.js';
+import { rndId } from './crypto.js';
+
+const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+// Non-negative integer, or 0. Rejects strings, NaN, Infinity, negatives.
+const asCount = (v, max = 9999) => {
+  const n = typeof v === 'number' ? v : NaN;
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(max, Math.max(0, Math.floor(n)));
+};
+
+const asTime = (v) => (Number.isFinite(v) && v > 0 ? v : null);
+
+function cleanRecord(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
+  const items = {};
+  const rawItems = raw.items && typeof raw.items === 'object' ? raw.items : {};
+  for (const item of ITEMS) {                       // whitelist: unknown ids dropped
+    const it = rawItems[item.id];
+    if (!it || typeof it !== 'object') continue;
+    const t = asCount(it.t, item.max || 9999);
+    if (t <= 0) continue;
+    items[item.id] = { t, r: Math.min(t, asCount(it.r)) };   // returned never exceeds taken
+  }
+
+  const lic = {};
+  for (const k of LIC_KINDS) {
+    const l = raw.lic && typeof raw.lic === 'object' ? raw.lic[k.id] : null;
+    if (!l || typeof l !== 'object' || !l.has) continue;
+    lic[k.id] = { has: true, doc: !!l.doc };
+    if (k.id === 'civil') {
+      lic.civil.no = asText(l.no, 20);
+      // only an ISO date is ever accepted; anything else is dropped
+      lic.civil.exp = /^\d{4}-\d{2}-\d{2}$/.test(l.exp) ? l.exp : '';
+    }
+  }
+
+  return {
+    pn: asText(raw.pn, 9),
+    name: asText(raw.name, 60),
+    phone: asText(raw.phone, 15),
+    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    weapon: asText(raw.weapon, 20),
+    amral: asText(raw.amral, 20),
+    scope: asText(raw.scope, 20),
+    items,
+    ...(Object.keys(lic).length ? { lic } : {}),
+    createdAt: asTime(raw.createdAt) || Date.now(),
+    approvedAt: asTime(raw.approvedAt),
+    notified: asTime(raw.notified),
+    returnNotified: asTime(raw.returnNotified),
+    supp: !!raw.supp,
+    log: Array.isArray(raw.log) ? raw.log.slice(-50) : [],
+  };
+}
+
+// Shortage reports and armoury deposits share the /reports pipe — the server
+// stores an opaque blob either way, so telling them apart is a client concern.
+function cleanReport(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
+  return {
+    kind: ['deposit', 'fault', 'refuel'].includes(raw.kind) ? raw.kind : 'report',
+    // refuelling: which card, how much, into which vehicle. The litres are a
+    // count and nothing else — a soldier's browser is not trusted to send a
+    // number, so it is coerced to one here as everything else is.
+    card: asText(raw.card, 30),
+    litres: asCount(raw.litres, 9999),
+    plate: asText(raw.plate, 20),
+    name: asText(raw.name, 60),
+    text: asText(raw.text, 1500),
+    // legacy reports carried identity fields; keep them if present
+    pn: asText(raw.pn, 9),
+    phone: asText(raw.phone, 15),
+    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    // deposit-only: the weapon being handed in, plus optional accessory catalogue numbers
+    weapon: asText(raw.weapon, 20),
+    amral: asText(raw.amral, 20),
+    scope: asText(raw.scope, 20),
+    filed: !!raw.filed,          // already pushed into the armoury register
+    createdAt: asTime(raw.createdAt) || Date.now(),
+  };
+}
+
+/* ── Serialised registers: the armoury and the signals store ───────────
+   Both are the same thing — a list of numbered items, each of which is
+   either on the shelf or accounted for somewhere else, with a log of every
+   movement. They differ in what they hold and where an item can be, so
+   that is all a register declares; the screen, the reports and the
+   handlers are one implementation driven by the declaration. */
+
+const cleanRegItem = (reg) => (x) => {
+  const kind = reg.kinds.some((k) => k.id === (x && x.kind)) ? x.kind : reg.kinds[0].id;
+  // A location the kind is not allowed in falls back to 'soldier', never to
+  // home — an item that was out must not read as present in the cupboard.
+  const allowed = kindLocs(reg, kind).map((l) => l.id);
+  const raw = x && x.loc;
+  return {
+    id: asText(x && x.id, 40) || rndId(),
+    kind,
+    name: asText(x && x.name, 60),
+    serial: asText(x && x.serial, 40),
+    owner: asText(x && x.owner, 60),
+    loc: allowed.includes(raw) ? raw : (raw && raw !== reg.home ? 'soldier' : reg.home),
+    mission: asText(x && x.mission, 60),
+    note: asText(x && x.note, 120),
+    addedAt: asTime(x && x.addedAt),
+  };
+};
+
+const cleanArmLog = (x) => ({
+  t: asTime(x && x.t),
+  action: (x && x.action) === 'remove' ? 'remove' : 'add',
+  kind: asText(x && x.kind, 20),
+  name: asText(x && x.name, 60),
+  serial: asText(x && x.serial, 40),
+  owner: asText(x && x.owner, 60),
+  dest: asText(x && x.dest, 20),
+  note: asText(x && x.note, 120),
+});
+
+const cleanAmmo = (x) => ({
+  id: asText(x && x.id, 40) || rndId(),
+  name: asText(x && x.name, 60),
+  open: asCount(x && x.open),      // what came in — the baseline to count against
+  qty: asCount(x && x.qty),        // what is on the shelf now
+});
+
+const cleanAmmoLog = (x) => ({
+  t: asTime(x && x.t),
+  action: (x && x.action) === 'issue' ? 'issue' : 'add',
+  name: asText(x && x.name, 60),
+  qty: asCount(x && x.qty),
+  note: asText(x && x.note, 120),
+  dest: asText(x && x.dest, 20),
+  who: asText(x && x.who, 60),
+});
+
+const cleanVehicle = (x) => {
+  const v = {
+    id: asText(x && x.id, 40) || rndId(),
+    plate: asText(x && x.plate, 20),
+    company: asText(x && x.company, 40),
+    km: asCount(x && x.km, 9999999),
+    service: asText(x && x.service, 10),
+    code: asText(x && x.code, 12),        // door keypad (קודן)
+    fuelCode: asText(x && x.fuelCode, 12), // fuel dispenser (דלקן)
+    note: asText(x && x.note, 120),
+  };
+  for (const k of VEH_KIT) v[k.id] = !!(x && x[k.id]);
+  return v;
+};
+
+// A refuelling card. Each receipt is a random 32-hex id naming an image in the
+// docs table — pictures never enter the vault, which has a size cap.
+const cleanFuel = (x) => ({
+  id: asText(x && x.id, 40) || rndId(),
+  kind: FUEL_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'diesel',
+  no: asText(x && x.no, 30),
+  litres: asCount(x && x.litres, 99999),
+  holder: asText(x && x.holder, 60),        // soldier's name, or FUEL_OFFICE
+  receipts: (Array.isArray(x && x.receipts) ? x.receipts : [])
+    .slice(0, 60)
+    .filter((r) => r && /^[0-9a-f]{32}$/.test(r.id))
+    .map((r) => ({ id: r.id, at: asTime(r.at) })),
+  uses: (Array.isArray(x && x.uses) ? x.uses : []).slice(0, 300).map((u) => ({
+    t: asTime(u && u.t),
+    who: asText(u && u.who, 60),
+    litres: asCount(u && u.litres, 99999),
+    plate: asText(u && u.plate, 20),
+  })),
+  credited: !!(x && x.credited),            // settled with the vehicle officer
+  creditedAt: asTime(x && x.creditedAt),
+  note: asText(x && x.note, 120),
+});
+
+function cleanInv(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const open = {};
+  for (const item of ITEMS) open[item.id] = asCount(src.open && src.open[item.id]);
+  const extra = (Array.isArray(src.extra) ? src.extra : []).slice(0, 200).map((x) => ({
+    name: asText(x && x.name, 40),
+    open: asCount(x && x.open),
+    out: asCount(x && x.out),
+  }));
+  const arr = (v, fn, cap) => (Array.isArray(v) ? v : []).slice(0, cap).map(fn);
+  const counted = src.countedAt && typeof src.countedAt === 'object' ? src.countedAt : {};
+  return {
+    open,
+    extra,
+    notes: asText(src.notes, 4000),
+    armon: arr(src.armon, cleanRegItem(REGISTERS.armon), 4000),
+    armonLog: arr(src.armonLog, cleanArmLog, 5000),
+    comms: arr(src.comms, cleanRegItem(REGISTERS.comms), 4000),
+    commsLog: arr(src.commsLog, cleanArmLog, 5000),
+    ammo: arr(src.ammo, cleanAmmo, 1000),
+    ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
+    vehicles: arr(src.vehicles, cleanVehicle, 500),
+    fuel: arr(src.fuel, cleanFuel, 300),
+    countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
+    updatedAt: asTime(src.updatedAt),
+  };
+}
+
+export {
+  asCount,
+  asText,
+  asTime,
+  cleanAmmo,
+  cleanAmmoLog,
+  cleanArmLog,
+  cleanFuel,
+  cleanInv,
+  cleanRecord,
+  cleanRegItem,
+  cleanReport,
+  cleanVehicle,
+};

@@ -1,57 +1,33 @@
-'use strict';
-
 /* ════════════════════════════════════════════════════════════════════
    רישום ראשוני — client logic. All plaintext personal data lives only in
    this browser's memory; everything sent to the server is ciphertext or
    a one-way derivation. See PLAN.md §4 for the cryptographic design.
    ════════════════════════════════════════════════════════════════════ */
 
+import {
+  SVG_OPEN, ITEMS, itemById, DEPTS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
+  COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
+  nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
+  DAY_MS, EXPIRING_SOON_DAYS,
+} from './lib/catalog.js';
+import {
+  te, td, b64, ub64, hex, rndId, deriveAuth, deriveRid, normSerial, deriveSerialTag,
+  serialTags, importPubKey, seal, sealBytes, openRecord, openBytes,
+} from './lib/crypto.js';
+import {
+  asText, asCount, asTime, cleanRecord, cleanReport, cleanRegItem, cleanArmLog,
+  cleanAmmo, cleanAmmoLog, cleanVehicle, cleanFuel, cleanInv,
+} from './lib/clean.js';
+
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
-const te = new TextEncoder();
-const td = new TextDecoder();
 
 /* ── Equipment catalog ─────────────────────────────────────────────── */
 
-const SVG_OPEN =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
-  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
 
-// Every item is quantifiable — a soldier can receive 2 vests, 3 magazines, etc.
-const ITEMS = [
-  {
-    id: 'helmet', name: 'קסדה', qty: true, min: 1, max: 10,
-    icon: `${SVG_OPEN}<path d="M4 14a8 8 0 0 1 16 0v3H4z"/><path d="M2 17h20"/></svg>`,
-  },
-  {
-    id: 'vest', name: 'ווסט', qty: true, min: 1, max: 10,
-    icon: `${SVG_OPEN}<path d="M8 3c1 1.8 7 1.8 8 0l4 4-2.5 3v10h-11V10L4 7z"/><path d="M6.5 14h11"/></svg>`,
-  },
-  {
-    id: 'mitznefet', name: 'מצנפת', qty: true, min: 1, max: 10,
-    icon: `${SVG_OPEN}<path d="M5 15c0-6 3-10 7-10s7 4 7 10c-2.5-1.5-4.5 1.5-7 .5s-4.5 1-7-.5z"/><path d="M9 19h6"/></svg>`,
-  },
-  {
-    id: 'knee', name: 'ברכיות', qty: true, min: 1, max: 10,
-    icon: `${SVG_OPEN}<rect x="6.5" y="3.5" width="11" height="17" rx="5.5"/><path d="M6.5 12h11"/></svg>`,
-  },
-  {
-    id: 'mags', name: 'מחסניות', qty: true, min: 1, max: 20,
-    icon: `${SVG_OPEN}<path d="M9 3h7c-.5 6-1.5 11-3.5 17H7C7.5 14 8.5 9 9 3z"/><path d="M9.5 7h6"/></svg>`,
-  },
-];
-const itemById = (id) => ITEMS.find((i) => i.id === id);
 
 /* ── Departments ───────────────────────────────────────────────────── */
 
-const DEPTS = [
-  { id: 'p1', name: 'מחלקה 1' },
-  { id: 'p2', name: 'מחלקה 2' },
-  { id: 'p3', name: 'מחלקה 3' },
-  { id: 'mplag', name: 'מפל״ג' },
-  { id: 'attached', name: 'מסופחים' },
-];
-const deptName = (id) => (DEPTS.find((d) => d.id === id) || {}).name || 'ללא שיוך';
 
 /* ── Small helpers ─────────────────────────────────────────────────── */
 
@@ -60,24 +36,8 @@ const esc = (s) =>
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[c]);
 
-function b64(buf) {
-  const u = new Uint8Array(buf);
-  let s = '';
-  for (let i = 0; i < u.length; i += 0x8000) {
-    s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
-  }
-  return btoa(s);
-}
 
-function ub64(s) {
-  const bin = atob(s);
-  const u = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
-  return u;
-}
 
-const hex = (buf) =>
-  [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 const fmtDate = (ts) =>
   ts ? new Date(ts).toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' }) : '—';
@@ -120,433 +80,40 @@ async function api(path, opts = {}) {
 
 /* ── Cryptography (PLAN §4) ────────────────────────────────────────── */
 
-// One PBKDF2 pass, split output: KEK (encryption half) + verifier (auth half).
-async function deriveAuth(password, saltB64) {
-  const km = await crypto.subtle.importKey('raw', te.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = new Uint8Array(await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: ub64(saltB64), iterations: 310000, hash: 'SHA-256' }, km, 512
-  ));
-  const kek = await crypto.subtle.importKey('raw', bits.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
-  const verifier = hex(await crypto.subtle.digest('SHA-256', bits.slice(32)));
-  bits.fill(0);
-  return { kek, verifier };
-}
 
-// Record identifier: slow-KDF mask of the personal number (§4.6).
-async function deriveRid(pn, idSaltB64) {
-  const km = await crypto.subtle.importKey('raw', te.encode(pn), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: ub64(idSaltB64), iterations: 60000, hash: 'SHA-256' }, km, 256
-  );
-  return hex(bits).slice(0, 32);
-}
 
-// The three numbers a soldier signs for. Named here because both the
-// crypto helpers below and the duplicate checks further down need them.
-const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
 
-// Blind index of a serial number, so the server can refuse a duplicate it
-// cannot read. Same construction and salt as the record id, with a domain
-// prefix so a serial can never collide with a personal number.
-const normSerial = (v) => String(v || '').trim().toLowerCase().replace(/[\s-]+/g, '');
-const deriveSerialTag = (value, idSaltB64) => deriveRid(`serial:${normSerial(value)}`, idSaltB64);
 
-// The tags for one submission: one per number the soldier actually filled in.
-async function serialTags(d, idSaltB64) {
-  const out = [];
-  for (const [field] of SERIAL_FIELDS) {
-    if (!normSerial(d[field])) continue;
-    out.push({ tag: await deriveSerialTag(d[field], idSaltB64), field });
-  }
-  return out;
-}
 
-const importPubKey = (jwk) =>
-  crypto.subtle.importKey('jwk', jwk, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
 
-// Seal: fresh content key per write, wrapped under the public key (§4.4).
-async function seal(pubKey, payload) {
-  const cek = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
-  const rawCek = await crypto.subtle.exportKey('raw', cek);
-  const ek = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, rawCek);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cek, te.encode(JSON.stringify(payload)));
-  return { ek: b64(ek), iv: b64(iv), ct: b64(ct) };
-}
 
-/* ── Trust boundary ────────────────────────────────────────────────────
-   The RSA public key is public by design — that is what lets any soldier
-   submit without an account. The consequence is that ANYONE can encrypt an
-   arbitrary payload and POST it, so a decrypted record is untrusted input,
-   not our own data. Everything below coerces a payload to the shape the UI
-   expects: strings are capped, numbers are real finite numbers, ids are
-   whitelisted. Without this, a crafted quantity like "<img …>" flows into
-   innerHTML in the admin console — where the private key lives.
-   ──────────────────────────────────────────────────────────────────── */
 
-const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 
-// Non-negative integer, or 0. Rejects strings, NaN, Infinity, negatives.
-const asCount = (v, max = 9999) => {
-  const n = typeof v === 'number' ? v : NaN;
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(max, Math.max(0, Math.floor(n)));
-};
 
-const asTime = (v) => (Number.isFinite(v) && v > 0 ? v : null);
 
-function cleanRecord(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
-  const items = {};
-  const rawItems = raw.items && typeof raw.items === 'object' ? raw.items : {};
-  for (const item of ITEMS) {                       // whitelist: unknown ids dropped
-    const it = rawItems[item.id];
-    if (!it || typeof it !== 'object') continue;
-    const t = asCount(it.t, item.max || 9999);
-    if (t <= 0) continue;
-    items[item.id] = { t, r: Math.min(t, asCount(it.r)) };   // returned never exceeds taken
-  }
 
-  const lic = {};
-  for (const k of LIC_KINDS) {
-    const l = raw.lic && typeof raw.lic === 'object' ? raw.lic[k.id] : null;
-    if (!l || typeof l !== 'object' || !l.has) continue;
-    lic[k.id] = { has: true, doc: !!l.doc };
-    if (k.id === 'civil') {
-      lic.civil.no = asText(l.no, 20);
-      // only an ISO date is ever accepted; anything else is dropped
-      lic.civil.exp = /^\d{4}-\d{2}-\d{2}$/.test(l.exp) ? l.exp : '';
-    }
-  }
 
-  return {
-    pn: asText(raw.pn, 9),
-    name: asText(raw.name, 60),
-    phone: asText(raw.phone, 15),
-    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
-    weapon: asText(raw.weapon, 20),
-    amral: asText(raw.amral, 20),
-    scope: asText(raw.scope, 20),
-    items,
-    ...(Object.keys(lic).length ? { lic } : {}),
-    createdAt: asTime(raw.createdAt) || Date.now(),
-    approvedAt: asTime(raw.approvedAt),
-    notified: asTime(raw.notified),
-    returnNotified: asTime(raw.returnNotified),
-    supp: !!raw.supp,
-    log: Array.isArray(raw.log) ? raw.log.slice(-50) : [],
-  };
-}
 
-// Shortage reports and armoury deposits share the /reports pipe — the server
-// stores an opaque blob either way, so telling them apart is a client concern.
-function cleanReport(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
-  return {
-    kind: ['deposit', 'fault', 'refuel'].includes(raw.kind) ? raw.kind : 'report',
-    // refuelling: which card, how much, into which vehicle. The litres are a
-    // count and nothing else — a soldier's browser is not trusted to send a
-    // number, so it is coerced to one here as everything else is.
-    card: asText(raw.card, 30),
-    litres: asCount(raw.litres, 9999),
-    plate: asText(raw.plate, 20),
-    name: asText(raw.name, 60),
-    text: asText(raw.text, 1500),
-    // legacy reports carried identity fields; keep them if present
-    pn: asText(raw.pn, 9),
-    phone: asText(raw.phone, 15),
-    dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
-    // deposit-only: the weapon being handed in, plus optional accessory catalogue numbers
-    weapon: asText(raw.weapon, 20),
-    amral: asText(raw.amral, 20),
-    scope: asText(raw.scope, 20),
-    filed: !!raw.filed,          // already pushed into the armoury register
-    createdAt: asTime(raw.createdAt) || Date.now(),
-  };
-}
 
-/* ── Serialised registers: the armoury and the signals store ───────────
-   Both are the same thing — a list of numbered items, each of which is
-   either on the shelf or accounted for somewhere else, with a log of every
-   movement. They differ in what they hold and where an item can be, so
-   that is all a register declares; the screen, the reports and the
-   handlers are one implementation driven by the declaration. */
 
-// Each kind carries the locations it is allowed to be in. Only צל״ם can go out
-// on a mission, and when it does the mission has to be named — an item that is
-// "somewhere on an operation" with no name attached is an item you have lost.
-const LIFECYCLE = ['repair', 'lost', 'decom'];
-const ARM_KINDS = [
-  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier', ...LIFECYCLE] },
-  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier', ...LIFECYCLE] },
-  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier', ...LIFECYCLE] },
-  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier', ...LIFECYCLE] },
-  { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
-];
-// A weapon or piece of kit is not only "here" or "with someone" — it can be at
-// the workshop, written off, or genuinely missing. Without these states a
-// broken item is deleted from the register and the shortage becomes invisible.
-const ARM_LOCS = [
-  { id: 'armon', name: 'ארמון' },
-  { id: 'soldier', name: 'אצל חייל' },
-  { id: 'mission', name: 'במשימה' },
-  { id: 'repair', name: 'בתיקון' },
-  { id: 'lost', name: 'אבוד' },
-  { id: 'decom', name: 'מושבת' },
-];
 
-// Signals kit. Unlike a weapon, a radio is as often fitted in a vehicle as
-// held by a soldier, and a battery or an antenna is worth counting on its own
-// — a company with six radios and two working batteries has two radios.
-const COMMS_PLACES = ['store', 'soldier', 'vehicle', 'mission', ...LIFECYCLE];
-const COMMS_KINDS = [
-  { id: 'radio', name: 'מכשיר קשר', locs: COMMS_PLACES },
-  { id: 'antenna', name: 'אנטנה', locs: COMMS_PLACES },
-  { id: 'battery', name: 'סוללה', locs: COMMS_PLACES },
-  { id: 'charger', name: 'מטען', locs: COMMS_PLACES },
-  { id: 'headset', name: 'דיבורית / אוזניות', locs: COMMS_PLACES },
-  { id: 'cable', name: 'כבל / מתאם', locs: COMMS_PLACES },
-  { id: 'commsAcc', name: 'אביזר נוסף', locs: COMMS_PLACES },
-];
-const COMMS_LOCS = [
-  { id: 'store', name: 'מחסן קשר' },
-  { id: 'soldier', name: 'אצל חייל' },
-  { id: 'vehicle', name: 'ברכב' },
-  { id: 'mission', name: 'במשימה' },
-  { id: 'repair', name: 'בתיקון' },
-  { id: 'lost', name: 'אבוד' },
-  { id: 'decom', name: 'מושבת' },
-];
 
-// States that mean the item is not usable, as opposed to merely elsewhere.
-const ARM_BAD_LOCS = new Set(['lost', 'decom']);
-// Locations that are meaningless without a name: "on an operation" or "in a
-// vehicle" is not an answer to where something is until you say which.
-const NAMED_LOCS = {
-  mission: { label: 'שם המשימה', of: 'משימה' },
-  vehicle: { label: 'מספר הרכב', of: 'רכב' },
-};
-// where an item goes when it leaves the armoury for good
-// 'used' is consumption: a gas or stun grenade that was thrown went nowhere
-// and to nobody, so it needs no recipient — which is why it stops being a
-// free-text field and becomes a choice.
-const AMMO_DESTS = [
-  { id: 'used', name: 'שומש', noWho: true },
-  { id: 'mission', name: 'משימה' },
-  { id: 'soldier', name: 'חייל' },
-  { id: 'credit', name: 'זיכוי', noWho: true },
-];
-const ARM_DESTS = [
-  { id: 'soldier', name: 'חייל' },
-  { id: 'repair', name: 'תיקון' },
-  { id: 'credit', name: 'זיכוי' },
-];
-const nameOf = (list, id) => (list.find((x) => x.id === id) || {}).name || '—';
 
-// The two registers. `home` is the location that means "on our shelf"; it is
-// what the stock count counts and what an item returns to. `unique` names the
-// one kind whose serial may not repeat — weapons are serialised individually,
-// while a battery or a scope is logged by מק״ט, a catalogue number every unit
-// of that model shares, so duplicates there are correct.
-const REGISTERS = {
-  armon: {
-    id: 'armon', tab: 'armon', key: 'armon', logKey: 'armonLog',
-    kinds: ARM_KINDS, locs: ARM_LOCS, home: 'armon', unique: 'weapon',
-    deposits: true,
-    title: 'ארמון', place: 'הארמון', placeTo: 'לארמון', placeIn: 'בארמון',
-    addTitle: 'הוספת פריט לארמון',
-    namePh: 'לדוגמה: M4 / משקפת לילה', serialPh: 'M4-10021',
-    stockNote: 'רק מה שנמצא פיזית בארמון עכשיו. ברגע שמסמנים פריט "אצל חייל" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת. המיקומים האפשריים תלויים בסוג הפריט — רק צל״ם יכול לצאת למשימה, ואז חובה לרשום איזו. שינוי מיקום נשמר עם "שמירת השינויים".',
-  },
-  comms: {
-    id: 'comms', tab: 'comms', key: 'comms', logKey: 'commsLog',
-    kinds: COMMS_KINDS, locs: COMMS_LOCS, home: 'store', unique: 'radio',
-    deposits: false,
-    title: 'מחסן קשר', place: 'המחסן', placeTo: 'למחסן', placeIn: 'במחסן',
-    addTitle: 'הוספת פריט קשר',
-    namePh: 'לדוגמה: מדף / אנטנה קצרה', serialPh: 'PRC-77012',
-    stockNote: 'רק מה שנמצא פיזית במחסן הקשר עכשיו. ברגע שמסמנים פריט "אצל חייל", "ברכב" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת — ואז חובה לרשום ברכב או במשימה איזו. שינוי מיקום נשמר עם "שמירת השינויים".',
-  },
-};
 
-const kindLocs = (reg, kind) => {
-  const k = reg.kinds.find((x) => x.id === kind);
-  return reg.locs.filter((l) => (k ? k.locs : [reg.home, 'soldier']).includes(l.id));
-};
 
-const cleanRegItem = (reg) => (x) => {
-  const kind = reg.kinds.some((k) => k.id === (x && x.kind)) ? x.kind : reg.kinds[0].id;
-  // A location the kind is not allowed in falls back to 'soldier', never to
-  // home — an item that was out must not read as present in the cupboard.
-  const allowed = kindLocs(reg, kind).map((l) => l.id);
-  const raw = x && x.loc;
-  return {
-    id: asText(x && x.id, 40) || rndId(),
-    kind,
-    name: asText(x && x.name, 60),
-    serial: asText(x && x.serial, 40),
-    owner: asText(x && x.owner, 60),
-    loc: allowed.includes(raw) ? raw : (raw && raw !== reg.home ? 'soldier' : reg.home),
-    mission: asText(x && x.mission, 60),
-    note: asText(x && x.note, 120),
-    addedAt: asTime(x && x.addedAt),
-  };
-};
 
-const cleanArmLog = (x) => ({
-  t: asTime(x && x.t),
-  action: (x && x.action) === 'remove' ? 'remove' : 'add',
-  kind: asText(x && x.kind, 20),
-  name: asText(x && x.name, 60),
-  serial: asText(x && x.serial, 40),
-  owner: asText(x && x.owner, 60),
-  dest: asText(x && x.dest, 20),
-  note: asText(x && x.note, 120),
-});
 
-const cleanAmmo = (x) => ({
-  id: asText(x && x.id, 40) || rndId(),
-  name: asText(x && x.name, 60),
-  open: asCount(x && x.open),      // what came in — the baseline to count against
-  qty: asCount(x && x.qty),        // what is on the shelf now
-});
 
-const cleanAmmoLog = (x) => ({
-  t: asTime(x && x.t),
-  action: (x && x.action) === 'issue' ? 'issue' : 'add',
-  name: asText(x && x.name, 60),
-  qty: asCount(x && x.qty),
-  note: asText(x && x.note, 120),
-  dest: asText(x && x.dest, 20),
-  who: asText(x && x.who, 60),
-});
 
-// `short` is what the column header shows — the full name stays as the title
-// and the accessible label, so a checkbox column costs a few characters
-// instead of an inch of table.
-const VEH_KIT = [
-  { id: 'jack', name: 'ג׳ק', short: 'ג׳ק' },
-  { id: 'wrench', name: 'מפתח גלגלים', short: 'מפתח' },
-  { id: 'vest', name: 'אפודה זוהרת', short: 'אפודה' },
-  { id: 'triangle', name: 'משולש', short: 'משולש' },
-];
 
-const cleanVehicle = (x) => {
-  const v = {
-    id: asText(x && x.id, 40) || rndId(),
-    plate: asText(x && x.plate, 20),
-    company: asText(x && x.company, 40),
-    km: asCount(x && x.km, 9999999),
-    service: asText(x && x.service, 10),
-    code: asText(x && x.code, 12),        // door keypad (קודן)
-    fuelCode: asText(x && x.fuelCode, 12), // fuel dispenser (דלקן)
-    note: asText(x && x.note, 120),
-  };
-  for (const k of VEH_KIT) v[k.id] = !!(x && x[k.id]);
-  return v;
-};
 
-const FUEL_KINDS = [
-  { id: 'diesel', name: 'דיזל' },
-  { id: 'petrol', name: 'בנזין' },
-  { id: 'urea', name: 'אוריאה' },
-];
 
-// Cards arrive holding 50 litres, so 15 is the point at which one needs
-// replacing rather than merely watching.
-const FUEL_LOW = 15;
-const FUEL_OFFICE = 'במשרד';
 
-// A refuelling card. Each receipt is a random 32-hex id naming an image in the
-// docs table — pictures never enter the vault, which has a size cap.
-const cleanFuel = (x) => ({
-  id: asText(x && x.id, 40) || rndId(),
-  kind: FUEL_KINDS.some((k) => k.id === (x && x.kind)) ? x.kind : 'diesel',
-  no: asText(x && x.no, 30),
-  litres: asCount(x && x.litres, 99999),
-  holder: asText(x && x.holder, 60),        // soldier's name, or FUEL_OFFICE
-  receipts: (Array.isArray(x && x.receipts) ? x.receipts : [])
-    .slice(0, 60)
-    .filter((r) => r && /^[0-9a-f]{32}$/.test(r.id))
-    .map((r) => ({ id: r.id, at: asTime(r.at) })),
-  uses: (Array.isArray(x && x.uses) ? x.uses : []).slice(0, 300).map((u) => ({
-    t: asTime(u && u.t),
-    who: asText(u && u.who, 60),
-    litres: asCount(u && u.litres, 99999),
-    plate: asText(u && u.plate, 20),
-  })),
-  credited: !!(x && x.credited),            // settled with the vehicle officer
-  creditedAt: asTime(x && x.creditedAt),
-  note: asText(x && x.note, 120),
-});
 
-const rndId = () => hex(crypto.getRandomValues(new Uint8Array(8)));
-
-function cleanInv(raw) {
-  const src = raw && typeof raw === 'object' ? raw : {};
-  const open = {};
-  for (const item of ITEMS) open[item.id] = asCount(src.open && src.open[item.id]);
-  const extra = (Array.isArray(src.extra) ? src.extra : []).slice(0, 200).map((x) => ({
-    name: asText(x && x.name, 40),
-    open: asCount(x && x.open),
-    out: asCount(x && x.out),
-  }));
-  const arr = (v, fn, cap) => (Array.isArray(v) ? v : []).slice(0, cap).map(fn);
-  const counted = src.countedAt && typeof src.countedAt === 'object' ? src.countedAt : {};
-  return {
-    open,
-    extra,
-    notes: asText(src.notes, 4000),
-    armon: arr(src.armon, cleanRegItem(REGISTERS.armon), 4000),
-    armonLog: arr(src.armonLog, cleanArmLog, 5000),
-    comms: arr(src.comms, cleanRegItem(REGISTERS.comms), 4000),
-    commsLog: arr(src.commsLog, cleanArmLog, 5000),
-    ammo: arr(src.ammo, cleanAmmo, 1000),
-    ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
-    vehicles: arr(src.vehicles, cleanVehicle, 500),
-    fuel: arr(src.fuel, cleanFuel, 300),
-    countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
-    updatedAt: asTime(src.updatedAt),
-  };
-}
-
-// Open: admin only (§4.5). Throws on tampered ciphertext — caller counts it.
-// `clean` is the schema guard above; never skip it for attacker-writable data.
-async function openRecord(privKey, rec, clean = cleanRecord) {
-  const rawCek = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privKey, ub64(rec.ek));
-  const cek = await crypto.subtle.importKey('raw', rawCek, 'AES-GCM', false, ['decrypt']);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(rec.iv) }, cek, ub64(rec.ct));
-  return clean(JSON.parse(td.decode(pt)));
-}
-
-// Seals raw bytes rather than JSON — used for licence photos.
-async function sealBytes(pubKey, bytes) {
-  const cek = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
-  const ek = await crypto.subtle.encrypt(
-    { name: 'RSA-OAEP' }, pubKey, await crypto.subtle.exportKey('raw', cek)
-  );
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cek, bytes);
-  return { ek: b64(ek), iv: b64(iv), ct: b64(ct) };
-}
-
-async function openBytes(privKey, rec) {
-  const rawCek = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privKey, ub64(rec.ek));
-  const cek = await crypto.subtle.importKey('raw', rawCek, 'AES-GCM', false, ['decrypt']);
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(rec.iv) }, cek, ub64(rec.ct));
-}
 
 /* ── Licence photos ────────────────────────────────────────────────── */
 
-// Civilian licence is captured as typed fields (number + expiry) so the admin
-// can actually sort and chase expiry dates; the military one stays a photo.
-const LIC_KINDS = [
-  { id: 'civil', label: 'רישיון נהיגה אזרחי בתוקף', short: 'רישיון אזרחי', mode: 'fields' },
-  { id: 'military', label: 'רישיון נהיגה צבאי בתוקף', short: 'רישיון צבאי', mode: 'photo' },
-];
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const EXPIRING_SOON_DAYS = 60;
 
 // 'valid' | 'soon' | 'expired' | 'nodate' — drives the red/amber/green states.
 function licState(expiry) {
@@ -7975,10 +7542,18 @@ async function boot() {
 const VERSION_CHECK_MS = 5 * 60 * 1000;
 let bootTag = null;
 
+// Every file the browser loads, not just the entry one: a fix that lands
+// entirely inside a module would leave app.js untouched, and a tab running
+// yesterday's code would never be told.
+const SCRIPTS = ['/app.js', '/lib/catalog.js', '/lib/crypto.js', '/lib/clean.js'];
+
 async function scriptTag() {
   try {
-    const r = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
-    return r.headers.get('etag') || r.headers.get('last-modified');
+    const tags = await Promise.all(SCRIPTS.map(async (src) => {
+      const r = await fetch(src, { method: 'HEAD', cache: 'no-store' });
+      return r.headers.get('etag') || r.headers.get('last-modified') || '';
+    }));
+    return tags.join('|');
   } catch {
     return null;   // offline: nothing to say
   }

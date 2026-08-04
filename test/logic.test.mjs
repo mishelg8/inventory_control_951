@@ -8,8 +8,16 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const app = readFileSync(join(root, 'public/app.js'), 'utf8');
-const api = readFileSync(join(root, 'functions/api/[[path]].js'), 'utf8');
+const read = (rel) => readFileSync(join(root, rel), 'utf8');
+
+// The client is one entry file plus three leaf modules. The tests read the
+// whole client as one string: what they check — that a register cannot be
+// given another register's places, that every screen agrees with the Worker —
+// is a property of the client as a whole, and should not have to know which
+// file a declaration currently lives in.
+const CLIENT = ['public/lib/catalog.js', 'public/lib/crypto.js', 'public/lib/clean.js', 'public/app.js'];
+const app = CLIENT.map(read).join('\n');
+const api = read('functions/api/[[path]].js');
 
 // Lift a named function out of the bundle and evaluate it in isolation. The
 // app has no build step and no module system, so this is how a pure helper
