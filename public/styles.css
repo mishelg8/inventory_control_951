@@ -1773,6 +1773,17 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
    and lets them wrap instead. */
 .tbl td.nowrap { white-space: nowrap; }
 .tbl.folded td.nowrap { white-space: normal; }
+/* …except a question, which is a sentence and not a caption. An in-place
+   confirmation opens inside the actions cell, and one unbreakable line of
+   Hebrew there measured 650px wide — enough for the fitting pass to decide
+   the table no longer fitted and fold every other column away. Asking whether
+   to approve should not rearrange the table the question is being asked
+   about. */
+.tbl td.nowrap .delask { white-space: normal; }
+/* and it takes its own line above the buttons, so the cell asks the layout
+   for the width of two buttons rather than the width of a sentence. */
+.tbl td .delask { display: flex; }
+.tbl td .delask-q { flex: 1 0 100%; }
 .tbl .chip { font-size: 11.5px; padding: 1px 7px; }
 .tbl .minibar { width: 100%; max-width: 74px; min-width: 26px; }
 .tbl .lg-name { max-width: none; }

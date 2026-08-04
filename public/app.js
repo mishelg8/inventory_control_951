@@ -5650,6 +5650,7 @@ const AUDIT_LABEL = {
   // often. The trail recorded everything an account did except how it got in.
   login: 'כניסה', 'login-fail': 'כניסה נכשלה', 'login-lock': 'נעילה זמנית',
   logout: 'יציאה', 'sessions-revoke': 'ניתוק כל המכשירים',
+  wipe: 'מחיקת כל הנתונים',
 };
 
 // Users. Every account carries its own copy of the private key, wrapped under

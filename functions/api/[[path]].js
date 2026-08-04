@@ -1258,12 +1258,28 @@ export async function onRequest(context) {
       }
 
       // POST /api/admin/wipe
+      //
+      // Every table that belongs to the old keypair, not only the ones that
+      // existed when this was written. A wipe is followed by a fresh setup
+      // with a new key, so anything left behind sealed under the old one can
+      // never be opened again: the vault parts came back as ten undecryptable
+      // rows, and the published pick-lists went on offering cards nobody
+      // holds. The blind indexes were worse than useless — a serial tag with
+      // no record behind it tells the next soldier their weapon is already
+      // registered, to a slip that no longer exists. The audit trail stays: it
+      // is not sealed, it names nobody, and the wipe itself is the entry most
+      // worth keeping.
       if (seg[1] === 'wipe' && seg.length === 2 && method === 'POST') {
+        await audit(db, now, session, 'wipe', null, null);
         await db.batch([
           db.prepare('DELETE FROM records'),
           db.prepare('DELETE FROM docs'),
           db.prepare('DELETE FROM reports'),
           db.prepare('DELETE FROM vault'),
+          db.prepare('DELETE FROM vault_parts'),
+          db.prepare('DELETE FROM pub_pick'),
+          db.prepare('DELETE FROM serial_tags'),
+          db.prepare('DELETE FROM tickets'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),
           db.prepare('DELETE FROM users'),

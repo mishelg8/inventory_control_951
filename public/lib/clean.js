@@ -76,6 +76,12 @@ function cleanReport(raw) {
     // count and nothing else — a soldier's browser is not trusted to send a
     // number, so it is coerced to one here as everything else is.
     card: asText(raw.card, 30),
+    // What to call that card on screen. `card` is an id the admin's browser
+    // resolves against the vault; this is the human number that came with it,
+    // so the report reads as "דיזל · ••1111" rather than as thirty-two hex
+    // digits. Whitelisting works by omission, and omitting this one meant the
+    // form sent a label that was thrown away on arrival, every time.
+    cardLabel: asText(raw.cardLabel, 60),
     litres: asCount(raw.litres, 9999),
     plate: asText(raw.plate, 20),
     name: asText(raw.name, 60),

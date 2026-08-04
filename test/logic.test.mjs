@@ -343,3 +343,54 @@ test('no module reaches for a name it cannot see', () => {
       `${rel} mentions ${[...unknown].join(', ')} — not defined there, not imported`);
   }
 });
+
+// The trust boundary works by omission: cleanRecord and cleanReport return a
+// new object holding only the fields they name, so a field they do not name is
+// silently dropped no matter who sent it. That is the point — but it cuts both
+// ways, and it cut us. The refuelling form sealed `cardLabel` next to the card
+// id so the office could read "דיזל · ••1111" without opening the vault; the
+// cleaner had never heard of the field, dropped it on every single report, and
+// the console fell back to printing thirty-two hex digits where a card number
+// belonged. Nothing failed, nothing was logged; it simply read wrong.
+//
+// So: whatever the client seals, the cleaner must keep. This reads the payload
+// literals the submit paths hand to seal() — the three report forms directly,
+// and the sign-out form through `payload`, which is built up a field at a time.
+test('every field the client seals is a field the cleaners keep', () => {
+  const clean = read('public/lib/clean.js');
+  const keys = new Set();
+
+  // the object literals handed straight to seal(…, { … })
+  for (const m of app.matchAll(/\bseal\((?:[^,()]|\([^()]*\))*,\s*\{/g)) {
+    let i = m.index + m[0].length - 1;
+    let depth = 0;
+    const start = i;
+    for (; i < app.length; i += 1) {
+      if (app[i] === '{') depth += 1;
+      else if (app[i] === '}' && (depth -= 1) === 0) break;
+    }
+    const body = app.slice(start + 1, i);
+    // top level only: a nested `{ a: …, t: … }` inside a log entry is not a
+    // field of the payload and has no business being whitelisted.
+    let d = 0;
+    for (const part of body.split(/,(?![^[{(]*[\]})])/)) {
+      const k = part.trim().match(/^([A-Za-z_$][\w$]*)\s*:/);
+      if (!d && k) keys.add(k[1]);
+      for (const ch of part) d += ch === '{' || ch === '[' ? 1 : (ch === '}' || ch === ']' ? -1 : 0);
+    }
+  }
+
+  // and the sign-out payload, which is a literal plus later assignments
+  const lit = app.slice(app.indexOf('const payload = {'));
+  for (const m of lit.slice(0, lit.indexOf('};')).matchAll(/^\s{6}([A-Za-z_$][\w$]*)[:,]/gm)) keys.add(m[1]);
+  for (const m of app.matchAll(/\bpayload\.([A-Za-z_$][\w$]*)\s*=/g)) keys.add(m[1]);
+
+  assert.ok(keys.has('cardLabel'), 'the scan found no payload fields — the regex has drifted');
+  // `field:` names it; `{ field }` is the shorthand the optional licence block
+  // is spread through. Either one counts as keeping it.
+  const dropped = [...keys].filter(
+    (k) => !new RegExp(`\\b${k}\\s*:|\\{\\s*${k}\\s*\\}`).test(clean)
+  );
+  assert.deepEqual(dropped, [],
+    `sealed but not whitelisted in clean.js, so dropped on arrival: ${dropped.join(', ')}`);
+});
