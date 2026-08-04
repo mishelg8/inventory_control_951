@@ -219,3 +219,39 @@ test('every part of the vault has a home, on both sides', () => {
     'the client and the Worker disagree about which parts exist'
   );
 });
+
+test('an incremental refresh merges without losing or duplicating a row', () => {
+  // The console asks every few seconds for what changed rather than for
+  // everything. Merging is where that can go wrong: a row updated twice must
+  // not appear twice, a deleted one must actually leave, and rows nobody
+  // touched must survive untouched.
+  const mergeRows = new Function(
+    `${app.match(/function mergeRows\(list, incoming, gone, key\) \{[\s\S]*?\n\}/)[0]}\nreturn mergeRows;`
+  )();
+  const highWater = new Function(
+    `${app.match(/const highWater = [\s\S]*?;\n/)[0]}\nreturn highWater;`
+  )();
+
+  const held = [
+    { rid: 'a', updated_at: 10, data: { name: 'א' } },
+    { rid: 'b', updated_at: 20, data: { name: 'ב' } },
+    { rid: 'c', updated_at: 30, data: { name: 'ג' } },
+  ];
+
+  // one row changed, one was deleted
+  const after = mergeRows(held, [{ rid: 'b', updated_at: 40, data: { name: 'ב שונה' } }], ['c'], 'rid');
+  assert.deepEqual(after.map((r) => r.rid), ['a', 'b']);
+  assert.equal(after.find((r) => r.rid === 'b').data.name, 'ב שונה');
+  assert.equal(after.find((r) => r.rid === 'a').data.name, 'א', 'an untouched row was disturbed');
+
+  // a row that is new to us is added, once, even if the answer repeats it
+  const grown = mergeRows(after, [{ rid: 'd', updated_at: 50 }, { rid: 'd', updated_at: 50 }], [], 'rid');
+  assert.equal(grown.filter((r) => r.rid === 'd').length, 1);
+
+  // the watermark is the newest thing we hold, and never goes backwards
+  assert.equal(highWater(grown), 50);
+  assert.equal(highWater([]), 0, 'an empty answer must not reset the watermark to nothing');
+
+  // deleting something we never had is not an error
+  assert.equal(mergeRows(grown, [], ['zzz'], 'rid').length, grown.length);
+});

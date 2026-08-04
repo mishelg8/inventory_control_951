@@ -826,11 +826,23 @@ export async function onRequest(context) {
         return json(out);
       }
 
+      // GET /api/admin/reports[?since=<ms>] — same bargain as records above.
       if (seg[1] === 'reports' && seg.length === 2 && method === 'GET') {
+        const since = Number(url.searchParams.get('since'));
+        const cols = 'id, ek, iv, ct, status, created_at, updated_at';
+        if (Number.isFinite(since) && since > 0) {
+          const { results } = await db
+            .prepare(`SELECT ${cols} FROM reports WHERE deleted_at IS NULL AND updated_at >= ?1 ORDER BY created_at DESC`)
+            .bind(since)
+            .all();
+          const gone = await db
+            .prepare('SELECT id FROM reports WHERE deleted_at IS NOT NULL AND deleted_at >= ?1')
+            .bind(since)
+            .all();
+          return json({ reports: results, gone: (gone.results || []).map((r) => r.id), partial: true });
+        }
         const { results } = await db
-          .prepare(
-            'SELECT id, ek, iv, ct, status, created_at, updated_at FROM reports WHERE deleted_at IS NULL ORDER BY created_at DESC'
-          )
+          .prepare(`SELECT ${cols} FROM reports WHERE deleted_at IS NULL ORDER BY created_at DESC`)
           .all();
         return json({ reports: results });
       }
@@ -1077,12 +1089,34 @@ export async function onRequest(context) {
         }
       }
 
-      // GET /api/admin/records
+      // GET /api/admin/records[?since=<ms>]
+      //
+      // Without `since`, everything — opening the console, or asking for a
+      // clean slate. With it, only what has moved, which is what the console
+      // asks for every few seconds while it is open. During a sign-out the
+      // whole set used to come down the wire each time any one soldier
+      // pressed send; now one submission costs one row.
+      //
+      // `gone` is the other half: a soft-deleted row simply stops appearing,
+      // and a client holding it would never learn it had gone. Deletions are
+      // reported by their own clock, so a delete is never missed because the
+      // row it removed was old.
       if (seg[1] === 'records' && seg.length === 2 && method === 'GET') {
+        const since = Number(url.searchParams.get('since'));
+        const cols = 'rid, ek, iv, ct, status, created_at, updated_at';
+        if (Number.isFinite(since) && since > 0) {
+          const { results } = await db
+            .prepare(`SELECT ${cols} FROM records WHERE deleted_at IS NULL AND updated_at >= ?1 ORDER BY created_at`)
+            .bind(since)
+            .all();
+          const gone = await db
+            .prepare('SELECT rid FROM records WHERE deleted_at IS NOT NULL AND deleted_at >= ?1')
+            .bind(since)
+            .all();
+          return json({ records: results, gone: (gone.results || []).map((r) => r.rid), partial: true });
+        }
         const { results } = await db
-          .prepare(
-            'SELECT rid, ek, iv, ct, status, created_at, updated_at FROM records WHERE deleted_at IS NULL ORDER BY created_at'
-          )
+          .prepare(`SELECT ${cols} FROM records WHERE deleted_at IS NULL ORDER BY created_at`)
           .all();
         return json({ records: results });
       }
@@ -1171,9 +1205,11 @@ export async function onRequest(context) {
         }
         const table = kind === 'record' ? 'records' : 'reports';
         const col = kind === 'record' ? 'rid' : 'id';
+        // updated_at moves too, or a console that only asks for what changed
+        // would never hear that this came back.
         const r = await db
-          .prepare(`UPDATE ${table} SET deleted_at = NULL WHERE ${col} = ?1 AND deleted_at IS NOT NULL`)
-          .bind(id)
+          .prepare(`UPDATE ${table} SET deleted_at = NULL, updated_at = ?2 WHERE ${col} = ?1 AND deleted_at IS NOT NULL`)
+          .bind(id, now)
           .run();
         if (!r.meta.changes) return err(404, 'הפריט לא נמצא בסל');
         await audit(db, now, session, `restore-${kind}`, id, null);

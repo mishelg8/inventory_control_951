@@ -668,9 +668,12 @@ const S = {
   pkcs8: null,                  // Uint8Array — kept for password rotation, zeroed on lock
   pubKey: null,                 // CryptoKey (RSA public, for re-sealing)
   recs: [],                     // { rid, status, created_at, updated_at, data|null, damaged }
+  recsSince: 0,                 // newest updated_at held, so a tick asks only for what moved
   inv: null,                    // { open:{}, extra:[], notes } — decrypted inventory
   docs: {},                     // "rid:kind" -> data URL, fetched on demand
+  docOrder: [],                 // those keys, least recently shown first
   reports: [],                  // { id, status, created_at, data|null, damaged }
+  repsSince: 0,                 // as recsSince, for reports
   repFilter: 'open',            // 'open' | 'done' | 'all'
   repQ: '',                     // search over request name + body
   invQ: '',                     // search over the extra-inventory rows
@@ -726,9 +729,12 @@ function lock() {
   S.priv = null;
   S.pubKey = null;
   S.recs = [];
+  S.recsSince = 0;              // the next sign-in starts from a full load, not a merge
   S.inv = null;
   S.reports = [];
+  S.repsSince = 0;
   S.docs = {};                  // decrypted licence images must not outlive the session
+  S.docOrder = [];
   S.q = '';
   S.repQ = '';
   S.depQ = '';
@@ -5155,7 +5161,7 @@ const fuelDelete = (i) =>
     const n = card.receipts.length;
     for (const r of card.receipts) {
       await api(`/admin/docs/${r.id}/fuel`, { method: 'DELETE' }).catch(() => {});
-      delete S.docs[`${r.id}:fuel`];
+      docForget(`${r.id}:fuel`);
     }
     S.inv.fuel.splice(i, 1);
     await saveInv();
@@ -5206,18 +5212,46 @@ const fuelFile = (i, input) =>
     toast(`${done} קבלות נשמרו${rejected ? ` · ${rejected} קבצים שאינם תמונה דולגו` : ''}`);
   });
 
+/* Decrypted photographs, and how many of them to keep.
+
+   A licence or a receipt is a few hundred kilobytes once it is decrypted, and
+   nothing ever released one: a session spent going through a month of
+   receipts held every one of them until the console was locked. They are kept
+   to a working set now — open the twelfth and the one you looked at longest
+   ago is dropped. Re-opening it costs one fetch, which is what it cost the
+   first time.
+
+   They are still never written anywhere. The cache is memory, it dies with
+   the tab, and lock() empties it as before. */
+const DOC_CACHE_MAX = 12;
+
+function docCache(key, dataUrl) {
+  S.docs[key] = dataUrl;
+  S.docOrder = S.docOrder.filter((k) => k !== key);
+  S.docOrder.push(key);
+  while (S.docOrder.length > DOC_CACHE_MAX) {
+    const oldest = S.docOrder.shift();
+    delete S.docs[oldest];
+  }
+  return dataUrl;
+}
+
+const docForget = (key) => {
+  delete S.docs[key];
+  S.docOrder = S.docOrder.filter((k) => k !== key);
+};
+
 // Pulls and decrypts one receipt. Cached afterwards, so re-opening is free.
 async function fuelDocLoad(docId) {
   const key = `${docId}:fuel`;
-  if (S.docs[key]) return S.docs[key];
+  if (S.docs[key]) return docCache(key, S.docs[key]);   // also marks it recently used
   const { docs } = await api(`/admin/docs/${docId}`);
   const row = (docs || []).find((x) => x.kind === 'fuel');
   if (!row) throw new Error('הקבלה לא נמצאה');
   const bytes = await openBytes(S.priv, row);
   let bin = '';
   for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
-  S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
-  return S.docs[key];
+  return docCache(key, `data:image/jpeg;base64,${btoa(bin)}`);
 }
 
 const fuelDocShow = (docId) =>
@@ -5231,7 +5265,7 @@ const fuelDocDelete = (i, docId) =>
     const card = (S.inv.fuel || [])[i];
     if (!card) return;
     await api(`/admin/docs/${docId}/fuel`, { method: 'DELETE' });
-    delete S.docs[`${docId}:fuel`];
+    docForget(`${docId}:fuel`);
     card.receipts = card.receipts.filter((r) => r.id !== docId);
     await saveInv();
     renderConsole();
@@ -5834,8 +5868,9 @@ async function pulseTick() {
     if (handsOn() || editorOpen()) return;               // try again next tick
     pulseSig = sig;
     const scopes = allowedScopes();
-    if (scopes.has('records')) await loadRecords();
-    if (scopes.has('reports')) await loadReports();
+    // Only what moved since the last tick — see loadRecords.
+    if (scopes.has('records')) await loadRecords(true);
+    if (scopes.has('reports')) await loadReports(true);
     // The vault is this admin's own writing, so a change is almost always
     // their own save echoing back; reloading it would fight with unsaved edits.
     renderConsole();
@@ -6086,18 +6121,51 @@ function renderSecurityTab() {
 
 /* ── Admin data operations ─────────────────────────────────────────── */
 
-async function loadRecords() {
-  const { records } = await api('/admin/records');
-  const out = [];
-  for (const row of records) {
-    try {
-      const data = await openRecord(S.priv, row);
-      out.push({ ...row, data, damaged: false });
-    } catch {
-      out.push({ ...row, data: null, damaged: true });
-    }
+/* Opening one encrypted row into what the screen shows. A row that will not
+   open is kept and flagged rather than dropped: something is there, and the
+   console should say so instead of quietly showing one soldier fewer. */
+const openRow = async (row, clean) => {
+  try {
+    return { ...row, data: await openRecord(S.priv, row, clean), damaged: false };
+  } catch {
+    return { ...row, data: null, damaged: true };
   }
-  S.recs = out;
+};
+
+// The newest thing we hold. The next request asks for this and later, so a
+// row written in the same millisecond as the last one cannot fall through the
+// gap; the cost is re-fetching one row we already have.
+const highWater = (rows) => rows.reduce((m, r) => Math.max(m, r.updated_at || 0), 0);
+
+/* Merges what changed into what we already have.
+
+   The console asks every few seconds whether anything moved, and until now
+   the answer "yes" meant downloading and decrypting every record again — the
+   whole set, every time one soldier pressed send, which is exactly what
+   ninety soldiers do at once during a sign-out. Now it asks for what changed
+   since the last answer and merges that.
+
+   Everything else is unchanged: a full load still happens when the console
+   opens or someone presses refresh, and that is also the way back if this
+   ever drifts. */
+function mergeRows(list, incoming, gone, key) {
+  const goneSet = new Set(gone || []);
+  const next = list.filter((r) => !goneSet.has(r[key]));
+  for (const row of incoming) {
+    const at = next.findIndex((r) => r[key] === row[key]);
+    if (at === -1) next.push(row);
+    else next[at] = row;
+  }
+  return next;
+}
+
+async function loadRecords(incremental) {
+  const since = incremental && S.recsSince ? `?since=${S.recsSince}` : '';
+  const { records, gone, partial } = await api(`/admin/records${since}`);
+  const out = [];
+  for (const row of records) out.push(await openRow(row));
+  S.recs = partial ? mergeRows(S.recs, out, gone, 'rid') : out;
+  S.recsSince = Math.max(S.recsSince || 0, highWater(records));
 }
 
 const findRec = (rid) => S.recs.find((r) => r.rid === rid);
@@ -6108,17 +6176,13 @@ async function saveRec(rec) {
   await api(`/admin/records/${rec.rid}`, { method: 'PUT', body: { ...sealed, status: rec.status } });
 }
 
-async function loadReports() {
-  const { reports } = await api('/admin/reports');
+async function loadReports(incremental) {
+  const since = incremental && S.repsSince ? `?since=${S.repsSince}` : '';
+  const { reports, gone, partial } = await api(`/admin/reports${since}`);
   const out = [];
-  for (const row of reports) {
-    try {
-      out.push({ ...row, data: await openRecord(S.priv, row, cleanReport), damaged: false });
-    } catch {
-      out.push({ ...row, data: null, damaged: true });
-    }
-  }
-  S.reports = out;
+  for (const row of reports) out.push(await openRow(row, cleanReport));
+  S.reports = partial ? mergeRows(S.reports, out, gone, 'id') : out;
+  S.repsSince = Math.max(S.repsSince || 0, highWater(reports));
 }
 
 const repSetState = (id, next) =>
@@ -7081,7 +7145,7 @@ const toggleDoc = (rid, kind) =>
   withBusy(async () => {
     const key = `${rid}:${kind}`;
     if (S.docs[key]) {
-      delete S.docs[key];
+      docForget(key);
       renderConsole();
       return;
     }
@@ -7095,7 +7159,7 @@ const toggleDoc = (rid, kind) =>
       const bytes = new Uint8Array(await openBytes(S.priv, row));
       let bin = '';
       for (const b of bytes) bin += String.fromCharCode(b);
-      S.docs[key] = `data:image/jpeg;base64,${btoa(bin)}`;
+      docCache(key, `data:image/jpeg;base64,${btoa(bin)}`);
       renderConsole();
     } catch {
       toast('פענוח הצילום נכשל — ייתכן שהנתונים שובשו', true);
