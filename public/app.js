@@ -5531,7 +5531,7 @@ const revokeSessions = () =>
 // running can refresh the bin without the guard turning the call into a no-op.
 const fetchTrash = async () => {
   const { records, reports, keepMs } = await api('/admin/trash');
-  const open = async (rows, clean) => {
+  const open = async (rows, clean = cleanRecord) => {
     const out = [];
     for (const row of rows) {
       try { out.push({ ...row, data: await openRecord(S.priv, row, clean), damaged: false }); }
@@ -5877,7 +5877,7 @@ function renderSecurityTab() {
 /* Opening one encrypted row into what the screen shows. A row that will not
    open is kept and flagged rather than dropped: something is there, and the
    console should say so instead of quietly showing one soldier fewer. */
-const openRow = async (row, clean) => {
+const openRow = async (row, clean = cleanRecord) => {
   try {
     return { ...row, data: await openRecord(S.priv, row, clean), damaged: false };
   } catch {

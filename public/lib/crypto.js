@@ -95,7 +95,17 @@ const rndId = () => hex(crypto.getRandomValues(new Uint8Array(8)));
 
 // Open: admin only (§4.5). Throws on tampered ciphertext — caller counts it.
 // `clean` is the schema guard above; never skip it for attacker-writable data.
-async function openRecord(privKey, rec, clean = cleanRecord) {
+// `clean` is the schema guard from clean.js and is NOT optional: a decrypted
+// record is attacker-writable input, so opening one without saying how it is
+// to be checked is a mistake, and a loud one rather than a silent skip.
+//
+// It used to default to cleanRecord, which was fine while everything lived in
+// one file. Once this moved here that default referred to a name this module
+// cannot see, so every call that relied on it threw — and the console, which
+// catches a failure to open and marks the row, reported every record as
+// damaged data on the server. The data was never touched.
+async function openRecord(privKey, rec, clean) {
+  if (typeof clean !== 'function') throw new Error('openRecord: missing schema guard');
   const rawCek = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privKey, ub64(rec.ek));
   const cek = await crypto.subtle.importKey('raw', rawCek, 'AES-GCM', false, ['decrypt']);
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(rec.iv) }, cek, ub64(rec.ct));

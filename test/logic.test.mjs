@@ -263,3 +263,83 @@ test('an incremental refresh merges without losing or duplicating a row', () => 
   // deleting something we never had is not an error
   assert.equal(mergeRows(grown, [], ['zzz'], 'rid').length, grown.length);
 });
+
+test('no module reaches for a name it cannot see', () => {
+  // This is the test that was missing. openRecord took `clean = cleanRecord`
+  // as a default, which was fine while everything was one file; once it moved
+  // to crypto.js the default named something that module cannot see, so every
+  // call relying on it threw. The console catches a failed open and marks the
+  // row, so the screen said nine records were damaged on the server — while
+  // the data was untouched and only the browser could not read it.
+  //
+  // An earlier check looked for `name(` and so saw calls but never a default
+  // argument, a bare reference, or a value in an object. This one takes every
+  // identifier a module mentions and insists it be defined there, imported, or
+  // a global.
+  const GLOBALS = new Set([
+    'crypto', 'window', 'document', 'console', 'Math', 'JSON', 'Object', 'Array', 'String',
+    'Number', 'Boolean', 'Date', 'Promise', 'Error', 'Set', 'Map', 'RegExp', 'Symbol',
+    'TextEncoder', 'TextDecoder', 'Uint8Array', 'ArrayBuffer', 'Blob', 'File', 'FileReader',
+    'Image', 'URL', 'atob', 'btoa', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval',
+    'clearInterval', 'isNaN', 'parseInt', 'parseFloat', 'undefined', 'null', 'true', 'false',
+    'this', 'arguments', 'globalThis', 'Infinity', 'NaN', 'DataTransfer', 'PointerEvent', 'Event',
+  ]);
+  const KEYWORDS = new Set([
+    'const', 'let', 'var', 'function', 'async', 'await', 'return', 'if', 'else', 'for', 'of',
+    'in', 'while', 'do', 'break', 'continue', 'new', 'typeof', 'instanceof', 'try', 'catch',
+    'finally', 'throw', 'switch', 'case', 'default', 'class', 'extends', 'super', 'import',
+    'export', 'from', 'as', 'delete', 'void', 'yield', 'static', 'get', 'set',
+  ]);
+
+  for (const rel of ['public/lib/catalog.js', 'public/lib/crypto.js', 'public/lib/clean.js']) {
+    const src = read(rel);
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')            // block comments
+      .replace(/\/\/.*$/gm, ' ')                    // line comments, trailing ones included
+      .replace(/`(?:[^`\\]|\\.)*`/g, '``')          // template literals, and what is in them
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      // regex literals, whose flags would otherwise read as identifiers
+      .replace(/(?<=[=(,:[!&|?{};]\s*)\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+\/[gimsuy]*/g, ' ');
+
+    const declared = new Set();
+    for (const m of code.matchAll(/(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(m[1]);
+    // parameters, destructuring and loop variables, roughly but generously
+    for (const m of code.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) {
+      for (const p of m[1].split(',')) {
+        const n = p.trim().split(/[=:\s]/)[0].replace(/[{}[\].]/g, '');
+        if (/^[A-Za-z_$][\w$]*$/.test(n)) declared.add(n);
+      }
+    }
+    for (const m of code.matchAll(/(?:for\s*\(\s*(?:const|let|var)\s+|catch\s*\(\s*)([A-Za-z_$][\w$]*)/g)) declared.add(m[1]);
+    // array destructuring: const [a, b] = … and for (const [a, b] of …)
+    for (const m of code.matchAll(/(?:const|let|var)\s*\[([^\]]*)\]/g)) {
+      for (const n of m[1].split(',')) {
+        const id = n.trim().replace(/^\.\.\./, '').split(/[=\s]/)[0];
+        if (/^[A-Za-z_$][\w$]*$/.test(id)) declared.add(id);
+      }
+    }
+    for (const m of code.matchAll(/\{([^{}]*)\}\s*=/g)) {
+      for (const p of m[1].split(',')) {
+        const n = p.trim().split(/[:\s]/).pop();
+        if (/^[A-Za-z_$][\w$]*$/.test(n)) declared.add(n);
+      }
+    }
+
+    const imported = new Set();
+    for (const m of code.matchAll(/import\s*\{([^}]*)\}/g)) {
+      for (const n of m[1].split(',')) if (n.trim()) imported.add(n.trim());
+    }
+
+    const unknown = new Set();
+    for (const m of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)/g)) {
+      const name = m[1];
+      if (KEYWORDS.has(name) || GLOBALS.has(name) || declared.has(name) || imported.has(name)) continue;
+      // `name:` is a key in an object literal, not a reference to anything
+      if (/^\s*:/.test(code.slice(m.index + name.length))) continue;
+      unknown.add(name);
+    }
+    assert.deepEqual([...unknown], [],
+      `${rel} mentions ${[...unknown].join(', ')} — not defined there, not imported`);
+  }
+});
