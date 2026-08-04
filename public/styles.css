@@ -205,7 +205,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
-  padding: 9px 13px;
+  padding: 12px 13px;
   min-height: 42px;
   border-radius: var(--r-sm);
   transition: color 0.15s, background-color 0.15s;
@@ -384,6 +384,7 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   align-items: center;
   gap: 6px;
   text-decoration: none;
+  min-height: 44px;
 }
 /* the arrow points the way it reads: right is backwards in Hebrew */
 .backbtn > span { font-size: 15px; line-height: 1; }
@@ -561,8 +562,20 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .input.mini { min-height: 38px; padding: 6px 9px; font-size: 14.5px; }
 
-.check { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
-.check input { margin: 3px 0 0; width: 18px; height: 18px; accent-color: var(--pine); flex: none; }
+/* A tick box is hit with a thumb, outdoors, sometimes through a glove. The box
+   is 22px and the row it sits in is at least 44 tall, so the whole line is the
+   target rather than the square. Measured on a phone it was a 22px-high row
+   before this — under what WCAG 2.2 asks for, and well under what a cold hand
+   manages on the first try. */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  min-height: 44px;
+  padding: 10px 0;
+}
+.check input { margin: 1px 0 0; width: 22px; height: 22px; accent-color: var(--pine); flex: none; }
 
 .form-err { color: var(--bad-ink); font-size: 13.5px; font-weight: 600; min-height: 20px; margin: 2px 0 6px; }
 
@@ -590,6 +603,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.wide { width: 100%; }
 .btn.small { min-height: 36px; padding: 6px 12px; font-size: 13.5px; }
+/* except the back link, which is on every screen and gets pressed while
+   walking — 36px is fine in a table, not in a thumb's path */
+.btn.small.backbtn { min-height: 44px; padding-inline: 14px; }
 
 .btn.primary {
   background: var(--pine);
@@ -859,7 +875,8 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   border-top: 1px solid var(--line-soft);
   margin-top: 3px;
 }
-.rec-actions .btn { flex: 1; min-width: 96px; }
+/* Camera and gallery, pressed one-handed at a fuel pump. */
+.rec-actions .btn { flex: 1; min-width: 96px; min-height: 44px; }
 
 .fp {
   margin-top: 10px;

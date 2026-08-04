@@ -1831,10 +1831,18 @@ const READ_ACTS = new Set([
   'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
 
+/* A viewer's screen, with everything they may not do taken off it.
+
+   The question a button asks before it acts is not itself an action, so what
+   matters is the action behind it: exporting a CSV stays, because a viewer
+   may export; the ✕ on a row goes, because a viewer may not delete. Without
+   that distinction every armed control would look the same to this and a
+   viewer would lose their export buttons. */
 function stripWriteControls() {
   for (const el of $app.querySelectorAll('[data-act]')) {
-    const act = el.dataset.act;
+    const act = el.dataset.for || el.dataset.act;   // what it will do, not that it asks
     if (READ_ACTS.has(act) || /(^|-)(search|qclear|export)$/.test(act)) continue;
+    if (act === 'ask-cancel') continue;
     if (el.matches('input, select, textarea')) {
       el.disabled = true;
     } else {
@@ -2048,12 +2056,36 @@ function groupByDept(recs) {
 function delCell(key, act, data = {}, label = '✕', aria = 'מחיקה', note = '') {
   if (S.askDel !== key) {
     return `<button class="linkbtn danger-link" data-act="ask-del" data-key="${esc(key)}"
-                    aria-label="${esc(aria)}" title="${esc(aria)}">${label}</button>`;
+                    data-for="${esc(act)}" aria-label="${esc(aria)}" title="${esc(aria)}">${label}</button>`;
   }
   const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
   return `<span class="delask">
       <span class="delask-q">${esc(note || 'למחוק?')}</span>
       <button class="btn danger small" data-act="${esc(act)}"${attrs}>כן, למחוק</button>
+      <button class="linkbtn" data-act="ask-cancel">ביטול</button>
+    </span>`;
+}
+
+/* The same question, for a button that is not a row.
+
+   Bulk approval, wiping the database, marking a fuel card credited, exporting
+   a file that is not encrypted — all of these asked with window.confirm, a
+   browser dialog nobody asked for and which on a phone covers the screen it
+   is asking about. This is the row-delete pattern widened: the button turns
+   into the question, in the place the button was, and answering it is a
+   second, differently labelled control.
+
+   `tone` picks the confirm button's colour, because "yes, wipe everything"
+   and "yes, export" do not deserve the same red. */
+function askBtn(key, act, label, note, { data = {}, yes = 'אישור', tone = 'primary', cls = 'btn ghost' } = {}) {
+  if (S.askDel !== key) {
+    return `<button class="${cls}" data-act="ask-del" data-key="${esc(key)}"
+                    data-for="${esc(act)}">${label}</button>`;
+  }
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
+  return `<span class="delask">
+      <span class="delask-q">${esc(note)}</span>
+      <button class="btn ${tone} small" data-act="${esc(act)}"${attrs}>${esc(yes)}</button>
       <button class="linkbtn" data-act="ask-cancel">ביטול</button>
     </span>`;
 }
@@ -2265,7 +2297,7 @@ function pendingCard(rec) {
       ${recEditor(rec)}
       <ul>${rows}</ul>
       <div class="rec-actions">
-        <button class="btn primary" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
+        ${approveBtn(rec, 'btn primary')}
         ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
       </div>
       ${fpStrip(rec.rid)}
@@ -2352,7 +2384,7 @@ function renderPendingTab() {
         <td class="chips">${itemChips(d, 'pending') || '<span class="dim">—</span>'}</td>
         <td class="num">${esc(fmtShort(d.createdAt))}</td>
         <td class="nowrap">
-          <button class="btn primary small" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>
+          ${approveBtn(rec, 'btn primary small')}
           ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
         </td>
       </tr>
@@ -2373,8 +2405,11 @@ function renderPendingTab() {
         </label>
         ${picked.length
           ? `<span class="bulk-n"><span class="num">${picked.length}</span> מסומנים</span>
-             <button class="btn primary small" data-act="bulk-approve">אישור המסומנים</button>
-             <button class="btn danger small" data-act="bulk-del">מחיקת המסומנים</button>
+             ${askBtn('bulk-approve', 'bulk-approve', 'אישור המסומנים',
+               bulkApproveNote(), { yes: 'כן, לאשר', cls: 'btn primary small' })}
+             ${askBtn('bulk-del', 'bulk-del', 'מחיקת המסומנים',
+               `למחוק ${S.picked.size} רישומים? הפעולה אינה הפיכה.`,
+               { yes: 'כן, למחוק', tone: 'danger', cls: 'btn danger small' })}
              <button class="linkbtn" data-act="pick-clear">ניקוי הבחירה</button>`
           : '<span class="muted-txt">סמנו שורות כדי לאשר או למחוק כמה יחד</span>'}
       </div>
@@ -3091,18 +3126,26 @@ const REPORTS = {
 function reportButtons(id, extra = '') {
   return `
     <div class="rec-actions mt">
-      <button class="btn ghost" data-act="rep-csv" data-r="${id}">ייצוא ל-CSV</button>
+      ${csvBtn(id, 'ייצוא ל-CSV')}
       <button class="btn ghost" data-act="rep-pdf" data-r="${id}">הפקת PDF</button>
       ${extra}
     </div>`;
+}
+
+// A CSV leaves the encryption behind — that is what a spreadsheet is — so the
+// button says so before it writes one, and says it louder when the file holds
+// personal details.
+function csvBtn(id, label) {
+  const def = REPORTS[id];
+  return askBtn(`csv:${id}`, 'rep-csv', label,
+    def && def.sensitive ? 'הקובץ אינו מוצפן ומכיל פרטים אישיים. לייצא?' : 'הקובץ אינו מוצפן. לייצא?',
+    { data: { r: id }, yes: 'ייצוא', tone: 'primary' });
 }
 
 function reportCsv(id) {
   const def = REPORTS[id];
   const { head, rows } = def.build();
   if (!rows.length) { toast('אין נתונים לייצוא', true); return; }
-  if (def.sensitive && !window.confirm('הקובץ אינו מוצפן ומכיל פרטים אישיים. להמשיך?')) return;
-  if (!def.sensitive && !window.confirm('הקובץ אינו מוצפן. להמשיך?')) return;
   downloadCsv([head, ...rows].map((l) => l.map(csvCell).join(',')), `${def.file}.csv`);
 }
 
@@ -3360,7 +3403,7 @@ function renderInvTab() {
         : '<p class="empty">אין פריטים נוספים. הוסיפו את הראשון למטה.</p>'}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="inv-xadd">+ הוספת פריט</button>
-        ${inv.extra.length ? `<button class="btn ghost" data-act="rep-csv" data-r="stockExtra">ייצוא ל-CSV</button>
+        ${inv.extra.length ? `${csvBtn('stockExtra', 'ייצוא ל-CSV')}
              <button class="btn ghost" data-act="rep-pdf" data-r="stockExtra">הפקת PDF</button>` : ''}
       </div>
     </section>
@@ -3763,7 +3806,9 @@ function depositsPanel() {
       <td class="nowrap">
         ${done
           ? ''
-          : `<button class="btn primary small" data-act="dep-approve" data-id="${esc(r.id)}">אישור וקליטה</button>`}
+          : askBtn(`dep:${r.id}`, 'dep-approve', 'אישור וקליטה',
+              `לקלוט לארמון את נשק ${d.weapon} של ${d.name}?`,
+              { data: { id: r.id }, yes: 'כן, לקלוט', cls: 'btn primary small' })}
         ${repEditLink(r)}
         ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, 'מחיקה', 'מחיקת הדיווח')}
       </td>
@@ -3812,10 +3857,7 @@ const depApprove = (id) =>
       const clash = serialTaken(d[f], rec.id);
       if (clash) { toast(`${label}: ${clash}`, true); return; }
     }
-    const extra = [d.amral && `אמר״ל ${d.amral}`, d.scope && `כוונת ${d.scope}`].filter(Boolean).join(', ');
-    if (!window.confirm(
-      `לאשר אפסון של ${d.name} (מ״א ${d.pn})?\nנשק ${d.weapon}${extra ? `\nובנוסף: ${extra}` : ''}\n\nהפריטים ייקלטו לארמון.`
-    )) return;
+    S.askDel = '';
 
     const prevArmon = S.inv.armon || [];
     const prevLog = S.inv.armonLog || [];
@@ -4043,7 +4085,7 @@ function renderRegisterTab(reg) {
            ${pager(reg.key, p)}`
         : `<p class="empty">${here.length ? `אין פריט ${reg.placeIn} שתואם את החיפוש.` : all.length ? `אין פריטים ${reg.placeIn} — כולם בחוץ.` : `${reg.place} ריק. הוסיפו פריט למעלה.`}</p>`}
       <div class="rec-actions mt">
-        <button class="btn ghost" data-act="rep-csv" data-r="${reg.key}">ייצוא ל-CSV</button>
+        ${csvBtn(reg.key, 'ייצוא ל-CSV')}
         <button class="btn ghost" data-act="rep-pdf" data-r="${reg.key}">הפקת PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
@@ -4160,7 +4202,7 @@ function renderTzelemTab() {
            <div class="rec-actions mt">
              <button class="btn primary" data-act="rep-pdf" data-r="tzelem">הפקת PDF</button>
              <button class="btn wa ghost-wa" data-act="tz-wa">שליחת סיכום בוואטסאפ</button>
-             <button class="btn ghost" data-act="rep-csv" data-r="tzelem">ייצוא ל-CSV</button>
+             ${csvBtn('tzelem', 'ייצוא ל-CSV')}
            </div>
            <p class="field-hint mt center">"הפקת PDF" פותחת את חלון ההדפסה — בחרו <strong>שמירה כ-PDF</strong>. וואטסאפ מקבל טקסט בלבד, ולכן הכפתור שולח סיכום ומצרפים את ה-PDF ידנית.</p>`
         : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'אין פריטים להצגה בדו״ח.'}</p>`}
@@ -4357,7 +4399,7 @@ function renderVehTab() {
         : `<p class="empty">${all.length ? 'אין רכב שתואם את החיפוש.' : 'אין רכבים. הוסיפו את הראשון למטה.'}</p>`}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="veh-add">+ הוספת רכב</button>
-        <button class="btn ghost" data-act="rep-csv" data-r="vehicles">ייצוא ל-CSV</button>
+        ${csvBtn('vehicles', 'ייצוא ל-CSV')}
         <button class="btn ghost" data-act="rep-pdf" data-r="vehicles">הפקת PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
@@ -4423,9 +4465,11 @@ function fuelPanel() {
                 aria-expanded="${open}">${open ? 'סגירה' : esc(parts.join(' · ') || 'פתיחה')}</button>
       </td>
       <td class="nowrap">
-        <button class="btn ${x.credited ? 'ghost' : 'primary'} small" data-act="fuel-credit" data-i="${i}">
-          ${x.credited ? '✓ זוכה' : 'סימון זיכוי'}
-        </button>
+        ${askBtn(`credit:${i}`, 'fuel-credit',
+          x.credited ? '✓ זוכה' : 'סימון זיכוי',
+          x.credited ? 'לבטל את סימון הזיכוי?' : `לסמן שכרטיס ${x.no || 'זה'} זוכה אצל קצין רכב?`,
+          { data: { i }, yes: x.credited ? 'כן, לבטל' : 'כן, זוכה',
+            cls: `btn ${x.credited ? 'ghost' : 'primary'} small` })}
         ${x.credited && x.creditedAt
           ? `<span class="muted-txt num">${esc(new Date(x.creditedAt).toLocaleDateString('he-IL'))}</span>`
           : ''}
@@ -4467,9 +4511,9 @@ function fuelPanel() {
         : `<p class="empty">${all.length ? 'אין כרטיס שתואם את החיפוש.' : 'אין כרטיסי תדלוק. הוסיפו את הראשון למטה.'}</p>`}
       <div class="rec-actions mt">
         <button class="btn ghost" data-act="fuel-add">+ הוספת כרטיס</button>
-        <button class="btn ghost" data-act="rep-csv" data-r="fuel">כרטיסים — CSV</button>
+        ${csvBtn('fuel', 'כרטיסים — CSV')}
         <button class="btn ghost" data-act="rep-pdf" data-r="fuel">כרטיסים — PDF</button>
-        <button class="btn ghost" data-act="rep-csv" data-r="fuelUses">יומן שימושים — CSV</button>
+        ${csvBtn('fuelUses', 'יומן שימושים — CSV')}
         <button class="btn ghost" data-act="rep-pdf" data-r="fuelUses">יומן שימושים — PDF</button>
         <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
       </div>
@@ -4899,15 +4943,9 @@ function fuelUse(i) {
 function fuelCredit(i) {
   const card = (S.inv.fuel || [])[i];
   if (!card) return;
-  if (card.credited) {
-    if (!window.confirm('לבטל את סימון הזיכוי?')) return;
-    card.credited = false;
-    card.creditedAt = 0;
-  } else {
-    if (!window.confirm(`לסמן שכרטיס ${card.no || 'זה'} זוכה אצל קצין רכב?`)) return;
-    card.credited = true;
-    card.creditedAt = Date.now();
-  }
+  S.askDel = '';
+  card.credited = !card.credited;
+  card.creditedAt = card.credited ? Date.now() : 0;
   invSave();
 }
 
@@ -5313,9 +5351,6 @@ const fltSetState = (id, next) =>
 // forgotten password — nothing can.
 const exportRecoveryKey = () =>
   withBusy(async () => {
-    if (!window.confirm(
-      'הקובץ מכיל את המפתח הפרטי עטוף בסיסמה שלכם. בלי הסיסמה הוא חסר ערך — אבל שמרו אותו במקום מוגן ולא באותו מקום עם הסיסמה. להמשיך?'
-    )) return;
     const cfg = await api('/config');
     const blob = new Blob([JSON.stringify({
       note: 'גיבוי מפתח שחזור — מסייעת 951. דורש את סיסמת המנהל כדי להיפתח.',
@@ -5660,7 +5695,9 @@ function renderSecurityTab() {
     <section class="panel">
       <h2 class="panel-title">גיבוי מפתח שחזור</h2>
       <p class="panel-sub">קובץ קטן עם המפתח הציבורי ומזהי המערכת, לשמירה בנפרד מהמכשיר. בלי סיסמת המנהל הוא חסר ערך, ולכן אפשר לשמור אותו במקום אחר — אבל <strong>הוא אינו מחליף את הסיסמה</strong>: אם היא תאבד, אין שחזור.</p>
-      <button class="btn ghost wide" data-act="key-export">הורדת קובץ שחזור</button>
+      ${askBtn('key-export', 'key-export', 'הורדת קובץ שחזור',
+        'הקובץ מכיל את המפתח הפרטי עטוף בסיסמה שלכם — שמרו אותו לא באותו מקום עם הסיסמה. להוריד?',
+        { yes: 'הורדה', cls: 'btn ghost wide' })}
     </section>
 
     <section class="panel">
@@ -5682,7 +5719,9 @@ function renderSecurityTab() {
     <section class="panel">
       <h2 class="panel-title">מחיקת כל הנתונים</h2>
       <p class="panel-sub">מוחק רשומות, מפתחות, חיבורים והגדרות — לצמיתות. לביצוע בסוף התרגיל בלבד.</p>
-      <button class="btn danger wide" data-act="wipe">מחיקת כל הנתונים</button>
+      ${askBtn('wipe', 'wipe', 'מחיקת כל הנתונים',
+        'כל הרשומות, הצילומים והמפתחות יימחקו לצמיתות. אין שחזור.',
+        { yes: 'כן, למחוק הכול', tone: 'danger', cls: 'btn danger wide' })}
     </section>`;
 }
 
@@ -6578,15 +6617,23 @@ async function approveCore(rid) {
     return { name: rec.data.name };
 }
 
+/* Approving is one press unless a number on the slip is already on the books,
+   and then it is a question with the reason in it. The check runs while the
+   button is drawn rather than after it is pressed, so the warning is on the
+   screen before the press instead of in a dialog after it. */
+function approveBtn(rec, cls) {
+  const warns = rec && !rec.damaged && rec.data ? serialWarnings(rec.data, rec.rid) : [];
+  if (!warns.length) {
+    return `<button class="${cls}" data-act="approve" data-rid="${esc(rec.rid)}">אישור</button>`;
+  }
+  return askBtn(`approve:${rec.rid}`, 'approve', '⚠ אישור',
+    `${warns[0]}${warns.length > 1 ? ` (ועוד ${warns.length - 1})` : ''} — לאשר בכל זאת?`,
+    { data: { rid: rec.rid }, yes: 'כן, לאשר', cls });
+}
+
 const adminApprove = (rid) =>
   withBusy(async () => {
-    const rec = findRec(rid);
-    if (rec && !rec.damaged && rec.data) {
-      const warns = serialWarnings(rec.data, rid);
-      if (warns.length && !window.confirm(
-        `בדיקת מספרים סידוריים עבור ${rec.data.name}:\n\n${warns.join('\n')}\n\nלאשר בכל זאת?`
-      )) return;
-    }
+    S.askDel = '';
     const r = await approveCore(rid);
     S.picked.delete(rid);
     renderConsole();
@@ -6598,21 +6645,29 @@ const adminApprove = (rid) =>
 
 // Bulk approval. Each record is saved on its own, so a failure part-way leaves
 // everything before it approved rather than rolling the batch back.
+// What the bulk question says depends on what is about to be approved: the
+// count always, and any serial number that is already on the books — which is
+// exactly the moment to see it, not after.
+function bulkApproveNote() {
+  const rids = [...S.picked];
+  const flagged = [];
+  for (const rid of rids) {
+    const rec = findRec(rid);
+    if (!rec || rec.damaged || !rec.data) continue;
+    const w = serialWarnings(rec.data, rid);
+    if (w.length) flagged.push(`${rec.data.name}: ${w[0]}`);
+  }
+  const head = flagged.length
+    ? `⚠ ${flagged.length} מתוך ${rids.length} עם בעיה במספרים סידוריים — ${flagged.slice(0, 3).join(' · ')}${flagged.length > 3 ? ' ועוד' : ''}. `
+    : '';
+  return `${head}לאשר ${rids.length} רישומים? ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.`;
+}
+
 const bulkApprove = () =>
   withBusy(async () => {
     const rids = [...S.picked];
     if (!rids.length) return;
-    const flagged = [];
-    for (const rid of rids) {
-      const rec = findRec(rid);
-      if (!rec || rec.damaged || !rec.data) continue;
-      const w = serialWarnings(rec.data, rid);
-      if (w.length) flagged.push(`${rec.data.name}: ${w[0]}`);
-    }
-    const head = flagged.length
-      ? `⚠ ${flagged.length} מתוך ${rids.length} עם בעיה במספרים סידוריים:\n\n${flagged.slice(0, 8).join('\n')}${flagged.length > 8 ? `\n…ועוד ${flagged.length - 8}` : ''}\n\n`
-      : '';
-    if (!window.confirm(`${head}לאשר ${rids.length} רישומים? ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.`)) return;
+    S.askDel = '';
     let ok = 0;
     const failedRids = [];
     for (const rid of rids) {
@@ -6638,7 +6693,7 @@ const bulkDelete = () =>
   withBusy(async () => {
     const rids = [...S.picked];
     if (!rids.length) return;
-    if (!window.confirm(`למחוק ${rids.length} רישומים? הפעולה אינה הפיכה.`)) return;
+    S.askDel = '';
     let ok = 0;
     for (const rid of rids) {
       try {
@@ -6900,8 +6955,7 @@ async function loadUsers() {
 
 const adminWipe = () =>
   withBusy(async () => {
-    if (!window.confirm('למחוק את כל הנתונים? כל הרשומות והמפתחות יימחקו לצמיתות.')) return;
-    if (!window.confirm('אישור אחרון: אין דרך לשחזר את הנתונים לאחר המחיקה. להמשיך?')) return;
+    S.askDel = '';
     await api('/admin/wipe', { method: 'POST', body: {} });
     if (S.pkcs8) S.pkcs8.fill(0);
     S.pkcs8 = null;
