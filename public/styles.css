@@ -646,6 +646,32 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   box-shadow: 0 0 0 3px var(--pine-ring);
 }
 .input.num { text-align: right; font-size: var(--t-lg); letter-spacing: 0.02em; }
+
+/* A date field is a native control, and on iOS it is a native control that
+   does not listen. Safari sizes it to its own contents rather than to the box
+   it was given, so `width: 100%` is ignored and the field grows past the
+   fields above and below it — in RTL it keeps its right edge and spills out
+   to the left, which is exactly what it looks like: one box out of line with
+   every other box on the card.
+
+   Turning the appearance off is what puts it back under our width. The inner
+   value is a shadow element of its own and stays centred with a margin unless
+   it is told otherwise, which is the rest of the drift. Harmless everywhere
+   else — on a desktop these rules describe what already happens. */
+.input[type="date"] {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.input[type="date"]::-webkit-date-and-time-value {
+  text-align: start;
+  margin: 0;
+}
+.input[type="date"]::-webkit-calendar-picker-indicator { margin-inline-start: 0; }
+
 .area { min-height: 120px; resize: vertical; line-height: 1.55; }
 .select {
   appearance: none;
