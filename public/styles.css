@@ -279,6 +279,23 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .foot-link::before { content: "⌂"; font-size: var(--t-md); opacity: 0.8; }
 .foot-link.rep::before { content: "⚑"; }
+/* On a phone these six wrapped into a centred three-and-three with gaps that
+   fell wherever the words ended, and the little flags — a glyph each platform
+   draws differently — read as specks rather than as icons. Two even columns,
+   left-aligned inside each, is a block you can scan; the flags come off and
+   the one mark that means something, "you are here", stays. */
+@media (max-width: 560px) {
+  .foot .wrap {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-2);
+    justify-content: stretch;
+  }
+  .foot-link { justify-content: flex-start; padding-inline: var(--s-4); }
+  .foot-link.rep::before { content: none; }
+  .foot-link::before { content: none; }
+  .foot-link[aria-current="page"]::before { content: "●"; font-size: var(--t-3xs); }
+}
 .foot-link:hover { color: var(--ink); background: rgba(20, 26, 18, 0.06); }
 /* Where you already are. Marked, not linked — six near-identical links and no
    sign of which one you are standing on is a map with no "you are here". */
@@ -1750,6 +1767,39 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   .center-head { padding-top: var(--s-8); }
   .center-head > .panel-title { font-size: var(--t-xl); }
 }
+/* The emblem is already in the bar at the top of every screen. Repeating it
+   inside the first card cost 55px of a phone's opening view to say a second
+   time what was said an inch above — and on the sign-up form that pushed the
+   first field a full 42% of the screen down. It stays where there is room for
+   it; on a phone the bar carries the unit's mark alone. */
+@media (max-width: 560px) {
+  .unit-badge { display: none; }
+  .center-head { padding-top: var(--s-6); }
+  /* With the emblem gone and the name no longer repeated, this panel held one
+     muted sentence — and a card with a single line in it reads as a box that
+     failed to load rather than as an introduction. It becomes the lead line
+     it always was. */
+  .panel.hero {
+    background: none;
+    border: 0;
+    box-shadow: none;
+    padding: var(--s-3) var(--s-2) 0;
+    margin-bottom: var(--s-3);
+  }
+  /* Off the screen, still in the accessibility tree: the page keeps its one
+     h1 for anything that navigates by heading, and a sighted reader is not
+     told the unit's name a second time an inch below the bar that says it. */
+  .hide-phone {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
 .big-ok {
   width: 58px;
   height: 58px;
@@ -2284,4 +2334,76 @@ body.printing .printdoc {
   .tbl td .input[type="date"] { font-size: var(--t-xs); }
   .tbl td .btn.small { padding: var(--s-3) var(--s-4); font-size: var(--t-xs); }
   .tbl tbody tr.sub > td { padding: var(--s-4) var(--s-2); }
+}
+
+/* ── Phones: the type scale, and the last word on touch targets ──────────
+   Both of these belong at the end of the file, and for the same reason.
+
+   A media query adds no specificity. `@media (pointer: coarse) { .linkbtn
+   { padding-block: … } }` written *above* `.linkbtn`'s own padding loses to
+   it on the cascade — so the rule was there, sincerely meant, and every
+   "עריכה" in the console was still 26px tall on a phone. Written last, these
+   win by order, and there is one place to look for them. */
+
+/* The two smallest steps of the scale exist for dense desktop tables. On a
+   phone — arm's length, daylight, often a scratched screen protector — they
+   are not a size, they are a squint. Below a tablet they fold into the next
+   step up, which lifts every table heading, unit label and sub-figure at
+   once instead of arguing with twenty call sites one at a time. */
+@media (max-width: 700px) {
+  :root {
+    --t-3xs: 12px;
+    --t-2xs: 12px;
+  }
+}
+
+@media (pointer: coarse) {
+  /* Standalone controls get the full 44px. */
+  .linkbtn { min-height: 44px; padding-block: var(--s-5); }
+  .filter { min-height: 44px; }
+  .input.mini, .select-mini { min-height: 44px; }
+  .kitbox { width: 24px; height: 24px; }
+
+  /* Inside a table a row can hold three of these at once, and 44px each
+     turns one row into a screenful. 40px is the honest compromise: still a
+     thumb's width, and the row stays a row. */
+  .tbl .linkbtn { min-height: 40px; }
+  .tbl .input.mini, .tbl .select-mini { min-height: 40px; }
+
+  /* The chevron that opens a folded row is the most-pressed control on a
+     phone — it is the only way to reach the columns folding took away — and
+     it was the smallest thing on the screen, with its own glyph overflowing
+     it. Drawn bigger, and the reach still spreads a little past the box. */
+  .exp-btn { width: 38px; height: 38px; }
+  .exp-btn::after { inset: -3px; }
+
+  /* The soldier's name in a row opens their credit panel — it is the point of
+     the whole row, and it was a 20px-tall run of text. */
+  .rowlink { min-height: 40px; }
+  /* A ✕ is one character wide and was a 13px target. It deletes things. */
+  .linkbtn.danger-link { min-width: 40px; justify-content: center; }
+  /* The row checkbox is how records get approved in batches, and unlike the
+     others it has no label wrapped around it to enlarge the target — the box
+     is the whole of it, sitting alone in a 41px cell. A checkbox cannot carry
+     a pseudo-element hit area, so it is simply drawn bigger. */
+  .tbl .kitbox { width: 28px; height: 28px; }
+  .tbl td .input.mini { min-width: 84px; }
+}
+
+/* The chevron is drawn now rather than typed, so it takes the size it is
+   given instead of whatever advance width the platform's font happens to
+   carry for U+2304. */
+.exp-btn svg { width: 17px; height: 17px; }
+
+/* A row of a folded table is a line in a list, not a toolbar. At full size
+   two buttons could not share the 123px the column had, so they stacked, and
+   every soldier in the tracking list became 195px tall — six to a screen,
+   most of it button, with the name squeezed onto two lines beside all that
+   air. Compact they sit on one line, and the row goes back to being a row. */
+@media (max-width: 560px) {
+  .tbl.folded tr:not(.sub) td .btn {
+    font-size: var(--t-xs);
+    padding: 9px 10px;
+    min-height: 40px;
+  }
 }

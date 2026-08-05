@@ -604,7 +604,11 @@ function foldTable(table, keep, ti) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'exp-btn';
-    btn.textContent = '⌄';
+    // Was the character ⌄, which every platform draws at a different weight and
+    // a different advance width — on Android it overflowed the button it sat
+    // in. A drawn chevron, on the same 24-grid and stroke as every other icon
+    // here, is the same shape everywhere and fits the box it is given.
+    btn.innerHTML = `${SVG_OPEN}<path d="M6 9l6 6 6-6"/></svg>`;
     tog.appendChild(btn);
     row.appendChild(tog);
     row.after(panel);
@@ -669,6 +673,7 @@ const ICO = {
 const ADMIN_TITLE = 'לוגיסטיקה פלוגה ג';
 const ADMIN_SUB = 'מסייעת 951 · ניהול ציוד, ארמון, קשר ורכב';
 const SOLDIER_SUB = 'מסייעת 951 · רישום ומעקב ציוד אישי';
+const HOME_SUB = 'רישום ומעקב ציוד אישי';
 
 const ROUTE_TITLE = {
   home: 'מסייעת 951',
@@ -685,7 +690,11 @@ function setBanner(route) {
   const t = document.getElementById('topTitle');
   const s = document.getElementById('topSub');
   if (t) t.textContent = title;
-  if (s) s.textContent = admin ? ADMIN_SUB : SOLDIER_SUB;
+  // On every other screen the strap names the unit, because the title is the
+  // name of a form and the unit is the context. On the landing page the title
+  // *is* the unit, and repeating it there put the same three words twice in
+  // one bar, an inch apart.
+  if (s) s.textContent = admin ? ADMIN_SUB : (route === 'home' ? HOME_SUB : SOLDIER_SUB);
   // The tab, too: a soldier with three of these open should be able to tell
   // them apart without opening each one.
   document.title = title;
@@ -729,9 +738,15 @@ function renderRoute() {
 
 function renderHome() {
   render(`
+    <!-- The bar above already carries the emblem and the unit's name. This
+         card used to repeat both, so "מסייעת 951" appeared three times inside
+         the first two inches of a phone screen and the first thing a soldier
+         could actually press started below the fold. The heading is a level-1
+         for the page and stays, spoken to a screen reader and hidden from a
+         sighted reader who has just read it in the bar. -->
     <section class="panel center-head hero">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
-      <h1 class="panel-title center">מסייעת 951</h1>
+      <h1 class="panel-title center hide-phone">מסייעת 951</h1>
       <p class="panel-sub center mb0">בחרו מה תרצו לעשות.</p>
     </section>
     <div class="choices">
@@ -1202,7 +1217,7 @@ function renderDeposit() {
           <label class="field">
             <span class="field-label">שם החייל <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" autocomplete="off" maxlength="60"
-                   value="${esc(v.name)}" required>
+                   value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
           </label>
           <label class="field">
             <span class="field-label">מספר טלפון <span class="req" aria-hidden="true">*</span></span>
@@ -1462,20 +1477,25 @@ function renderSoldierStep1() {
       <h1 class="panel-title center">רישום ציוד אישי</h1>
       <p class="panel-sub center">מלאו פרטים, בחרו את הציוד שקיבלתם ושלחו לאישור. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
       <form data-form="ident" novalidate>
+        <!-- The weapon and accessory numbers below have always shown the shape
+             they expect. These three did not, so the form opened with three
+             empty boxes above three hinted ones and read as unfinished — and
+             the phone field in particular gave no sign whether it wanted
+             dashes, a country code or neither. -->
         <label class="field">
           <span class="field-label">מספר אישי</span>
           <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
-                 maxlength="9" value="${esc(v.pn)}" required>
+                 maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
         </label>
         <label class="field">
           <span class="field-label">שם מלא</span>
           <input class="input" name="name" autocomplete="off" maxlength="60"
-                 value="${esc(v.name)}" required>
+                 value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
         </label>
         <label class="field">
           <span class="field-label">טלפון נייד</span>
           <input class="input num" name="phone" inputmode="tel" autocomplete="off"
-                 maxlength="10" value="${esc(v.phone)}" required>
+                 maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
         </label>
         <label class="field">
           <span class="field-label">מחלקה</span>
