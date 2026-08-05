@@ -8,7 +8,7 @@ import {
   SVG_OPEN, ITEMS, itemById, DEPTS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
   COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
   nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
-  DAY_MS, EXPIRING_SOON_DAYS,
+  DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS,
 } from './lib/catalog.js';
 import {
   te, td, b64, ub64, hex, rndId, deriveAuth, deriveRid, normSerial, deriveSerialTag,
@@ -370,6 +370,17 @@ const render = (html, focusKey) => {
 
   $app.innerHTML = html;
 
+  // Every form's error line becomes a live region the moment it is drawn,
+  // rather than in eleven separate templates that a twelfth form would
+  // forget. The role has to be on the element *before* the text arrives —
+  // an alert added at the same moment as its message is announced by some
+  // screen readers and not others — which is exactly why it is set here, on
+  // render, and not in setFormErr.
+  for (const err of $app.querySelectorAll('[data-err]')) {
+    err.setAttribute('role', 'alert');
+    err.tabIndex = -1;
+  }
+
   // Folding moves cells around, and moving a node drops focus — so reshape
   // the tables first and hand focus back to the settled DOM.
   fitTables();
@@ -626,33 +637,85 @@ window.addEventListener('resize', () => {
   fitTimer = setTimeout(() => renderRoute(), 150);
 });
 
-// A way out of every soldier page. The footer link at the bottom is fine once
-// you have read the page; a form opened by mistake needs the way out at the
-// top, where you are already looking.
-const backBar = () => `
-  <div class="backbar">
-    <a class="btn ghost small backbtn" href="#"><span aria-hidden="true">→</span> חזרה לתפריט</a>
-  </div>`;
+// The way out of every soldier page.
+//
+// It used to be a small button pinned to the top-right corner, which is the
+// one part of a phone screen a thumb has to travel furthest to reach and the
+// part a form is least about. It sits at the foot of the panel now, with the
+// other things you can press — where you look when you have decided not to
+// fill this in — and it is a full-width target rather than a link the width
+// of its own text. There is one per page instead of the two there were.
+const backToMenu = (label = 'חזרה לתפריט') => `
+  <a class="btn ghost wide mt backbtn" href="#">${ICO.back}${esc(label)}</a>`;
 
-// The banner names whichever side of the app you are on: soldiers see the
-// form they were sent to fill in, the office sees the register it manages.
+// The console's own controls. Drawn rather than written, because a row of
+// three identical grey rectangles is read by shape and there is no shape to
+// read — an arrow, a cycle and a padlock are told apart before the words are.
+// Same 24-grid and stroke as the equipment icons, so they belong to the same
+// hand; sized down to sit beside a caption rather than replace it.
+const btnIco = (paths) => `<span class="btn-ico" aria-hidden="true">${SVG_OPEN}${paths}</svg></span>`;
+
+const ICO = {
+  back: btnIco('<path d="M4 12h16"/><path d="m14 6 6 6-6 6"/>'),
+  refresh: btnIco('<path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01"/><path d="M20.5 3.5v5h-5"/>'),
+  lock: btnIco('<rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>'),
+};
+
+// The banner names the page you are on, not the half of the app it belongs
+// to. It used to read "רישום ראשוני" above the refuelling form and above the
+// shortage form and above the menu — the one line that could have told you
+// where you were, spent on telling you which door you came in by. The unit
+// stays underneath, where it identifies the app without competing.
 const ADMIN_TITLE = 'לוגיסטיקה פלוגה ג';
 const ADMIN_SUB = 'מסייעת 951 · ניהול ציוד, ארמון, קשר ורכב';
-const SOLDIER_TITLE = 'רישום ראשוני';
 const SOLDIER_SUB = 'מסייעת 951 · רישום ומעקב ציוד אישי';
 
-function setBanner(admin) {
+const ROUTE_TITLE = {
+  home: 'מסייעת 951',
+  soldier: 'רישום ראשוני',
+  report: 'בקשת ציוד / דיווח חוסר',
+  deposit: 'אפסון נשק בארמון',
+  fault: 'דיווח תקלות בינוי',
+  refuel: 'דיווח תדלוק',
+};
+
+function setBanner(route) {
+  const admin = route === 'admin';
+  const title = admin ? ADMIN_TITLE : (ROUTE_TITLE[route] || ROUTE_TITLE.home);
   const t = document.getElementById('topTitle');
   const s = document.getElementById('topSub');
-  if (t) t.textContent = admin ? ADMIN_TITLE : SOLDIER_TITLE;
+  if (t) t.textContent = title;
   if (s) s.textContent = admin ? ADMIN_SUB : SOLDIER_SUB;
-  document.title = admin ? ADMIN_TITLE : SOLDIER_TITLE;
+  // The tab, too: a soldier with three of these open should be able to tell
+  // them apart without opening each one.
+  document.title = title;
+  setFooterNav(route);
+}
+
+// The footer says where you can go; this says where you are. A link back to
+// the page you are already on is a small lie a screen reader has no way to
+// see through, so the current one is marked and stops being a link.
+function setFooterNav(route) {
+  for (const a of document.querySelectorAll('.foot-link')) {
+    const here = a.getAttribute('href') === `#${route === 'soldier' ? 'sign' : route}`;
+    a.toggleAttribute('aria-current', here);
+    if (here) a.setAttribute('aria-current', 'page');
+  }
+  // Already inside the console: the door you are standing in is not a way out.
+  const admin = document.getElementById('adminLink');
+  if (admin) admin.hidden = route === 'admin' && !!S.priv;
 }
 
 function renderRoute() {
-  setBanner(S.route === 'admin');
-  // the console needs a wide column for tables; soldier pages stay narrow
-  $app.classList.toggle('wide', S.route === 'admin' && !!S.priv);
+  setBanner(S.route);
+  // The console needs a wide column for tables; soldier pages stay narrow.
+  // The banner and the footer are separate elements from the content, so the
+  // width has to be said somewhere they can all hear it — otherwise the emblem
+  // sat centred in a 640px column above content 1240px wide, and on a large
+  // monitor the header floated 300px inside the page it was supposed to head.
+  const wide = S.route === 'admin' && !!S.priv;
+  $app.classList.toggle('wide', wide);
+  document.body.classList.toggle('is-console', wide);
   if (S.route === 'admin') renderAdmin();
   else if (S.route === 'report') renderReport();
   else if (S.route === 'deposit') renderDeposit();
@@ -784,13 +847,12 @@ function renderReport() {
         <h1 class="panel-title">הדיווח נשלח</h1>
         <p class="panel-sub">מנהל הציוד יראה את הדיווח ויסמן אותו כשטופל. אין צורך לשלוח שוב.</p>
         <button class="btn ghost wide mt" data-act="rep-again">דיווח נוסף</button>
-        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+        ${backToMenu()}
       </section>`);
     return;
   }
   const v = S.rep || { name: '', phone: '', text: '' };
   render(`
-    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">בקשת ציוד / דיווח חוסר</h1>
@@ -816,7 +878,7 @@ function renderReport() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת הבקשה</button>
       </form>
-      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      ${backToMenu()}
     </section>`);
 }
 
@@ -867,13 +929,12 @@ function renderFault() {
         <h1 class="panel-title">התקלה דווחה</h1>
         <p class="panel-sub">הדיווח נקלט ויטופל. אין צורך לשלוח שוב על אותה תקלה.</p>
         <button class="btn ghost wide mt" data-act="flt-again">דיווח תקלה נוספת</button>
-        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+        ${backToMenu()}
       </section>`);
     return;
   }
   const v = S.flt || { name: '', phone: '', text: '' };
   render(`
-    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תקלות בינוי</h1>
@@ -881,18 +942,18 @@ function renderFault() {
       <form data-form="fault" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">שם המדווח <span class="req">*</span></span>
+            <span class="field-label">שם המדווח <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" autocomplete="off" maxlength="60"
                    value="${esc(v.name)}" required>
           </label>
           <label class="field">
-            <span class="field-label">טלפון המדווח <span class="req">*</span></span>
+            <span class="field-label">טלפון המדווח <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
                    maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
           </label>
         </div>
         <label class="field">
-          <span class="field-label">תיאור התקלה <span class="req">*</span></span>
+          <span class="field-label">תיאור התקלה <span class="req" aria-hidden="true">*</span></span>
           <textarea class="input area" name="text" rows="7" maxlength="1500"
                     placeholder="לדוגמה: נזילה מהתקרה במקלחות בבניין 4, מתחת לחלון. המים מגיעים עד המסדרון." required>${esc(v.text)}</textarea>
           <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
@@ -900,7 +961,7 @@ function renderFault() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת הדיווח</button>
       </form>
-      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      ${backToMenu()}
     </section>`);
 }
 
@@ -975,13 +1036,12 @@ function renderRefuel() {
         <h1 class="panel-title">התדלוק דווח</h1>
         <p class="panel-sub">הדיווח נקלט. מנהל הרכב יאשר אותו והליטרים יירדו מיתרת הכרטיס.</p>
         <button class="btn ghost wide mt" data-act="rf-again">דיווח תדלוק נוסף</button>
-        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+        ${backToMenu()}
       </section>`);
     return;
   }
   const v = S.rf || { name: '', phone: '', card: '', litres: '', plate: '' };
   render(`
-    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תדלוק</h1>
@@ -989,17 +1049,17 @@ function renderRefuel() {
       <form data-form="refuel" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">שם המתדלק <span class="req">*</span></span>
+            <span class="field-label">שם המתדלק <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" autocomplete="off" maxlength="60"
                    value="${esc(v.name)}" required>
           </label>
           <label class="field">
-            <span class="field-label">טלפון <span class="req">*</span></span>
+            <span class="field-label">טלפון <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
                    maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
           </label>
           <label class="field">
-            <span class="field-label">כרטיס התדלוק <span class="req">*</span></span>
+            <span class="field-label">כרטיס התדלוק <span class="req" aria-hidden="true">*</span></span>
             <select class="input select" name="card" required>
               <option value="">בחרו כרטיס…</option>
               ${(S.cards || []).map((c) =>
@@ -1010,13 +1070,13 @@ function renderRefuel() {
               : 'אין כרגע כרטיסים פעילים במערכת — פנו למנהל הרכב.'}</span>
           </label>
           <label class="field">
-            <span class="field-label">כמה ליטרים <span class="req">*</span></span>
+            <span class="field-label">כמה ליטרים <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="litres" inputmode="numeric" maxlength="4"
                    value="${esc(v.litres)}" placeholder="0" required>
           </label>
         </div>
         <label class="field">
-          <span class="field-label">מספר הרכב שתודלק <span class="req">*</span></span>
+          <span class="field-label">מספר הרכב שתודלק <span class="req" aria-hidden="true">*</span></span>
           ${(S.fleet || []).length
             ? `<select class="input select" name="plate" required>
                  <option value="">בחרו רכב…</option>
@@ -1030,7 +1090,7 @@ function renderRefuel() {
         </label>
 
         <fieldset class="lic-set">
-          <legend class="field-label">קבלת התדלוק <span class="req">*</span></legend>
+          <legend class="field-label">קבלת התדלוק <span class="req" aria-hidden="true">*</span></legend>
           <p class="field-hint">בלי קבלה אי אפשר להצדיק את הליטרים מול קצין הרכב, ולכן היא חובה.</p>
           <div class="rec-actions">
             <label class="btn ghost small">📷 צילום הקבלה
@@ -1050,7 +1110,7 @@ function renderRefuel() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת הדיווח</button>
       </form>
-      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      ${backToMenu()}
     </section>`);
 }
 
@@ -1122,13 +1182,12 @@ function renderDeposit() {
         <h1 class="panel-title">בקשת האפסון נשלחה</h1>
         <p class="panel-sub">האפסון נקלט במצב <span class="state wait">ממתין לאישור</span>. מנהל הארמון יאשר אותו והנשק ייכנס לרישום הארמון. אל תעזבו את הנשק לפני שקיבלתם אישור.</p>
         <button class="btn ghost wide mt" data-act="dep-again">אפסון נוסף</button>
-        <p class="muted-txt mt mb0"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+        ${backToMenu()}
       </section>`);
     return;
   }
   const v = S.dep || { pn: '', name: '', phone: '', weapon: '', amral: '', scope: '' };
   render(`
-    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">אפסון נשק בארמון</h1>
@@ -1136,22 +1195,22 @@ function renderDeposit() {
       <form data-form="deposit" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">מספר אישי <span class="req">*</span></span>
+            <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
                    maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
           </label>
           <label class="field">
-            <span class="field-label">שם החייל <span class="req">*</span></span>
+            <span class="field-label">שם החייל <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" autocomplete="off" maxlength="60"
                    value="${esc(v.name)}" required>
           </label>
           <label class="field">
-            <span class="field-label">מספר טלפון <span class="req">*</span></span>
+            <span class="field-label">מספר טלפון <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
                    maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
           </label>
           <label class="field">
-            <span class="field-label">מספר נשק <span class="req">*</span></span>
+            <span class="field-label">מספר נשק <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
                    value="${esc(v.weapon)}" placeholder="7145732" required>
             ${serialWarnBox('weapon')}
@@ -1178,7 +1237,7 @@ function renderDeposit() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת בקשת אפסון</button>
       </form>
-      <p class="muted-txt mt mb0 center"><a class="foot-link" href="#">חזרה לתפריט</a></p>
+      ${backToMenu()}
     </section>`);
 }
 
@@ -1398,7 +1457,6 @@ function renderSoldierStep1() {
   ).join('');
   render(`
     ${stepsBar(1)}
-    ${backBar()}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">רישום ציוד אישי</h1>
@@ -1459,6 +1517,7 @@ function renderSoldierStep1() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">המשך</button>
       </form>
+      ${backToMenu()}
     </section>`, 'sign-1');
 }
 
@@ -1596,7 +1655,7 @@ function renderSoldierConfirm() {
 function signPad() {
   return `
     <fieldset class="lic-set">
-      <legend class="field-label">חתימה <span class="req">*</span></legend>
+      <legend class="field-label">חתימה <span class="req" aria-hidden="true">*</span></legend>
       <p class="field-hint">חתמו באצבע במסגרת. זו החתימה שלכם על הציוד שלמעלה.</p>
       <div class="sigwrap">
         <canvas class="sigpad" width="600" height="220"
@@ -1802,6 +1861,7 @@ function renderLogin() {
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">כניסה</button>
       </form>
+      ${backToMenu()}
     </section>`, 'login');
 }
 
@@ -1868,6 +1928,11 @@ function allowedScopes() {
 
 function renderConsole() {
   $app.classList.add('wide');
+  // Signing in does not go back through the router — loginSubmit renders the
+  // console directly — so the footer would still be offering the admin door
+  // to someone standing inside it.
+  document.body.classList.add('is-console');
+  setFooterNav('admin');
   const c = counts();
   const openReps = openReports();
   const permitted = new Set(allowedTabs());
@@ -1917,17 +1982,15 @@ function renderConsole() {
 
   render(`
     <div class="conbar">
-      ${S.tabHist.length
-        ? `<button class="btn ghost small backbtn" data-act="tab-back">
-             <span aria-hidden="true">→</span> חזרה
-           </button>`
-        : ''}
       <span class="conbar-title">${esc(title)}</span>
+      <span class="who-tag">מחובר · ${esc(S.me || '')}</span>
+      ${S.role !== 'admin' ? `<span class="ro-tag">${esc(roleName(S.role))}</span>` : ''}
       <div class="conbar-actions">
-        <span class="who-tag">${esc(S.me || '')}</span>
-        ${S.role !== 'admin' ? `<span class="ro-tag">${esc(roleName(S.role))}</span>` : ''}
-        <button class="btn ghost small" data-act="refresh">רענון</button>
-        <button class="btn ghost small" data-act="lock">נעילה</button>
+        ${S.tabHist.length
+          ? `<button class="btn ghost small backbtn" data-act="tab-back">${ICO.back}חזרה</button>`
+          : ''}
+        <button class="btn ghost small" data-act="refresh">${ICO.refresh}רענון</button>
+        <button class="btn ghost small" data-act="lock">${ICO.lock}נעילה</button>
       </div>
     </div>
     ${S.role !== 'admin'
@@ -2982,10 +3045,13 @@ const regReport = (reg, name, file) => ({
   build() {
     const all = (S.inv && S.inv[reg.key]) || [];
     return {
-      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'משימה / רכב', 'תאריך הוספה'],
+      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'אצל מי / משימה',
+             'בחוץ מאז', 'להחזרה עד', 'תאריך הוספה'],
       rows: all.map((x) => [
         nameOf(reg.kinds, x.kind), x.name, x.serial, x.owner, nameOf(reg.locs, x.loc),
         NAMED_LOCS[x.loc] ? (x.mission || '(ללא שם)') : '',
+        LOAN_LOCS.has(x.loc) && x.since ? fmtDate(x.since) : '',
+        x.due ? fmtDay(x.due) : '',
         x.addedAt ? fmtDate(x.addedAt) : '',
       ]),
       summary: `${all.filter((x) => x.loc === reg.home).length} נמצאים ${reg.placeIn} · ` +
@@ -2997,12 +3063,34 @@ const regReport = (reg, name, file) => ({
 const regLogReport = (reg, name, file) => ({
   name, file,
   build: () => ({
-    head: ['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'יעד', 'הערה'],
+    head: ['תאריך', 'פעולה', 'סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מ־', 'אל', 'אצל מי', 'ימים', 'יעד', 'הערה'],
     rows: ((S.inv && S.inv[reg.logKey]) || []).map((e) => [
-      fmtDate(e.t), e.action === 'add' ? 'הוספה' : 'הסרה', nameOf(reg.kinds, e.kind),
-      e.name, e.serial, e.owner, e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note,
+      fmtDate(e.t), nameOf(ARM_ACTIONS, e.action), nameOf(reg.kinds, e.kind),
+      e.name, e.serial, e.owner,
+      e.from ? nameOf(reg.locs, e.from) : '', e.to ? nameOf(reg.locs, e.to) : '',
+      e.who || '', e.action === 'return' && e.days ? e.days : '',
+      e.dest ? nameOf(ARM_DESTS, e.dest) : '', e.note,
     ]),
   }),
+});
+
+// What is out and owed, on one sheet — the list you read out at a handover.
+const regLoanReport = (reg, name, file) => ({
+  name, file,
+  build() {
+    const rows = loansOf(reg);
+    return {
+      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'אצל מי', 'מאז', 'בחוץ', 'להחזרה עד', 'סטטוס'],
+      rows: rows.map((x) => [
+        nameOf(reg.kinds, x.kind), x.name, x.serial, x.owner, nameOf(reg.locs, x.loc),
+        x.mission || '(ללא שם)',
+        x.since ? fmtDate(x.since) : '', outFor(x), x.due ? fmtDay(x.due) : '',
+        isOverdue(x) ? 'באיחור' : 'בתוקף',
+      ]),
+      summary: `${rows.length} בהשאלה · ${rows.filter(isOverdue).length} באיחור · ` +
+        `${rows.filter((x) => !x.mission).length} ללא שם`,
+    };
+  },
 });
 
 const REPORTS = {
@@ -3164,8 +3252,10 @@ const REPORTS = {
 
   armon: regReport(REGISTERS.armon, 'פריטים בארמון', 'tzayad-armon'),
   armonLog: regLogReport(REGISTERS.armon, 'יומן פעולות ארמון', 'tzayad-armon-log'),
+  armonLoans: regLoanReport(REGISTERS.armon, 'השאלות פתוחות — ארמון', 'tzayad-armon-loans'),
   comms: regReport(REGISTERS.comms, 'ציוד קשר', 'tzayad-comms'),
   commsLog: regLogReport(REGISTERS.comms, 'יומן פעולות קשר', 'tzayad-comms-log'),
+  commsLoans: regLoanReport(REGISTERS.comms, 'השאלות פתוחות — קשר', 'tzayad-comms-loans'),
 
   tzelem: {
     name: 'דו״ח צלם', file: 'tzayad-tzelem',
@@ -3180,6 +3270,21 @@ const REPORTS = {
         ]),
         summary: ARM_LOCS.map((l) => `${l.name}: ${rows.filter((x) => x.loc === l.id).length}`).join(' · ') +
           (held ? ` · ${held} נשקים אינם בארמון ואינם נכללים` : ''),
+      };
+    },
+  },
+
+  ammoOut: {
+    name: 'תחמושת בהשאלה', file: 'tzayad-ammo-out',
+    build() {
+      const rows = ammoOut();
+      return {
+        head: ['פריט', 'אצל מי', 'יעד', 'כמות', 'תנועה אחרונה'],
+        rows: rows.map((r) => [r.name, r.who, nameOf(AMMO_DESTS, r.dest), r.n, fmtDate(r.last)]),
+        summary: (() => {
+          const who = new Set(rows.map((r) => r.who)).size;
+          return `${rows.reduce((n, r) => n + r.n, 0)} פריטים בהשאלה אצל ${who === 1 ? 'גורם אחד' : `${who} גורמים`}`;
+        })(),
       };
     },
   },
@@ -3206,7 +3311,7 @@ const REPORTS = {
     build: () => ({
       head: ['תאריך', 'פעולה', 'פריט', 'כמות', 'יעד', 'למי', 'הערה'],
       rows: ((S.inv && S.inv.ammoLog) || []).map((e) => [
-        fmtDate(e.t), e.action === 'add' ? 'כניסה' : 'הוצאה', e.name, e.qty,
+        fmtDate(e.t), nameOf(AMMO_ACTIONS, e.action), e.name, e.qty,
         e.dest ? nameOf(AMMO_DESTS, e.dest) : '', e.who, e.note || '',
       ]),
     }),
@@ -3310,12 +3415,32 @@ function reportPdf(id) {
   });
 }
 
-// Builds the printable sheet: unit emblem, title, repeating table header, a
-// summary line, and a signature block — then hands over to the print dialog.
+/* Builds the sheet: unit emblem, title, repeating table header, a summary line
+   and a signature block.
+
+   This used to build the sheet invisibly and call window.print() on it, which
+   works on a desktop and does nothing at all on a phone: in Safari on iOS, and
+   in every browser that opens inside another app — which is how a link sent on
+   WhatsApp is opened — window.print() is missing or silently ignored. The
+   button appeared to do nothing, and the report could not be produced at all.
+
+   So the sheet is now a screen you land on. The print dialog is still offered
+   and still opens where it can, but when it cannot, the document is in front
+   of you and the browser's own share menu will print it or save it as a PDF.
+   Nothing is in a popup, which is also the rule for this app. */
 function printDoc({ title, meta, head, rows, summary }) {
   const host = document.createElement('section');
   host.className = 'printdoc';
   host.innerHTML = `
+    <div class="pd-bar no-print">
+      <button class="btn primary" type="button" data-pd="print">הדפסה / שמירה כ-PDF</button>
+      <button class="btn ghost" type="button" data-pd="close">סגירה</button>
+    </div>
+    <p class="pd-hint no-print">
+      אם חלון ההדפסה לא נפתח — זה תקין בטלפון. פתחו את תפריט השיתוף של הדפדפן,
+      בחרו <strong>הדפסה</strong> ואז <strong>שמירה כקובץ PDF</strong>.
+      המסמך שלמטה הוא בדיוק מה שיישמר.
+    </p>
     <header class="pd-head">
       <img class="pd-logo" src="/logo.png" alt="">
       <div class="pd-headtxt">
@@ -3323,15 +3448,17 @@ function printDoc({ title, meta, head, rows, summary }) {
         <p class="pd-date">${esc(meta)}</p>
       </div>
     </header>
-    <table class="pd-tbl${head.length > 12 ? ' pd-wide' : ''}">
-      <thead><tr><th class="pd-n">#</th>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
-      <tbody>
-        ${rows.map((r, i) => `<tr>
-          <td class="pd-n">${i + 1}</td>
-          ${r.map((c) => `<td>${esc(c == null ? '' : String(c))}</td>`).join('')}
-        </tr>`).join('')}
-      </tbody>
-    </table>
+    <div class="pd-scroll">
+      <table class="pd-tbl${head.length > 12 ? ' pd-wide' : ''}">
+        <thead><tr><th class="pd-n">#</th>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map((r, i) => `<tr>
+            <td class="pd-n">${i + 1}</td>
+            ${r.map((c) => `<td>${esc(c == null ? '' : String(c))}</td>`).join('')}
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
     ${summary ? `<p class="pd-summary">${esc(summary)}</p>` : ''}
     <footer class="pd-foot">
       <div class="pd-sigs">
@@ -3365,14 +3492,36 @@ function printDoc({ title, meta, head, rows, summary }) {
     </footer>`;
   document.body.appendChild(host);
   document.body.classList.add('printing');
-  const cleanup = () => {
+  const wasScrolled = window.scrollY;
+  window.scrollTo(0, 0);
+
+  const close = () => {
     document.body.classList.remove('printing');
     host.remove();
-    window.removeEventListener('afterprint', cleanup);
+    document.removeEventListener('keydown', onKey);
+    window.scrollTo(0, wasScrolled);
   };
-  window.addEventListener('afterprint', cleanup);
-  window.print();
-  setTimeout(cleanup, 60000);   // belt and braces if afterprint never fires
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+
+  // The sheet is outside #app, so it carries its own two listeners rather than
+  // going through the console's delegated dispatcher.
+  host.querySelector('[data-pd="close"]').addEventListener('click', close);
+  const ask = () => {
+    // Absent in in-app browsers, and a no-op in some others. Either way the
+    // document stays on screen and the browser's own share menu can print it,
+    // so a failure here is not a dead end.
+    if (typeof window.print !== 'function') { toast('השתמשו בתפריט השיתוף של הדפדפן ← הדפסה', true); return; }
+    try { window.print(); } catch { toast('השתמשו בתפריט השיתוף של הדפדפן ← הדפסה', true); }
+  };
+  host.querySelector('[data-pd="print"]').addEventListener('click', ask);
+
+  // Offered straight away where it works — a desktop still gets one click, as
+  // it always did — but the screen no longer depends on it having worked.
+  // Two frames, so the sheet is laid out and painted before the browser is
+  // asked to photograph it; printing it in the same tick can yield a blank
+  // preview.
+  requestAnimationFrame(() => requestAnimationFrame(ask));
 }
 
 // Excel-safe CSV cell: always quoted, embedded quotes doubled.
@@ -3706,6 +3855,27 @@ function renderOverviewTab() {
     comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length && {
       n: comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length, tone: 'warn', tab: 'comms',
       t: 'ציוד קשר בלי ציון מקום', s: 'מסומן ברכב או במשימה בלי לרשום איזה' },
+    // Loans: overdue first, then the ones nobody's name is attached to. An
+    // unnamed loan is the worse of the two — a late item you can at least go
+    // and ask for.
+    ...[REGISTERS.armon, REGISTERS.comms].flatMap((reg) => {
+      const open = loansOf(reg);
+      const late = open.filter(isOverdue);
+      const blank = open.filter((x) => !x.mission);
+      return [
+        blank.length && { n: blank.length, tone: 'bad', tab: reg.tab,
+          t: `השאלות ללא שם — ${reg.title}`, s: 'הציוד יצא ואין רשום מי לקח' },
+        late.length && { n: late.length, tone: 'bad', tab: reg.tab,
+          t: `השאלות באיחור — ${reg.title}`,
+          s: late.slice(0, 3).map((x) => `${x.name} (${x.mission || 'ללא שם'})`).join(', ') },
+      ];
+    }),
+    ...(() => {
+      const out = ammoOut();
+      const who = new Set(out.map((r) => r.who)).size;
+      return [out.length && { n: out.reduce((n, r) => n + r.n, 0), tone: 'warn', tab: 'ammo',
+        t: 'תחמושת בהשאלה', s: `אצל ${who === 1 ? 'גורם אחד' : `${who} גורמים`} — טרם הוחזרה` }];
+    })(),
     c.damaged && { n: c.damaged, tone: 'bad', tab: 'sec',
       t: 'רשומות פגומות', s: 'הפענוח נכשל — חשד לשיבוש נתונים' },
   ].filter(Boolean);
@@ -3739,19 +3909,30 @@ function renderOverviewTab() {
       <td class="num warn">${x.out}</td>
     </tr>`).join('');
 
-  // Latest movements across every register, merged into one timeline.
+  // Latest movements across every register, merged into one timeline. A loan
+  // and a return are movements too, and they are the ones somebody glancing at
+  // this screen is most likely to be looking for.
+  const regFeed = (log, place, from) => (log || []).slice(0, 12).map((e) => {
+    const tone = { add: 'ok', return: 'ok', move: 'warn', remove: 'bad' }[e.action] || 'ok';
+    const what = `${e.name} (${e.serial})`;
+    const lead = {
+      add: `נכנס ${place}`,
+      move: `יצא ${from}`,
+      return: `הוחזר ${place}`,
+      remove: `הוסר ${from}`,
+    }[e.action] || '';
+    const tail = e.action === 'remove'
+      ? (e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : '')
+      : e.who ? ` — ${e.who}${e.action === 'return' && e.days ? ` (${e.days} ימים)` : ''}` : '';
+    return { t: e.t, tone, txt: `${lead}: ${what}${tail}` };
+  });
+
   const feed = [
-    ...(inv.armonLog || []).slice(0, 12).map((e) => ({
-      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
-      txt: `${e.action === 'add' ? 'נכנס לארמון' : 'יצא מהארמון'}: ${e.name} (${e.serial})${e.owner ? ` — ${e.owner}` : ''}${e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : ''}`,
-    })),
-    ...(inv.commsLog || []).slice(0, 12).map((e) => ({
-      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
-      txt: `${e.action === 'add' ? 'נכנס למחסן קשר' : 'יצא ממחסן קשר'}: ${e.name} (${e.serial})${e.owner ? ` — ${e.owner}` : ''}${e.dest ? ` → ${nameOf(ARM_DESTS, e.dest)}` : ''}`,
-    })),
+    ...regFeed(inv.armonLog, 'לארמון', 'מהארמון'),
+    ...regFeed(inv.commsLog, 'למחסן קשר', 'ממחסן קשר'),
     ...(inv.ammoLog || []).slice(0, 12).map((e) => ({
-      t: e.t, tone: e.action === 'add' ? 'ok' : 'bad',
-      txt: `${e.action === 'add' ? 'נוספה תחמושת' : 'הונפקה תחמושת'}: ${e.name} ×${e.qty}${e.who ? ` — ${e.who}` : ''}`,
+      t: e.t, tone: e.action === 'issue' ? 'bad' : 'ok',
+      txt: `${{ add: 'נוספה תחמושת', issue: 'הונפקה תחמושת', return: 'הוחזרה תחמושת' }[e.action] || 'תחמושת'}: ${e.name} ×${e.qty}${e.who ? ` — ${e.who}` : ''}`,
     })),
   ].sort((a, b) => b.t - a.t).slice(0, 10);
 
@@ -4071,6 +4252,131 @@ function regVisible(reg, where) {
 const renderArmonTab = () => renderRegisterTab(REGISTERS.armon);
 const renderCommsTab = () => renderRegisterTab(REGISTERS.comms);
 
+/* ── Loans ─────────────────────────────────────────────────────────────
+   An item that is at the workshop, written off or lost is also "not here",
+   but nobody is going to bring it back. A loan is the other kind of absence:
+   somebody took it, and it is owed. Only that kind gets a clock, a due date
+   and a return button. */
+
+const loansOf = (reg) => ((S.inv && S.inv[reg.key]) || []).filter((x) => LOAN_LOCS.has(x.loc));
+
+const daysOut = (x) => (x.since ? Math.max(0, Math.round((Date.now() - x.since) / DAY_MS)) : null);
+
+const isOverdue = (x) => !!x.due && x.due < new Date().toISOString().slice(0, 10);
+
+// How long it has been gone, in the words someone would actually use.
+function outFor(x) {
+  const d = daysOut(x);
+  if (d === null) return '—';
+  if (d === 0) return 'היום';
+  if (d === 1) return 'אתמול';
+  return `${d} ימים`;
+}
+
+// Taking an item out used to mean finding its row among hundreds and changing
+// a select in it. This asks the three questions the act actually consists of —
+// what, to whom, until when — and does the rest.
+function loanPanel(reg) {
+  const open = loansOf(reg);
+  const late = open.filter(isOverdue);
+  const nameless = open.filter((x) => !x.mission);
+  const shelf = ((S.inv && S.inv[reg.key]) || [])
+    .filter((x) => x.loc === reg.home)
+    .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+
+  const rows = open
+    .slice()
+    .sort((a, b) => (a.since || 0) - (b.since || 0))
+    .map((x) => {
+      const i = S.inv[reg.key].indexOf(x);
+      const late1 = isOverdue(x);
+      return `<tr${late1 ? ' class="row-short"' : ''}>
+        <td>${esc(x.name)}<span class="dim"> · ${esc(nameOf(reg.kinds, x.kind))}</span></td>
+        <td class="num wpn">${esc(x.serial)}</td>
+        <td>
+          ${x.mission
+            ? `<strong>${esc(x.mission)}</strong>`
+            : `<input class="input mini" type="text" maxlength="60" value=""
+                      data-act="arm-mission" data-reg="${reg.id}" data-i="${i}"
+                      placeholder="${esc((NAMED_LOCS[x.loc] || {}).label || 'שם')}"
+                      aria-label="${esc((NAMED_LOCS[x.loc] || {}).label || 'שם')}">`}
+          <span class="dim"> · ${esc(nameOf(reg.locs, x.loc))}</span>
+        </td>
+        <td class="num">${esc(outFor(x))}</td>
+        <td class="num">
+          <input class="input mini num" type="date" value="${esc(x.due || '')}"
+                 data-act="arm-due" data-reg="${reg.id}" data-i="${i}" aria-label="להחזרה עד">
+          ${late1 ? '<span class="pill bad">באיחור</span>' : ''}
+        </td>
+        <td class="nowrap">
+          ${askBtn(`ret:${x.id}`, 'arm-return', '↩ החזרה',
+                   `להחזיר את ${x.name} (${x.serial}) ${reg.placeTo}?`,
+                   { data: { reg: reg.id, i }, yes: 'כן, הוחזר', cls: 'btn primary small' })}
+        </td>
+      </tr>`;
+    }).join('');
+
+  return `
+    <section class="panel${late.length ? ' alert' : ''}">
+      <h2 class="panel-title">השאלות פתוחות ${open.length ? `<span class="pill ${late.length ? 'bad' : 'warn'} num">${open.length}</span>` : ''}</h2>
+      <p class="panel-sub">ציוד שיצא מ${esc(reg.place)} ואמור לחזור — אצל חייל, במשימה או ברכב. כל השאלה והחזרה נרשמות ביומן עם השם והתאריך.</p>
+
+      <form data-form="arm-loan" data-reg="${reg.id}" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">הפריט <span class="req" aria-hidden="true">*</span></span>
+            <select class="input select" name="item" required>
+              <option value="">— בחרו פריט ${esc(reg.placeIn)} —</option>
+              ${shelf.map((x) => `<option value="${esc(x.id)}">${esc(nameOf(reg.kinds, x.kind))} · ${esc(x.name)} · ${esc(x.serial)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">לאן <span class="req" aria-hidden="true">*</span></span>
+            <select class="input select" name="loc" required>
+              ${reg.locs.filter((l) => LOAN_LOCS.has(l.id)).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">אצל מי / איזו משימה <span class="req" aria-hidden="true">*</span></span>
+            <input class="input" name="who" maxlength="60" placeholder="ישראל ישראלי" required>
+          </label>
+          <label class="field">
+            <span class="field-label">להחזרה עד</span>
+            <input class="input num" name="due" type="date">
+          </label>
+        </div>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit"${shelf.length ? '' : ' disabled'}>
+          ${shelf.length ? 'רישום השאלה' : `אין פריטים ${esc(reg.placeIn)} להשאלה`}
+        </button>
+      </form>
+
+      ${late.length
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${late.length}</strong> ${late.length === 1 ? 'פריט עבר' : 'פריטים עברו'} את תאריך ההחזרה: ${late.slice(0, 6).map((x) => `${esc(x.name)} (${esc(x.serial)}) — ${esc(x.mission || 'ללא שם')}`).join(' · ')}${late.length > 6 ? ' …' : ''}</p></div>`
+        : ''}
+      ${nameless.length
+        ? `<div class="callout risk"><p class="mb0"><strong class="num">${nameless.length}</strong> ${nameless.length === 1 ? 'פריט בהשאלה בלי שם' : 'פריטים בהשאלה בלי שם'} של מי שלקח. מלאו בטבלה — בלי שם אין את מי לשאול.</p></div>`
+        : ''}
+
+      ${open.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,2,-1">
+               <thead><tr>
+                 <th>פריט</th><th class="num">מס׳ סידורי</th><th>אצל מי</th>
+                 <th class="num">בחוץ</th><th class="num">להחזרה עד</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           <div class="rec-actions mt">
+             ${csvBtn(`${reg.key}Loans`, 'ייצוא ל-CSV')}
+             <button class="btn ghost" data-act="rep-pdf" data-r="${reg.key}Loans">הפקת PDF</button>
+             <button class="btn primary" data-act="inv-save" data-reg="${reg.id}">שמירת השינויים</button>
+           </div>`
+        : `<p class="empty">אין השאלות פתוחות — כל הציוד ${esc(reg.placeIn)} או בטיפול.</p>`}
+    </section>`;
+}
+
 function renderRegisterTab(reg) {
   const all = (S.inv && S.inv[reg.key]) || [];
   const log = (S.inv && S.inv[reg.logKey]) || [];
@@ -4154,22 +4460,36 @@ function renderRegisterTab(reg) {
   const rows = p.slice.map(armRow).join('');
   const rowsOut = pOut.slice.map(armRow).join('');
 
-  const logRows = log.slice(0, 200).map((e, n) => `
+  // Four kinds of movement now, not two, so the colour says what happened
+  // rather than merely whether the register grew: coming home is good news,
+  // going out is not bad news, and leaving for good is.
+  const LOG_TONE = { add: 'ok', return: 'ok', move: 'warn', remove: 'bad' };
+  const logRows = log.slice(0, 200).map((e, n) => {
+    const act = ARM_ACTIONS.find((a) => a.id === e.action) || ARM_ACTIONS[0];
+    const travel = e.action === 'remove'
+      ? (e.dest ? nameOf(ARM_DESTS, e.dest) : '')
+      : (e.from || e.to ? `${nameOf(reg.locs, e.from)} ← ${nameOf(reg.locs, e.to)}` : '');
+    return `
     <tr>
       <td class="num">${esc(fmtDate(e.t))}</td>
-      <td class="${e.action === 'add' ? 'ok' : 'bad'}">${e.action === 'add' ? '+ הוספה' : '− הסרה'}</td>
+      <td class="${LOG_TONE[e.action] || ''}">${esc(`${act.sign} ${act.name}`)}</td>
       <td>${esc(nameOf(reg.kinds, e.kind))}</td>
       <td>${esc(e.name)}</td>
       <td class="num wpn">${esc(e.serial)}</td>
       <td>${esc(e.owner || '—')}</td>
-      <td>${e.dest ? esc(nameOf(ARM_DESTS, e.dest)) : '—'}</td>
+      <td>${travel ? esc(travel) : '<span class="dim">·</span>'}</td>
+      <td>${e.who ? esc(e.who) : '<span class="dim">·</span>'}${
+        e.action === 'return' && e.days ? `<span class="dim"> · ${e.days} ימים</span>` : ''}</td>
       <td>${esc(e.note || '')}</td>
       <td>${delCell(`${reg.logKey}:${n}`, 'arm-log-del', { reg: reg.id, n }, '✕',
                     'מחיקת שורת היומן', 'למחוק את שורת היומן?')}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   return `
     ${reg.deposits ? depositsPanel() : ''}
+
+    ${loanPanel(reg)}
 
     <section class="panel">
       <h2 class="panel-title">${esc(reg.addTitle)}</h2>
@@ -4177,21 +4497,21 @@ function renderRegisterTab(reg) {
       <form data-form="arm-add" data-reg="${reg.id}" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">סוג פריט <span class="req">*</span></span>
+            <span class="field-label">סוג פריט <span class="req" aria-hidden="true">*</span></span>
             <select class="input select" name="kind" required>
               ${reg.kinds.map((k) => `<option value="${k.id}">${esc(k.name)}</option>`).join('')}
             </select>
           </label>
           <label class="field">
-            <span class="field-label">שם הפריט <span class="req">*</span></span>
+            <span class="field-label">שם הפריט <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" maxlength="60" placeholder="${esc(reg.namePh)}" required>
           </label>
           <label class="field">
-            <span class="field-label">מספר סידורי / מק״ט <span class="req">*</span></span>
+            <span class="field-label">מספר סידורי / מק״ט <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="serial" maxlength="40" placeholder="${esc(reg.serialPh)}" required>
           </label>
           <label class="field">
-            <span class="field-label">שם מלא של בעל הפריט <span class="req">*</span></span>
+            <span class="field-label">שם מלא של בעל הפריט <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="owner" maxlength="60" placeholder="ישראל ישראלי" required>
           </label>
         </div>
@@ -4234,7 +4554,7 @@ function renderRegisterTab(reg) {
       <div class="rec-actions mt">
         ${csvBtn(reg.key, 'ייצוא ל-CSV')}
         <button class="btn ghost" data-act="rep-pdf" data-r="${reg.key}">הפקת PDF</button>
-        <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
+        <button class="btn primary" data-act="inv-save" data-reg="${reg.id}">שמירת השינויים</button>
       </div>
     </section>
 
@@ -4254,20 +4574,21 @@ function renderRegisterTab(reg) {
            </div>
            ${pager(`${reg.key}Out`, pOut)}
            <div class="rec-actions mt">
-             <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
+             <button class="btn primary" data-act="inv-save" data-reg="${reg.id}">שמירת השינויים</button>
            </div>`
         : '<p class="empty">אין פריט בחוץ שתואם את החיפוש.</p>'}
     </section>` : ''}
 
     <section class="panel">
       <h2 class="panel-title">יומן פעולות</h2>
-      <p class="panel-sub">כל הוספה והסרה, עם כל הפרטים והתאריך. ${log.length > 200 ? 'מוצגות 200 הפעולות האחרונות.' : ''}</p>
+      <p class="panel-sub">כל הוספה, השאלה, החזרה והסרה — עם המיקום שממנו ואליו, שם מי שלקח והתאריך. ${log.length > 200 ? 'מוצגות 200 הפעולות האחרונות.' : ''}</p>
       ${log.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,1,4">
                <thead><tr>
                  <th class="num">תאריך</th><th>פעולה</th><th>סוג</th><th>פריט</th>
-                 <th class="num">מס׳ סידורי</th><th>בעלים</th><th>יעד</th><th>הערה</th><th></th>
+                 <th class="num">מס׳ סידורי</th><th>בעלים</th><th>תנועה</th><th>אצל מי</th>
+                 <th>הערה</th><th></th>
                </tr></thead>
                <tbody>${logRows}</tbody>
              </table>
@@ -4398,18 +4719,22 @@ function renderAmmoTab() {
                value="${esc(draft.qty)}" data-act="ammo-qty" data-id="${esc(x.id)}"
                placeholder="0" aria-label="כמות לתנועה">
       </td>
-      <td class="nowrap">
+      <td class="nowrap btn-row">
         <button class="btn ghost small" data-act="ammo-issue" data-i="${i}" ${x.qty === 0 ? 'disabled' : ''}>− הוצאה</button>
+        <button class="btn ghost small" data-act="ammo-return" data-i="${i}"${dest.loan ? '' : ' disabled'}>↩ החזרה</button>
         <button class="btn ghost small" data-act="ammo-add-qty" data-i="${i}">+ הוספה</button>
         ${delCell(`ammo:${x.id}`, 'ammo-del', { i }, '✕', 'מחיקת הפריט')}
       </td>
     </tr>`;
   }).join('');
 
-  const logRows = log.slice(0, 200).map((e, n) => `
+  const AMMO_TONE = { add: 'ok', return: 'ok', issue: 'bad' };
+  const logRows = log.slice(0, 200).map((e, n) => {
+    const act = AMMO_ACTIONS.find((a) => a.id === e.action) || AMMO_ACTIONS[0];
+    return `
     <tr>
       <td class="num">${esc(fmtDate(e.t))}</td>
-      <td class="${e.action === 'add' ? 'ok' : 'bad'}">${e.action === 'add' ? '+ כניסה' : '− הוצאה'}</td>
+      <td class="${AMMO_TONE[e.action] || ''}">${esc(`${act.sign} ${act.name}`)}</td>
       <td>${esc(e.name)}</td>
       <td class="num">${e.qty}</td>
       <td>${e.dest ? esc(nameOf(AMMO_DESTS, e.dest)) : '—'}</td>
@@ -4417,6 +4742,17 @@ function renderAmmoTab() {
       <td>${esc(e.note || '')}</td>
       <td>${delCell(`ammoLog:${n}`, 'ammo-log-del', { n }, '✕',
                     'מחיקת שורת היומן', 'למחוק את שורת היומן?')}</td>
+    </tr>`;
+  }).join('');
+
+  // Who is holding what, right now.
+  const out = ammoOut();
+  const outRows = out.map((r) => `
+    <tr>
+      <td>${esc(r.name)}</td>
+      <td><strong>${esc(r.who)}</strong><span class="dim"> · ${esc(nameOf(AMMO_DESTS, r.dest))}</span></td>
+      <td class="num warn"><strong>${r.n}</strong></td>
+      <td class="num">${esc(fmtDate(r.last))}</td>
     </tr>`).join('');
 
   return `
@@ -4426,11 +4762,11 @@ function renderAmmoTab() {
       <form data-form="ammo-add" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">שם הפריט <span class="req">*</span></span>
+            <span class="field-label">שם הפריט <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="name" maxlength="60" placeholder="לדוגמה: 5.56 / רימון עשן" required>
           </label>
           <label class="field">
-            <span class="field-label">כמות <span class="req">*</span></span>
+            <span class="field-label">כמות <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="qty" type="number" min="1" max="999999" placeholder="100" required>
           </label>
         </div>
@@ -4463,6 +4799,20 @@ function renderAmmoTab() {
            </div>
            ${reportButtons('ammo')}`
         : `<p class="empty">${all.length ? 'אין פריט שתואם את החיפוש.' : 'המלאי ריק. הוסיפו פריט למעלה.'}</p>`}
+    </section>
+
+    <section class="panel${out.length ? ' alert' : ''}">
+      <h2 class="panel-title">בהשאלה עכשיו ${out.length ? `<span class="pill warn num">${out.reduce((n, r) => n + r.n, 0)}</span>` : ''}</h2>
+      <p class="panel-sub">מה שנמסר לחייל או למשימה וטרם הוחזר, מחושב מהיומן. להחזרה: מלאו כמות בשורת הפריט למעלה, בחרו את אותו יעד ואת אותו שם, ולחצו "↩ החזרה".</p>
+      ${out.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,1,2">
+               <thead><tr><th>פריט</th><th>אצל מי</th><th class="num">כמות</th><th class="num">תנועה אחרונה</th></tr></thead>
+               <tbody>${outRows}</tbody>
+             </table>
+           </div>
+           ${reportButtons('ammoOut')}`
+        : '<p class="empty">אין תחמושת בהשאלה — הכול הוחזר או נוצל.</p>'}
     </section>
 
     <section class="panel">
@@ -5150,6 +5500,46 @@ function armRemove(reg, i) {
   invSave();
 }
 
+// Lending an item out: the three questions the act actually consists of —
+// what, to whom, until when — asked once, in the order somebody asks them out
+// loud. Before this, taking a scope out of the armoury meant finding its row
+// among hundreds and changing a select inside it, which is why so many rows
+// said "אצל חייל" and nothing else. The movement itself is not written here:
+// logMoves sees it at the save, as it sees every other way an item can move.
+function armLoan(form) {
+  const reg = regOf(form);
+  const it = (S.inv[reg.key] || []).find((x) => x.id === form.item.value);
+  const loc = form.loc.value;
+  const who = form.who.value.trim();
+  if (!it) return setFormErr(form, 'נא לבחור פריט');
+  if (!LOAN_LOCS.has(loc)) return setFormErr(form, 'נא לבחור לאן הפריט יוצא');
+  // A kind that may not go there is refused rather than quietly corrected —
+  // only צל״ם goes out on an operation, and the register is where that is said.
+  if (!kindLocs(reg, it.kind).some((l) => l.id === loc)) {
+    return setFormErr(form,
+      `${nameOf(reg.kinds, it.kind)} לא יכול לצאת ל"${nameOf(reg.locs, loc)}"`);
+  }
+  if (who.length < 2) return setFormErr(form, 'נא למלא את שם מי שלוקח את הפריט');
+  setFormErr(form, '');
+  it.loc = loc;
+  it.mission = who;
+  it.since = Date.now();
+  it.due = form.due.value || '';
+  invSave();
+}
+
+// The other half. One press, because the alternative — reopen the row, set the
+// location back, clear the name — is three chances to leave a returned weapon
+// reading as still out.
+function armReturn(reg, i) {
+  const it = (S.inv[reg.key] || [])[i];
+  if (!it) return;
+  S.askDel = '';
+  it.loc = reg.home;
+  it.mission = '';
+  invSave();          // logMoves writes the return, and how long it was gone
+}
+
 function ammoAdd(form) {
   const name = form.name.value.trim();
   const qty = parseInt(form.qty.value, 10);
@@ -5169,17 +5559,27 @@ function ammoAdd(form) {
 }
 
 // Reads the row's own fields rather than asking a chain of questions.
-function ammoMove(i, issue) {
+// Three movements, not two: rounds arrive, rounds go out, and rounds that went
+// out to a soldier or an operation come back. The third one used to be filed as
+// an arrival, which is the bug behind "someone takes it for a mission and then
+// returns it" having no answer here.
+function ammoMove(i, action) {
   const it = (S.inv.ammo || [])[i];
   if (!it) return;
   const draft = S.ammoDraft[it.id] || {};
   const n = Math.max(0, parseInt(String(draft.qty || '').replace(/\D/g, ''), 10) || 0);
   if (!n) { toast('נא למלא כמות בשורה', true); return; }
-  if (issue && n > it.qty) { toast(`אין מספיק במלאי — יש ${it.qty}`, true); return; }
+  if (action === 'issue' && n > it.qty) { toast(`אין מספיק במלאי — יש ${it.qty}`, true); return; }
 
   let dest = '', who = '';
-  if (issue) {
+  if (action !== 'add') {
     const d = AMMO_DESTS.find((x) => x.id === draft.dest) || AMMO_DESTS[0];
+    // What was thrown or credited is gone. Asking for it back is not a
+    // movement, it is a mistake, and it is refused where it is made.
+    if (action === 'return' && !d.loan) {
+      toast('החזרה אפשרית רק ממה שנמסר לחייל או למשימה', true);
+      return;
+    }
     dest = d.id;
     who = d.noWho ? '' : (draft.who || '').trim().slice(0, 60);
     if (!d.noWho && who.length < 2) {
@@ -5187,15 +5587,38 @@ function ammoMove(i, issue) {
       return;
     }
   }
-  it.qty = Math.max(0, Math.min(999999, it.qty + (issue ? -n : n)));
-  // adding stock raises the baseline too, so "used" stays a true difference
-  if (!issue) it.open = Math.max(0, Math.min(999999, it.open + n));
+  it.qty = Math.max(0, Math.min(999999, it.qty + (action === 'issue' ? -n : n)));
+  // A delivery raises the baseline so that "used" stays a true difference. A
+  // return does not: those rounds were counted as issued once already, and
+  // counting them again would quietly erase the consumption they came out of.
+  if (action === 'add') it.open = Math.max(0, Math.min(999999, it.open + n));
   logPush('ammoLog', {
-    t: Date.now(), action: issue ? 'issue' : 'add', name: it.name, qty: n, dest, who,
+    t: Date.now(), action, name: it.name, qty: n, dest, who,
     note: (draft.note || '').trim().slice(0, 120),
   });
   S.ammoDraft[it.id] = { ...draft, qty: '', note: '' };
   invSave();
+}
+
+/* What is still out, per item and per holder.
+   Derived from the log rather than kept as a counter, because a counter and a
+   log can disagree and then neither of them is worth reading. The log is the
+   record; this is a reading of it. */
+function ammoOut() {
+  const by = new Map();
+  for (const e of (S.inv && S.inv.ammoLog) || []) {
+    if (e.action !== 'issue' && e.action !== 'return') continue;
+    const d = AMMO_DESTS.find((x) => x.id === e.dest);
+    if (!d || !d.loan) continue;                 // consumed or credited, not owed
+    const who = (e.who || '').trim();
+    if (!who) continue;
+    const key = `${e.name} ${who}`;
+    const row = by.get(key) || { name: e.name, who, dest: e.dest, n: 0, last: 0 };
+    row.n += e.action === 'issue' ? e.qty : -e.qty;
+    row.last = Math.max(row.last, e.t || 0);
+    by.set(key, row);
+  }
+  return [...by.values()].filter((r) => r.n > 0).sort((a, b) => b.n - a.n || a.who.localeCompare(b.who, 'he'));
 }
 
 /* — exports — */
@@ -5703,17 +6126,17 @@ function usersPanel() {
       <form data-form="user-add" novalidate>
         <div class="grid2">
           <label class="field">
-            <span class="field-label">שם משתמש <span class="req">*</span></span>
+            <span class="field-label">שם משתמש <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="username" maxlength="31" spellcheck="false"
                    placeholder="sagan.a" required>
           </label>
           <label class="field">
-            <span class="field-label">סיסמה (10 תווים לפחות) <span class="req">*</span></span>
+            <span class="field-label">סיסמה (10 תווים לפחות) <span class="req" aria-hidden="true">*</span></span>
             <input class="input" type="password" name="pw" autocomplete="new-password" required>
           </label>
         </div>
         <fieldset class="lic-set">
-          <legend class="field-label">סוג הרשאה <span class="req">*</span></legend>
+          <legend class="field-label">סוג הרשאה <span class="req" aria-hidden="true">*</span></legend>
           <div class="rolepicks">
             ${ROLES.map((r) => `
               <label class="rolepick ${S.userRole === r.id ? 'on' : ''}">
@@ -5727,7 +6150,7 @@ function usersPanel() {
           </div>
         </fieldset>
         <fieldset class="lic-set">
-          <legend class="field-label">מסכים מותרים <span class="req">*</span></legend>
+          <legend class="field-label">מסכים מותרים <span class="req" aria-hidden="true">*</span></legend>
           <div class="screenpicks">${picks}</div>
           <div class="rec-actions mt">
             <button class="btn ghost small" type="button" data-act="utab-all">סימון הכול</button>
@@ -6065,7 +6488,12 @@ async function loadInv() {
         try {
           Object.assign(inv, partSlice(await openRecord(S.priv, row, cleanInv), def[1]));
           S.invVer[row.part] = row.updated_at || 0;
-        } catch {
+        } catch (e) {
+          // Which failure it was matters: a decryption error means the part was
+          // sealed to another key, a parse error means the bytes are damaged.
+          // The toast cannot say that; the console can, and this is the one
+          // message worth having when someone reports a domain gone blank.
+          console.error('vault part failed to open', row.part, e && e.name);
           toast(`לא ניתן לפענח חלק מנתוני המלאי (${row.part})`, true);
         }
       }
@@ -6163,7 +6591,58 @@ const PART_HE = {
    running yesterday's code — or a rollback — finds current data rather than
    a snapshot from before the split. It is best-effort and never blocks the
    save; once every client is on this code it can go. */
+/* Every movement, written down.
+   A register row is edited in place — you pick a new location from the row's
+   own select, then type who has it — so there is no single moment to hang a
+   log entry on: the pick, the name and the date are three separate events, and
+   hanging it on the first would file half a sentence. The save is that moment.
+   Comparing what is about to be written against what was last written names
+   every item that moved, however it was moved, and will keep naming them if a
+   sixth way to move an item is added later without anyone remembering this. */
+function logMoves() {
+  const now = Date.now();
+  for (const reg of Object.values(REGISTERS)) {
+    let base = null;
+    try { base = JSON.parse(S.invBase[reg.key] || 'null'); } catch { base = null; }
+    // No baseline is not "everything moved" — it is "we do not know", which is
+    // the state right after the vault is split. Inventing a movement for every
+    // item then would be worse than recording none.
+    if (!base || !Array.isArray(base[reg.key])) continue;
+    const was = new Map(base[reg.key].map((x) => [x.id, x]));
+    for (const it of S.inv[reg.key] || []) {
+      const before = was.get(it.id);
+      if (!before) continue;                         // added, and already logged as such
+      const moved = before.loc !== it.loc;
+      // Passed straight from one soldier to the next: the place did not change
+      // but the holder did, and that is exactly the handover a register exists
+      // to record.
+      const handed = !moved && LOAN_LOCS.has(it.loc) &&
+        (before.mission || '') !== (it.mission || '');
+      if (!moved && !handed) continue;
+
+      const home = it.loc === reg.home;
+      const since = before.since || before.addedAt || now;
+      logPush(reg.logKey, {
+        t: now,
+        action: home ? 'return' : 'move',
+        kind: it.kind, name: it.name, serial: it.serial, owner: it.owner,
+        dest: '', from: before.loc, to: it.loc,
+        // Coming back, the name that matters is whose hands it left; going
+        // out, it is whose hands it is entering.
+        who: (home ? before.mission : it.mission) || '',
+        days: home ? Math.max(0, Math.round((now - since) / DAY_MS)) : 0,
+        note: '',
+      });
+      // The clock starts when it leaves and stops when it comes back, so a
+      // loan never inherits the date of the one before it.
+      it.since = home ? null : now;
+      if (home) it.due = '';
+    }
+  }
+}
+
 async function saveInv() {
+  logMoves();
   S.inv.updatedAt = Date.now();
   const dirty = VAULT_PARTS.filter(
     ([part, keys]) => JSON.stringify(partSlice(S.inv, keys)) !== S.invBase[part]
@@ -6233,18 +6712,47 @@ async function withBusy(fn) {
     return;
   }
   S.busy = true;
+  // Approving a record is a network round trip and two decryptions, and until
+  // now it looked exactly like nothing. The admin pressed again, and got told
+  // off for it. A line under the banner says the work is happening; it blocks
+  // nothing, covers nothing, and needs no dismissing.
+  setBusyUI(true);
   try {
     await fn();
   } catch (e) {
     toast(e.message || 'שגיאה', true);
   } finally {
     S.busy = false;
+    setBusyUI(false);
   }
 }
 
+function setBusyUI(on) {
+  document.body.classList.toggle('is-busy', on);
+  // Assistive tech is told the region is in flux rather than being read the
+  // half-updated state underneath it.
+  $app.setAttribute('aria-busy', on ? 'true' : 'false');
+}
+
+// Refusing a form used to be silent unless you happened to be looking at the
+// right line. On the sign-out form that line is below the fold, so a soldier
+// pressed send, nothing visibly happened, and they pressed it again; someone
+// using a screen reader was told nothing at all. The message now announces
+// itself and brings itself on screen.
 function setFormErr(form, msg) {
   const el = form.querySelector('[data-err]');
-  if (el) el.textContent = msg || '';
+  if (!el) return;
+  el.textContent = msg || '';
+  if (!msg) return;                     // clearing before a submit: say nothing
+  el.focus({ preventScroll: true });
+  bringIntoView(el);
+}
+
+// Scrolling that respects someone who asked for less of it. The CSS media
+// query cannot reach a scroll started from script, so it is asked here.
+function bringIntoView(el, block = 'center') {
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({ block, behavior: still ? 'auto' : 'smooth' });
 }
 
 /* — soldier actions — */
@@ -6438,7 +6946,7 @@ async function soldierSubmit() {
   if (!(await ensureSignature())) {
     if (errEl) errEl.textContent = 'נא לחתום באצבע במסגרת החתימה';
     const pad = $app.querySelector('.sigwrap');
-    if (pad) pad.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (pad) bringIntoView(pad);
     return;
   }
   await withBusy(async () => {
@@ -6553,6 +7061,20 @@ async function setupSubmit(form) {
   }
 }
 
+/* Proof that the key this session seals with and the key it opens with are two
+   halves of the same pair. One RSA operation, once, at sign-in — against a
+   whole domain of the vault written to a key nobody holds, which is silent,
+   permanent, and looks exactly like working software until somebody reloads. */
+async function keysAgree(pubKey, priv) {
+  try {
+    const probe = { t: Date.now() };
+    const back = await openRecord(priv, await seal(pubKey, probe), (x) => x);
+    return !!back && back.t === probe.t;
+  } catch {
+    return false;
+  }
+}
+
 async function loginSubmit(form) {
   const pw = form.pw.value;
   const username = (form.username ? form.username.value : '').trim().toLowerCase();
@@ -6581,7 +7103,25 @@ async function loginSubmit(form) {
         'pkcs8', pkcs8, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']
       );
       S.pkcs8 = pkcs8;
+      /* The public key has to come from the server now, not from whatever this
+         page fetched when it was opened.
+
+         A tab left open across a key rotation — or across the first setup —
+         still holds the old public key in S.config. Signing in again from that
+         tab, which is what happens every time the console auto-locks, gave the
+         new private key and the old public key. Everything saved after that was
+         sealed to a key nobody holds any more: the ciphertext was perfectly
+         well formed, the server accepted it, and the next admin to open the
+         vault got "לא ניתן לפענח" on a domain whose data was gone. Nothing in
+         between could notice, because sealing does not need the private key.
+
+         So: fetch it, then prove the two halves are a pair before this session
+         is allowed to write anything at all. */
+      S.config = await api('/config');
       S.pubKey = await importPubKey(S.config.pub);
+      if (!(await keysAgree(S.pubKey, S.priv))) {
+        throw new Error('מפתחות ההצפנה אינם תואמים — רעננו את הדף ונסו שוב');
+      }
       // only fetch what this user's screens actually need — the server
       // refuses the rest anyway, and a 403 must not break the login
       const scopes = allowedScopes();
@@ -7204,6 +7744,7 @@ $app.addEventListener('input', (e) => {
     case 'arm-search':  S.regQ = { ...S.regQ, [regOf(el).key]: el.value }; S.page = {}; rerenderKeepFocus(el); break;
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'arm-mission': S.inv[regOf(el).key][+el.dataset.i].mission = el.value; break;
+    case 'arm-due':     S.inv[regOf(el).key][+el.dataset.i].due = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
@@ -7279,6 +7820,9 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
+  // a due date decides whether the row reads as overdue, so it redraws once
+  // the picker closes rather than on every digit
+  if (el.dataset.act === 'arm-due') { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
   if (el.dataset.act === 'rf-pick') {
     S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
@@ -7363,6 +7907,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'fault') faultSubmit(form);
   else if (kind === 'refuel') refuelSubmit(form);
   else if (kind === 'arm-add') armAdd(form);
+  else if (kind === 'arm-loan') armLoan(form);
   else if (kind === 'ammo-add') ammoAdd(form);
 });
 
@@ -7485,12 +8030,25 @@ function dispatch(act, el) {
       S.askDel = '';
       renderConsole();
       break;
-    case 'inv-save': invSave(); break;
+    case 'inv-save': {
+      // A loan with nobody's name on it is the exact thing that was being
+      // asked for, so the save that would file one is refused — and it names
+      // the item, rather than only saying that something somewhere is blank.
+      const reg = el.dataset.reg ? REGISTERS[el.dataset.reg] : null;
+      const blank = reg && loansOf(reg).find((x) => !x.mission);
+      if (blank) {
+        toast(`${blank.name} (${blank.serial}) מסומן "${nameOf(reg.locs, blank.loc)}" בלי שם — רשמו מי לקח`, true);
+        break;
+      }
+      invSave();
+      break;
+    }
     // armoury
     case 'arm-kind':
       S.regKind = { ...S.regKind, [regOf(el).id]: el.dataset.k };
       S.page = {}; renderConsole(); break;
     case 'arm-remove': armRemove(regOf(el), +el.dataset.i); break;
+    case 'arm-return': armReturn(regOf(el), +el.dataset.i); break;
     case 'arm-edit':   S.armEdit = el.dataset.id; renderConsole(); break;
     case 'arm-e-done': {
       // A serial corrected into one that already exists is the collision this
@@ -7530,8 +8088,9 @@ function dispatch(act, el) {
     case 'tz-qclear': S.regQ = { ...S.regQ, tzelem: '' }; renderConsole(); break;
     case 'tz-wa': tzelemWa(); break;
     // ammunition
-    case 'ammo-issue': ammoMove(+el.dataset.i, true); break;
-    case 'ammo-add-qty': ammoMove(+el.dataset.i, false); break;
+    case 'ammo-issue': ammoMove(+el.dataset.i, 'issue'); break;
+    case 'ammo-add-qty': ammoMove(+el.dataset.i, 'add'); break;
+    case 'ammo-return': ammoMove(+el.dataset.i, 'return'); break;
     case 'ammo-del':
       S.inv.ammo.splice(+el.dataset.i, 1); S.askDel = ''; invSave();
       break;
@@ -7585,7 +8144,7 @@ function dispatch(act, el) {
     case 'page':
       S.page = { ...S.page, [el.dataset.key]: parseInt(el.dataset.page, 10) };
       renderConsole();
-      $app.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      bringIntoView($app, 'start');
       break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
     // shortage reports

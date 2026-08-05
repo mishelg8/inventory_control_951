@@ -101,21 +101,53 @@ const COMMS_LOCS = [
 // States that mean the item is not usable, as opposed to merely elsewhere.
 const ARM_BAD_LOCS = new Set(['lost', 'decom']);
 
-// Locations that are meaningless without a name: "on an operation" or "in a
-// vehicle" is not an answer to where something is until you say which.
+// Locations that are meaningless without a name: "on an operation", "in a
+// vehicle" or "with a soldier" is not an answer to where something is until
+// you say which one, or who. 'soldier' was the omission that mattered — it is
+// the most common place for a weapon to be, and the register recorded it as a
+// bare word. "אצל חייל" with no name is a rifle that has left the armoury and
+// that nobody can go and ask for.
 const NAMED_LOCS = {
+  soldier: { label: 'שם החייל', of: 'חייל' },
   mission: { label: 'שם המשימה', of: 'משימה' },
   vehicle: { label: 'מספר הרכב', of: 'רכב' },
 };
+
+// Out, and expected back — as opposed to at the workshop, written off or lost,
+// which are also "not here" but are not loans. This is the set the loan screen,
+// the overdue alert and the return button all work from.
+const LOAN_LOCS = new Set(['soldier', 'mission', 'vehicle']);
+
+// A movement in a register's log. 'move' and 'return' were added when the
+// registers learned to record where an item went: before them, a weapon could
+// travel from the armoury to a soldier and back with the log saying nothing,
+// because only entering and leaving the register itself was ever written down.
+const ARM_ACTIONS = [
+  { id: 'add', name: 'הוספה', sign: '+' },
+  { id: 'move', name: 'השאלה / העברה', sign: '→' },
+  { id: 'return', name: 'החזרה', sign: '↩' },
+  { id: 'remove', name: 'הסרה', sign: '−' },
+];
+
+// The same three for a countable item. A return is not an arrival: it puts
+// rounds back on the shelf without pretending the unit was issued more.
+const AMMO_ACTIONS = [
+  { id: 'add', name: 'כניסה', sign: '+' },
+  { id: 'issue', name: 'הוצאה', sign: '−' },
+  { id: 'return', name: 'החזרה', sign: '↩' },
+];
 
 // where an item goes when it leaves the armoury for good
 // 'used' is consumption: a gas or stun grenade that was thrown went nowhere
 // and to nobody, so it needs no recipient — which is why it stops being a
 // free-text field and becomes a choice.
+// `loan` marks the two that can come back. Rounds drawn by a soldier or for an
+// operation are owed to the armoury until they are returned or accounted for;
+// what was thrown or credited is gone, and asking for it back is meaningless.
 const AMMO_DESTS = [
   { id: 'used', name: 'שומש', noWho: true },
-  { id: 'mission', name: 'משימה' },
-  { id: 'soldier', name: 'חייל' },
+  { id: 'mission', name: 'משימה', loan: true },
+  { id: 'soldier', name: 'חייל', loan: true },
   { id: 'credit', name: 'זיכוי', noWho: true },
 ];
 
@@ -192,7 +224,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const EXPIRING_SOON_DAYS = 60;
 
 export {
+  AMMO_ACTIONS,
   AMMO_DESTS,
+  ARM_ACTIONS,
   ARM_BAD_LOCS,
   ARM_DESTS,
   ARM_KINDS,
@@ -209,6 +243,7 @@ export {
   ITEMS,
   LIC_KINDS,
   LIFECYCLE,
+  LOAN_LOCS,
   NAMED_LOCS,
   REGISTERS,
   SERIAL_FIELDS,

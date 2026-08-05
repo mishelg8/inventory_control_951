@@ -27,12 +27,20 @@
     </noscript>
   </main>
 
+  <!-- Every page, in the order the menu lists them. It used to carry three of
+       the five soldier forms — the three that existed when it was written —
+       so אפסון and תדלוק could be reached from the menu and from nowhere
+       else. Marked up as a nav, with the page you are on marked rather than
+       linked to itself. -->
   <footer class="foot">
-    <div class="wrap">
-      <a class="foot-link rep" href="#report">דיווח על חוסר</a>
-      <a class="foot-link rep" href="#fault">תקלת בינוי</a>
+    <nav class="wrap" aria-label="ניווט לכל הדפים">
+      <a class="foot-link rep" href="#sign">רישום ראשוני</a>
+      <a class="foot-link rep" href="#report">בקשת ציוד</a>
+      <a class="foot-link rep" href="#deposit">אפסון נשק</a>
+      <a class="foot-link rep" href="#refuel">דיווח תדלוק</a>
+      <a class="foot-link rep" href="#fault">תקלות בינוי</a>
       <a class="foot-link" href="#admin" id="adminLink">כניסת מנהל</a>
-    </div>
+    </nav>
   </footer>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

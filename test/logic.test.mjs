@@ -122,6 +122,7 @@ test('a register never accepts another register\'s kinds or places', () => {
     ${app.match(/const kindLocs = [\s\S]*?\n\};/)[0]}
     const asText = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
     const asTime = (v) => (Number.isFinite(v) ? v : 0);
+    const asDate = (v) => (typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(v) ? v : '');
     const rndId = () => 'id';
   `;
   const cleanRegItem = new Function(
@@ -393,4 +394,36 @@ test('every field the client seals is a field the cleaners keep', () => {
   );
   assert.deepEqual(dropped, [],
     `sealed but not whitelisted in clean.js, so dropped on arrival: ${dropped.join(', ')}`);
+});
+
+test('a session never seals to a public key it has not just verified', () => {
+  // Sealing needs only the public key, so using a stale one fails silently:
+  // the ciphertext is well formed, the server takes it, and the loss surfaces
+  // only when somebody reloads and a whole domain of the vault comes back
+  // undecryptable. A tab left open across a key rotation is enough to do it,
+  // and signing in again from that tab is what every auto-lock asks for.
+  const login = app.slice(
+    app.indexOf('async function loginSubmit'),
+    app.indexOf('/* — admin record mutations — */')
+  );
+  assert.match(login, /S\.config = await api\('\/config'\)/,
+               'login re-reads the public key from the server rather than trusting the page');
+  assert.match(login, /keysAgree\(S\.pubKey, S\.priv\)/,
+               'login proves the two halves are one pair');
+  assert.ok(login.indexOf('keysAgree') < login.indexOf('loadInv('),
+            'the pair is proven before the vault is opened or written');
+});
+
+test('a register movement is recorded wherever the move came from', () => {
+  // The location is edited in place, so there is no single call site to hang a
+  // log entry on. The save compares against the last saved state instead —
+  // which is also why a new way to move an item cannot forget to log itself.
+  const fn = app.slice(app.indexOf('function logMoves()'), app.indexOf('async function saveInv()'));
+  assert.match(fn, /S\.invBase\[reg\.key\]/, 'it diffs against what was last written');
+  assert.match(fn, /action: home \? 'return' : 'move'/, 'coming home is a return, not another move');
+  assert.match(fn, /LOAN_LOCS\.has\(it\.loc\)/, 'a handover between two holders counts as a movement');
+  // and the save must not be able to skip it
+  const save = app.slice(app.indexOf('async function saveInv()'));
+  assert.ok(save.indexOf('logMoves();') < save.indexOf('const dirty'),
+            'movements are logged before the parts to write are chosen');
 });

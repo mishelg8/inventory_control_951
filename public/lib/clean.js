@@ -8,7 +8,7 @@
 // whitelisted. Without this, a crafted quantity like "<img …>" flows into
 // innerHTML in the admin console — where the private key lives.
 
-import { ITEMS, DEPTS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS } from './catalog.js';
+import { ITEMS, DEPTS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
 import { rndId } from './crypto.js';
 
 const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -21,6 +21,13 @@ const asCount = (v, max = 9999) => {
 };
 
 const asTime = (v) => (Number.isFinite(v) && v > 0 ? v : null);
+
+// A calendar day, or nothing. Only the ISO shape is ever accepted — anything
+// else would be compared against today as a string and quietly never match.
+const asDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '');
+
+// One of a whitelist of ids, or the first as the fallback.
+const asId = (list, v) => (list.some((x) => x.id === v) ? v : list[0].id);
 
 function cleanRecord(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
@@ -119,7 +126,12 @@ const cleanRegItem = (reg) => (x) => {
     serial: asText(x && x.serial, 40),
     owner: asText(x && x.owner, 60),
     loc: allowed.includes(raw) ? raw : (raw && raw !== reg.home ? 'soldier' : reg.home),
+    // Whose name the current location carries: the soldier holding it, the
+    // operation it went out on, or the vehicle it is fitted in. One field,
+    // because an item is in one place at a time.
     mission: asText(x && x.mission, 60),
+    since: asTime(x && x.since),      // when it left the shelf — the loan's clock
+    due: asDate(x && x.due),          // when it was promised back, if a date was given
     note: asText(x && x.note, 120),
     addedAt: asTime(x && x.addedAt),
   };
@@ -127,12 +139,19 @@ const cleanRegItem = (reg) => (x) => {
 
 const cleanArmLog = (x) => ({
   t: asTime(x && x.t),
-  action: (x && x.action) === 'remove' ? 'remove' : 'add',
+  action: asId(ARM_ACTIONS, x && x.action),
   kind: asText(x && x.kind, 20),
   name: asText(x && x.name, 60),
   serial: asText(x && x.serial, 40),
   owner: asText(x && x.owner, 60),
   dest: asText(x && x.dest, 20),
+  // A movement has two ends. Without them the log could say that an item moved
+  // but not out of where — which is the half of the sentence you need when you
+  // are trying to work out where a weapon actually is.
+  from: asText(x && x.from, 20),
+  to: asText(x && x.to, 20),
+  who: asText(x && x.who, 60),        // who took it, or which operation
+  days: asCount(x && x.days, 99999),  // how long it was out, filled in on return
   note: asText(x && x.note, 120),
 });
 
@@ -145,7 +164,7 @@ const cleanAmmo = (x) => ({
 
 const cleanAmmoLog = (x) => ({
   t: asTime(x && x.t),
-  action: (x && x.action) === 'issue' ? 'issue' : 'add',
+  action: asId(AMMO_ACTIONS, x && x.action),
   name: asText(x && x.name, 60),
   qty: asCount(x && x.qty),
   note: asText(x && x.note, 120),
@@ -221,6 +240,7 @@ function cleanInv(raw) {
 
 export {
   asCount,
+  asDate,
   asText,
   asTime,
   cleanAmmo,
