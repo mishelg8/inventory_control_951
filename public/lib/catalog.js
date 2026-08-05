@@ -46,20 +46,43 @@ const deptName = (id) => (DEPTS.find((d) => d.id === id) || {}).name || 'ללא 
 
 // The three numbers a soldier signs for. Named here because both the
 // crypto helpers below and the duplicate checks further down need them.
-const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אמר״ל'], ['scope', 'כוונת']];
+/* The label changed to אקילה; the key did not, and must not. `amral` is the
+   field name inside records that were sealed months ago — renaming it would
+   make every one of them arrive at the cleaner with a field it does not
+   whitelist, and the number would be dropped on the way in. What a thing is
+   called on screen and what it is called in the ciphertext are two different
+   decisions, and only one of them is safe to revisit. */
+const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אקילה'], ['scope', 'כוונת']];
 
 // Each kind carries the locations it is allowed to be in. Only צל״ם can go out
 // on a mission, and when it does the mission has to be named — an item that is
 // "somewhere on an operation" with no name attached is an item you have lost.
 const LIFECYCLE = ['repair', 'lost', 'decom'];
 
+/* `noLoan` keeps a kind out of the lending form. A personal weapon and the day
+   scope that lives on it are not borrowed from the armoury for an afternoon —
+   they are signed for, deposited and drawn back through the deposit flow, and
+   offering them in a list of things to lend put the wrong thing at the top of
+   the most-used control on the screen. They still appear in the register, and
+   their location can still be changed there; they are simply not what the
+   lending form is for. */
 const ARM_KINDS = [
-  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'weapon', name: 'נשק', locs: ['armon', 'soldier', ...LIFECYCLE], noLoan: true },
+  // A soldier's own, handed in and drawn back through the deposit flow. It is
+  // the item the sign-up form asks for a number for, and like the weapon and
+  // the day scope it is nobody else's to borrow.
+  { id: 'akila', name: 'אקילה', locs: ['armon', 'soldier', ...LIFECYCLE], noLoan: true },
+  // The unit's own, kept on the shelf and lent out for a night — which is what
+  // the armoury was asked for in the first place. Same sort of device, quite a
+  // different thing to the register: this one comes back.
   { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier', ...LIFECYCLE] },
-  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier', ...LIFECYCLE], noLoan: true },
   { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier', ...LIFECYCLE] },
   { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
 ];
+
+// Whether this register's kind may be offered in the lending form at all.
+const canLoan = (reg, kind) => !(reg.kinds.find((k) => k.id === kind) || {}).noLoan;
 
 // A weapon or piece of kit is not only "here" or "with someone" — it can be at
 // the workshop, written off, or genuinely missing. Without these states a
@@ -249,6 +272,7 @@ export {
   SERIAL_FIELDS,
   SVG_OPEN,
   VEH_KIT,
+  canLoan,
   deptName,
   itemById,
   kindLocs,

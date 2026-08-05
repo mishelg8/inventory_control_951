@@ -1837,6 +1837,10 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 /* ── Two-column form grid ──────────────────────────────────────────── */
 .grid2 { display: grid; grid-template-columns: 1fr; gap: 0 12px; }
 @media (min-width: 620px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+/* A field that takes the whole row of a two-column grid — a name has more to
+   hold than the short pickers beside it, and an odd count would otherwise
+   leave it stranded half-width next to a gap. */
+.grid2 > .span2 { grid-column: 1 / -1; }
 /* The asterisk is for the eye. The field itself carries `required`, which is
    what a screen reader announces — so leaving the star in the accessible name
    only got every mandatory field read out as "star". It is aria-hidden. */
@@ -2189,22 +2193,27 @@ body.printing .printdoc {
 /* A button that is alone in its cell fills it: a single "אישור" reads as the
    action of the row it sits on. A drawer under the row is a panel, not a
    cell — its buttons keep their own size. */
-.tbl.folded tr:not(.sub) td .btn { width: 100%; }
-.tbl.folded tr:not(.sub) td .btn.small { padding: 6px 7px; }
+.tbl.folded tr:not(.sub):not(.det) td .btn { width: 100%; }
+.tbl.folded tr:not(.sub):not(.det) td .btn.small { padding: 6px 7px; }
 /* But two or three of them are a group, and giving each the full width turns
    one row of a table into a wall of blocks half a screen tall — which is what
    the ammunition and record rows had become on a phone. They share the line,
    and the row goes back to being a row. Where :has is not supported the cell
    simply keeps the older stacked look, which is unlovely but not broken. */
-.tbl.folded tr:not(.sub) td.btn-row,
-.tbl.folded tr:not(.sub) td:has(.btn ~ .btn) {
+/* `.det` is excluded deliberately. Once the actions column folds into the
+   drawer, that drawer's single cell holds two buttons and would match here —
+   and a table cell told to be a flex container stops being a table cell, so
+   its colspan is ignored and the drawer shrinks to the width of the first
+   column instead of the width of the table. */
+.tbl.folded tr:not(.sub):not(.det) td.btn-row,
+.tbl.folded tr:not(.sub):not(.det) td:has(.btn ~ .btn) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
-.tbl.folded tr:not(.sub) td.btn-row > .btn,
-.tbl.folded tr:not(.sub) td:has(.btn ~ .btn) > .btn { width: auto; flex: 1 1 auto; }
+.tbl.folded tr:not(.sub):not(.det) td.btn-row > .btn,
+.tbl.folded tr:not(.sub):not(.det) td:has(.btn ~ .btn) > .btn { width: auto; flex: 1 1 auto; }
 /* Deliberately not switched to a column at the narrowest widths: a cell laid
    out as a column stops asking the table for the width of a row of buttons,
    the fitting pass then gives the column less, and the buttons come out
@@ -2315,6 +2324,28 @@ body.printing .printdoc {
 }
 .det-f.is-bare > .det-l { display: none; }
 .det-f.is-bare > .det-v { flex: 1 1 100%; justify-content: flex-start; }
+/* The row's actions, once they fold in here, are the thing you opened the
+   drawer to reach — not another field of the record. They get the last word:
+   a rule above them, full-size targets, and the width the row could never
+   spare them. The ✕ goes to the far end, away from the two you meant. */
+.det-f.is-bare > .det-v {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  align-items: center;
+}
+.det-f.is-bare:last-child {
+  border-top: 1px solid var(--line);
+  padding-top: var(--s-4);
+  margin-top: var(--s-2);
+}
+.det-f.is-bare > .det-v > .btn {
+  flex: 1 1 auto;
+  width: auto;
+  min-height: 44px;
+}
+.det-f.is-bare > .det-v > .linkbtn { min-height: 44px; min-width: 44px; }
+.det-f.is-bare > .det-v > .linkbtn.danger-link { margin-inline-start: auto; }
 .det-v:empty { display: none; }
 .det-v > .minibar { flex: 1 1 60px; min-width: 40px; max-width: none; }
 .det-v .input,
@@ -2401,7 +2432,7 @@ body.printing .printdoc {
    most of it button, with the name squeezed onto two lines beside all that
    air. Compact they sit on one line, and the row goes back to being a row. */
 @media (max-width: 560px) {
-  .tbl.folded tr:not(.sub) td .btn {
+  .tbl.folded tr:not(.sub):not(.det) td .btn {
     font-size: var(--t-xs);
     padding: 9px 10px;
     min-height: 40px;

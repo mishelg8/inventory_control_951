@@ -8,7 +8,7 @@ import {
   SVG_OPEN, ITEMS, itemById, DEPTS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
   COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
   nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
-  DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS,
+  DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS, canLoan,
 } from './lib/catalog.js';
 import {
   te, td, b64, ub64, hex, rndId, deriveAuth, deriveRid, normSerial, deriveSerialTag,
@@ -459,15 +459,16 @@ function fitTables() {
     // reach past its panel? — that is the measurement, and it catches what
     // an estimate per column cannot: a cell whose contents will not break.
     const wants = hcells.reduce((sum, th) => sum + colNeed(th), 0);
+    const banned = new Set();
     const keep = room && (wants > room || table.scrollWidth > room + 1)
-      ? keepCols(table, heads.length) : null;
+      ? keepCols(table, heads.length, banned) : null;
     if (keep) {
       // The estimate proposes; the table disposes. Buying columns back by
       // estimate alone once put twelve of them into space enough for nine,
       // because a cell holding a thirteen-digit card number does not care
       // what its heading is called. So the proposal is tried on — hiding a
       // column is only a class — and columns are handed back until it fits.
-      const bought = spend(keep, hcells, room);
+      const bought = spend(keep, hcells, room, banned);
       hideCols(table, keep);
       while (bought.length && table.scrollWidth > room + 1) {
         keep.delete(bought.pop());
@@ -495,18 +496,45 @@ function headText(th) {
   return copy.textContent.trim();
 }
 
-// Which columns survive when there is not room for all of them. A table says
-// so itself; a negative index counts from the end, so the actions column is
-// -1 however many columns precede it.
-function keepCols(table, n) {
+/* Where a phone stops being a narrow desktop. Matches the breakpoint the
+   stylesheet uses for the same decision, so the layout and the folding never
+   disagree about which one this is. */
+const PHONE_W = 560;
+
+/* Which columns survive when there is not room for all of them. A table says
+   so itself; a negative index counts from the end, so the actions column is
+   -1 however many columns precede it.
+
+   On a phone that column is the most expensive thing in the row. Two buttons
+   cannot share 123px, so they stack, and a row of the tracking list stood
+   195px tall — six soldiers to a screen, most of it button, the name crushed
+   onto two lines beside all that air. Folded in with everything else it costs
+   nothing until you open the row, and the row becomes a line in a list: 55px,
+   eleven soldiers to a screen. Nothing is removed; the buttons move one tap
+   away, into the drawer that already holds the rest of the record.
+
+   `banned` is what may not be bought back by `spend` — without it the column
+   would simply be repurchased with the width folding it away had freed. */
+function keepCols(table, n, banned) {
   const spec = (table.dataset.phone || '').trim();
   let keep;
+  let actions = -1;
   if (spec) {
-    keep = new Set(spec.split(',')
-      .map((s) => { const v = parseInt(s, 10); return v < 0 ? n + v : v; })
+    const parts = spec.split(',').map((s) => parseInt(s, 10));
+    keep = new Set(parts
+      .map((v) => (v < 0 ? n + v : v))
       .filter((v) => Number.isInteger(v) && v >= 0 && v < n));
+    const fromEnd = parts.find((v) => v < 0);
+    if (fromEnd !== undefined) actions = n + fromEnd;
   } else {
     keep = new Set([0, 1, n - 1]);
+    actions = n - 1;
+  }
+  // Never the only thing left: a row that folds away everything including its
+  // own identity is a chevron and nothing else.
+  if (actions >= 0 && keep.size > 1 && window.innerWidth <= PHONE_W) {
+    keep.delete(actions);
+    banned.add(actions);
   }
   return keep.size && keep.size < n ? keep : null;
 }
@@ -517,12 +545,12 @@ function keepCols(table, n) {
 // room left over buys back as many of the folded columns as it will hold.
 // Returns what it bought, in the order it bought it, so the caller can hand
 // the last ones back when the table turns out to need more than was estimated.
-function spend(keep, hcells, room) {
+function spend(keep, hcells, room, banned = new Set()) {
   const bought = [];
   let used = 40;                                   // the chevron's own column
   for (const i of keep) used += colNeed(hcells[i]);
   for (let i = 0; i < hcells.length; i += 1) {
-    if (keep.has(i)) continue;
+    if (keep.has(i) || banned.has(i)) continue;
     const need = colNeed(hcells[i]);
     if (used + need > room) continue;
     keep.add(i);
@@ -561,7 +589,14 @@ function foldTable(table, keep, ti) {
   hexp.className = 'exp-col';
   hrow.appendChild(hexp);
 
-  const span = keep.size + 1;
+  /* Every physical column, not every surviving one. A folded-away column is
+     hidden, not removed, so the row still has all its cells and a colspan of
+     `keep.size + 1` covers the first few of them — which are the right ones
+     only when the kept columns happen to sit at the front. Keep the first and
+     the last and the drawer spans the first two instead, ending halfway across
+     the table. Spanning the lot is always right: the hidden ones are zero
+     wide, so they cost nothing and cannot be miscounted. */
+  const span = hrow.cells.length;
   [...table.tBodies[0].rows].forEach((row, ri) => {
     if (row.cells.length === 1 && row.cells[0].colSpan > 1) {
       row.cells[0].colSpan = span;      // an existing detail row spans the new width
@@ -1235,7 +1270,7 @@ function renderDeposit() {
           <legend class="field-label">אמצעים נלווים <span class="opt-tag">רק אם קיימים</span></legend>
           <div class="grid2">
             <label class="field">
-              <span class="field-label">מק״ט אמר״ל</span>
+              <span class="field-label">מק״ט אקילה</span>
               <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
                      value="${esc(v.amral)}">
               ${serialWarnBox('amral')}
@@ -1247,7 +1282,7 @@ function renderDeposit() {
               ${serialWarnBox('scope')}
             </label>
           </div>
-          <span class="field-hint">אם לא מסרתם אמר״ל או כוונת — השאירו ריק.</span>
+          <span class="field-hint">אם לא מסרתם אקילה או כוונת — השאירו ריק.</span>
         </fieldset>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">שליחת בקשת אפסון</button>
@@ -1331,7 +1366,7 @@ async function depositSubmit(form) {
     return setFormErr(form, 'מספר נשק: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
   }
   if (amral && !serialRe.test(amral)) {
-    return setFormErr(form, 'מק״ט אמר״ל: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+    return setFormErr(form, 'מק״ט אקילה: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
   }
   if (scope && !serialRe.test(scope)) {
     return setFormErr(form, 'מק״ט כוונת יום: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
@@ -1514,7 +1549,7 @@ function renderSoldierStep1() {
               ${serialWarnBox('weapon')}
             </label>
             <label class="field">
-              <span class="field-label">מספר אמר״ל</span>
+              <span class="field-label">מספר אקילה</span>
               <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
                      value="${esc(v.amral || '')}" placeholder="1234567">
               ${serialWarnBox('amral')}
@@ -1637,7 +1672,7 @@ function renderSoldierConfirm() {
       ${v.weapon || v.amral || v.scope ? `
       <div class="serial-check">
         <p class="serial-check-t">בדקו ספרה-ספרה — אין ברקוד ואין צילום, מה שנרשם כאן הוא הרישום היחיד</p>
-        ${[['מספר נשק', v.weapon], ['מספר אמר״ל', v.amral], ['מספר כוונת', v.scope]]
+        ${[['מספר נשק', v.weapon], ['מספר אקילה', v.amral], ['מספר כוונת', v.scope]]
           .filter(([, n]) => n)
           .map(([k, n]) => `
             <div class="serial-row">
@@ -1794,7 +1829,7 @@ function renderSoldierDone() {
     .join('');
   // The serials are part of what was signed for, so they belong on the receipt.
   const v = S.ident || {};
-  const serials = [['נשק', v.weapon], ['אמר״ל', v.amral], ['כוונת', v.scope]]
+  const serials = [['נשק', v.weapon], ['אקילה', v.amral], ['כוונת', v.scope]]
     .filter(([, n]) => n)
     .map(([k, n]) => `<span class="tagi">${k} <span class="num">${esc(n)}</span></span>`)
     .join('');
@@ -2077,7 +2112,7 @@ function extrasRow(rec) {
   const d = rec.data;
   const bits = [];
   const serials = [
-    ['נשק', d.weapon], ['אמר״ל', d.amral], ['כוונת', d.scope],
+    ['נשק', d.weapon], ['אקילה', d.amral], ['כוונת', d.scope],
   ].filter(([, v]) => v);
   if (serials.length) {
     bits.push(`<div class="rec-meta">${serials
@@ -2160,7 +2195,7 @@ function recEditor(rec) {
       </div>
       <div class="fuel-entry">
         ${f('weapon', 'מספר נשק', d.weapon, 'num')}
-        ${f('amral', 'מק״ט אמר״ל', d.amral, 'num')}
+        ${f('amral', 'מק״ט אקילה', d.amral, 'num')}
         ${f('scope', 'מק״ט כוונת', d.scope, 'num')}
       </div>
       <p class="field-hint">המספר האישי מזהה את הרשומה במערכת. תיקון שלו משנה את מה שמוצג ומיוצא לדוחות, אך הרשומה נשארת תחת המזהה שנוצר בהרשמה.</p>
@@ -2200,7 +2235,7 @@ function repEditor(rec) {
       ${d.kind === 'deposit'
         ? `<div class="fuel-entry">
              ${f('weapon', 'מספר נשק', true)}
-             ${f('amral', 'מק״ט אמר״ל', true)}
+             ${f('amral', 'מק״ט אקילה', true)}
              ${f('scope', 'מק״ט כוונת', true)}
            </div>`
         : ''}
@@ -2437,7 +2472,7 @@ function waLink(d, rid) {
     .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
     .join('\n');
   // Serials the soldier registered — they are signed for just like the kit.
-  const serials = [['נשק', d.weapon], ['אמר״ל', d.amral], ['כוונת', d.scope]]
+  const serials = [['נשק', d.weapon], ['אקילה', d.amral], ['כוונת', d.scope]]
     .filter(([, n]) => n)
     .map(([k, n]) => `• ${k}: ${n}`)
     .join('\n');
@@ -3033,17 +3068,17 @@ function weaponsPanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רשימת נשקים</h2>
-      <p class="panel-sub">מספר סידורי של הנשק, האמר״ל והכוונת מול המחזיק, ממוין לפי מספר הנשק. מכבד את החיפוש והסינון.</p>
+      <p class="panel-sub">מספר סידורי של הנשק, האקילה והכוונת מול המחזיק, ממוין לפי מספר הנשק. מכבד את החיפוש והסינון.</p>
       <div class="stat-row">
         <div class="stat"><span class="stat-n num">${armed.length}</span><span class="stat-l">נשקים משויכים</span></div>
-        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.amral).length}</span><span class="stat-l">אמר״ל רשום</span></div>
+        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.amral).length}</span><span class="stat-l">אקילה רשום</span></div>
         <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.scope).length}</span><span class="stat-l">כוונת רשומה</span></div>
         <div class="stat"><span class="stat-n num">${unarmed.length}</span><span class="stat-l">ללא נשק רשום</span></div>
       </div>
       ${armed.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,3">
-               <thead><tr><th class="num">מס׳ נשק</th><th class="num">אמר״ל</th><th class="num">כוונת</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
+               <thead><tr><th class="num">מס׳ נשק</th><th class="num">אקילה</th><th class="num">כוונת</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
                <tbody>${rows}</tbody>
              </table>
            </div>
@@ -3066,12 +3101,11 @@ const regReport = (reg, name, file) => ({
     const all = (S.inv && S.inv[reg.key]) || [];
     return {
       head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'אצל מי / משימה',
-             'בחוץ מאז', 'להחזרה עד', 'תאריך הוספה'],
+             'בחוץ מאז', 'תאריך הוספה'],
       rows: all.map((x) => [
         nameOf(reg.kinds, x.kind), x.name, x.serial, x.owner, nameOf(reg.locs, x.loc),
         NAMED_LOCS[x.loc] ? (x.mission || '(ללא שם)') : '',
         LOAN_LOCS.has(x.loc) && x.since ? fmtDate(x.since) : '',
-        x.due ? fmtDay(x.due) : '',
         x.addedAt ? fmtDate(x.addedAt) : '',
       ]),
       summary: `${all.filter((x) => x.loc === reg.home).length} נמצאים ${reg.placeIn} · ` +
@@ -3100,15 +3134,13 @@ const regLoanReport = (reg, name, file) => ({
   build() {
     const rows = loansOf(reg);
     return {
-      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'אצל מי', 'מאז', 'בחוץ', 'להחזרה עד', 'סטטוס'],
+      head: ['סוג', 'פריט', 'מספר סידורי', 'בעלים', 'מיקום', 'אצל מי', 'מאז', 'בחוץ'],
       rows: rows.map((x) => [
         nameOf(reg.kinds, x.kind), x.name, x.serial, x.owner, nameOf(reg.locs, x.loc),
         x.mission || '(ללא שם)',
-        x.since ? fmtDate(x.since) : '', outFor(x), x.due ? fmtDay(x.due) : '',
-        isOverdue(x) ? 'באיחור' : 'בתוקף',
+        x.since ? fmtDate(x.since) : '', outFor(x),
       ]),
-      summary: `${rows.length} בהשאלה · ${rows.filter(isOverdue).length} באיחור · ` +
-        `${rows.filter((x) => !x.mission).length} ללא שם`,
+      summary: `${rows.length} בהשאלה · ${rows.filter((x) => !x.mission).length} ללא שם`,
     };
   },
 });
@@ -3157,7 +3189,7 @@ const REPORTS = {
       };
       return {
         head: [
-          'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
+          'מספר אישי', 'שם', 'טלפון', 'מחלקה', 'מספר נשק', 'מספר אקילה', 'מספר כוונת',
           ...ITEMS.flatMap((i) => [`${i.name} נלקח`, `${i.name} הוחזר`]),
           'רישיון אזרחי', 'רישיון צבאי', 'סטטוס', 'נשלח', 'אושר',
         ],
@@ -3205,7 +3237,7 @@ const REPORTS = {
         .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
         .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
       return {
-        head: ['מספר נשק', 'מספר אמר״ל', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'],
+        head: ['מספר נשק', 'מספר אקילה', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'],
         rows: armed.map((rec) => {
           const d = rec.data;
           return [d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone];
@@ -3219,7 +3251,7 @@ const REPORTS = {
     build() {
       return {
         head: [
-          'שם', 'מספר אישי', 'מחלקה', 'מספר נשק', 'מספר אמר״ל', 'מספר כוונת',
+          'שם', 'מספר אישי', 'מחלקה', 'מספר נשק', 'מספר אקילה', 'מספר כוונת',
           ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
           'סה״כ בחוץ',
         ],
@@ -3245,7 +3277,7 @@ const REPORTS = {
     build() {
       const rows = depositReports();
       return {
-        head: ['נשלח', 'שם החייל', 'מספר אישי', 'טלפון', 'מספר נשק', 'מק״ט אמר״ל', 'מק״ט כוונת יום', 'סטטוס'],
+        head: ['נשלח', 'שם החייל', 'מספר אישי', 'טלפון', 'מספר נשק', 'מק״ט אקילה', 'מק״ט כוונת יום', 'סטטוס'],
         rows: rows.map((r) => {
           const d = r.data;
           return [fmtDate(d.createdAt), d.name, d.pn, d.phone, d.weapon,
@@ -3584,7 +3616,7 @@ function ledgerPanel(approved) {
           <span class="lg-sub num">${esc(d.pn)}</span>
           <span class="lg-sub">${esc(deptName(d.dept))}</span>
           ${d.weapon ? `<span class="lg-sub">נשק <span class="num">${esc(d.weapon)}</span></span>` : ''}
-          ${d.amral ? `<span class="lg-sub">אמר״ל <span class="num">${esc(d.amral)}</span></span>` : ''}
+          ${d.amral ? `<span class="lg-sub">אקילה <span class="num">${esc(d.amral)}</span></span>` : ''}
           ${d.scope ? `<span class="lg-sub">כוונת <span class="num">${esc(d.scope)}</span></span>` : ''}
         </td>
         ${cells}
@@ -3875,20 +3907,12 @@ function renderOverviewTab() {
     comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length && {
       n: comms.filter((x) => NAMED_LOCS[x.loc] && !x.mission).length, tone: 'warn', tab: 'comms',
       t: 'ציוד קשר בלי ציון מקום', s: 'מסומן ברכב או במשימה בלי לרשום איזה' },
-    // Loans: overdue first, then the ones nobody's name is attached to. An
-    // unnamed loan is the worse of the two — a late item you can at least go
-    // and ask for.
-    ...[REGISTERS.armon, REGISTERS.comms].flatMap((reg) => {
-      const open = loansOf(reg);
-      const late = open.filter(isOverdue);
-      const blank = open.filter((x) => !x.mission);
-      return [
-        blank.length && { n: blank.length, tone: 'bad', tab: reg.tab,
-          t: `השאלות ללא שם — ${reg.title}`, s: 'הציוד יצא ואין רשום מי לקח' },
-        late.length && { n: late.length, tone: 'bad', tab: reg.tab,
-          t: `השאלות באיחור — ${reg.title}`,
-          s: late.slice(0, 3).map((x) => `${x.name} (${x.mission || 'ללא שם'})`).join(', ') },
-      ];
+    // A loan with nobody's name on it: the equipment left and there is no
+    // record of who has it.
+    ...[REGISTERS.armon, REGISTERS.comms].map((reg) => {
+      const blank = loansOf(reg).filter((x) => !x.mission);
+      return blank.length && { n: blank.length, tone: 'bad', tab: reg.tab,
+        t: `השאלות ללא שם — ${reg.title}`, s: 'הציוד יצא ואין רשום מי לקח' };
     }),
     ...(() => {
       const out = ammoOut();
@@ -4168,7 +4192,7 @@ function depositsPanel() {
   return `
     <section class="panel${waiting ? ' alert' : ''}">
       <h2 class="panel-title">אפסון נשק — ממתין לאישור ${waiting ? `<span class="pill bad num">${waiting}</span>` : ''}</h2>
-      <p class="panel-sub">בקשות אפסון ששלחו חיילים דרך <span class="code-inline">#deposit</span>. הנשק נכנס לרישום הארמון רק אחרי אישור כאן. האישור קולט גם את האמר״ל והכוונת אם נמסרו.</p>
+      <p class="panel-sub">בקשות אפסון ששלחו חיילים דרך <span class="code-inline">#deposit</span>. הנשק נכנס לרישום הארמון רק אחרי אישור כאן. האישור קולט גם את האקילה והכוונת אם נמסרו.</p>
       ${all.length > 4
         ? plainSearch('dep-search', 'dep-qclear', S.depQ,
                       'חיפוש לפי שם, מ״א, טלפון או מספר נשק', all.length, vis.length)
@@ -4179,7 +4203,7 @@ function depositsPanel() {
              <table class="tbl" data-phone="1,7,-1">
                <thead><tr>
                  <th class="num">נשלח</th><th>שם החייל</th><th class="num">מ״א</th><th class="num">טלפון</th>
-                 <th class="num">מס׳ נשק</th><th class="num">מק״ט אמר״ל</th><th class="num">מק״ט כוונת</th>
+                 <th class="num">מס׳ נשק</th><th class="num">מק״ט אקילה</th><th class="num">מק״ט כוונת</th>
                  <th>סטטוס</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
@@ -4216,7 +4240,11 @@ const depApprove = (id) =>
       added.push({ id: rndId(), kind, name, serial, owner: d.name, loc: 'armon', note, addedAt: now });
     };
     stage('weapon', 'נשק אישי', d.weapon);
-    if (d.amral) stage('amral', 'אמר״ל', d.amral);
+    // The soldier's own device files as אקילה, not as the unit's אמר״ל. The
+    // payload key is still `amral` — that is what was sealed into every record
+    // already written — but what lands in the register is the personal kind,
+    // and the personal kind is not lent to anybody.
+    if (d.amral) stage('akila', 'אקילה', d.amral);
     if (d.scope) stage('dscope', 'כוונת יום', d.scope);
 
     S.inv.armon = [...prevArmon, ...added];
@@ -4282,7 +4310,13 @@ const loansOf = (reg) => ((S.inv && S.inv[reg.key]) || []).filter((x) => LOAN_LO
 
 const daysOut = (x) => (x.since ? Math.max(0, Math.round((Date.now() - x.since) / DAY_MS)) : null);
 
-const isOverdue = (x) => !!x.due && x.due < new Date().toISOString().slice(0, 10);
+/* There was a "return by" date here, and an overdue alarm built on it. It is
+   gone at the unit's request: nobody was going to fill in a date for a scope
+   taken for the afternoon, and a due column that is always empty is a column
+   that teaches people to ignore columns. What is out and how long it has been
+   out are still on the screen, and those are answers nobody has to type.
+   `due` stays in the sanitiser so records written while the field existed
+   still open cleanly. */
 
 // How long it has been gone, in the words someone would actually use.
 function outFor(x) {
@@ -4298,10 +4332,9 @@ function outFor(x) {
 // what, to whom, until when — and does the rest.
 function loanPanel(reg) {
   const open = loansOf(reg);
-  const late = open.filter(isOverdue);
   const nameless = open.filter((x) => !x.mission);
   const shelf = ((S.inv && S.inv[reg.key]) || [])
-    .filter((x) => x.loc === reg.home)
+    .filter((x) => x.loc === reg.home && canLoan(reg, x.kind))
     .sort((a, b) => a.name.localeCompare(b.name, 'he'));
 
   const rows = open
@@ -4309,8 +4342,7 @@ function loanPanel(reg) {
     .sort((a, b) => (a.since || 0) - (b.since || 0))
     .map((x) => {
       const i = S.inv[reg.key].indexOf(x);
-      const late1 = isOverdue(x);
-      return `<tr${late1 ? ' class="row-short"' : ''}>
+      return `<tr>
         <td>${esc(x.name)}<span class="dim"> · ${esc(nameOf(reg.kinds, x.kind))}</span></td>
         <td class="num wpn">${esc(x.serial)}</td>
         <td>
@@ -4323,11 +4355,6 @@ function loanPanel(reg) {
           <span class="dim"> · ${esc(nameOf(reg.locs, x.loc))}</span>
         </td>
         <td class="num">${esc(outFor(x))}</td>
-        <td class="num">
-          <input class="input mini num" type="date" value="${esc(x.due || '')}"
-                 data-act="arm-due" data-reg="${reg.id}" data-i="${i}" aria-label="להחזרה עד">
-          ${late1 ? '<span class="pill bad">באיחור</span>' : ''}
-        </td>
         <td class="nowrap">
           ${askBtn(`ret:${x.id}`, 'arm-return', '↩ החזרה',
                    `להחזיר את ${x.name} (${x.serial}) ${reg.placeTo}?`,
@@ -4337,8 +4364,8 @@ function loanPanel(reg) {
     }).join('');
 
   return `
-    <section class="panel${late.length ? ' alert' : ''}">
-      <h2 class="panel-title">השאלות פתוחות ${open.length ? `<span class="pill ${late.length ? 'bad' : 'warn'} num">${open.length}</span>` : ''}</h2>
+    <section class="panel">
+      <h2 class="panel-title">השאלות פתוחות ${open.length ? `<span class="pill warn num">${open.length}</span>` : ''}</h2>
       <p class="panel-sub">ציוד שיצא מ${esc(reg.place)} ואמור לחזור — אצל חייל, במשימה או ברכב. כל השאלה והחזרה נרשמות ביומן עם השם והתאריך.</p>
 
       <form data-form="arm-loan" data-reg="${reg.id}" novalidate>
@@ -4356,13 +4383,9 @@ function loanPanel(reg) {
               ${reg.locs.filter((l) => LOAN_LOCS.has(l.id)).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
             </select>
           </label>
-          <label class="field">
+          <label class="field span2">
             <span class="field-label">אצל מי / איזו משימה <span class="req" aria-hidden="true">*</span></span>
             <input class="input" name="who" maxlength="60" placeholder="ישראל ישראלי" required>
-          </label>
-          <label class="field">
-            <span class="field-label">להחזרה עד</span>
-            <input class="input num" name="due" type="date">
           </label>
         </div>
         <p class="form-err" data-err></p>
@@ -4371,9 +4394,6 @@ function loanPanel(reg) {
         </button>
       </form>
 
-      ${late.length
-        ? `<div class="callout risk"><p class="mb0"><strong class="num">${late.length}</strong> ${late.length === 1 ? 'פריט עבר' : 'פריטים עברו'} את תאריך ההחזרה: ${late.slice(0, 6).map((x) => `${esc(x.name)} (${esc(x.serial)}) — ${esc(x.mission || 'ללא שם')}`).join(' · ')}${late.length > 6 ? ' …' : ''}</p></div>`
-        : ''}
       ${nameless.length
         ? `<div class="callout risk"><p class="mb0"><strong class="num">${nameless.length}</strong> ${nameless.length === 1 ? 'פריט בהשאלה בלי שם' : 'פריטים בהשאלה בלי שם'} של מי שלקח. מלאו בטבלה — בלי שם אין את מי לשאול.</p></div>`
         : ''}
@@ -4383,7 +4403,7 @@ function loanPanel(reg) {
              <table class="tbl" data-phone="0,2,-1">
                <thead><tr>
                  <th>פריט</th><th class="num">מס׳ סידורי</th><th>אצל מי</th>
-                 <th class="num">בחוץ</th><th class="num">להחזרה עד</th><th></th>
+                 <th class="num">בחוץ</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
              </table>
@@ -4621,7 +4641,7 @@ function renderRegisterTab(reg) {
 /* ── Tzelem report ─────────────────────────────────────────────────── */
 
 // The count is of what physically sits in the armoury, so weapons appear only
-// while they are there. אמר״ל and צל״ם are tracked wherever they are, because
+// while they are there. אקילה and צל״ם are tracked wherever they are, because
 // the report is what proves they are accounted for at all.
 function tzelemScope() {
   return ((S.inv && S.inv.armon) || [])
@@ -4662,11 +4682,11 @@ function renderTzelemTab() {
   return `
     <section class="panel">
       <h2 class="panel-title">דו״ח צלם</h2>
-      <p class="panel-sub"><strong>נשקים</strong> מוצגים רק כשהם נמצאים בארמון. <strong>אמר״ל וצל״ם</strong> מוצגים בכל המצבים, כולל אצל חייל. המיקום נקבע בלשונית ארמון.</p>
+      <p class="panel-sub"><strong>נשקים</strong> מוצגים רק כשהם נמצאים בארמון. <strong>אקילה וצל״ם</strong> מוצגים בכל המצבים, כולל אצל חייל. המיקום נקבע בלשונית ארמון.</p>
       <div class="kpis">
         ${kpi(all.length, 'סה״כ בדו״ח')}
         ${kpi(all.filter((x) => x.kind === 'weapon').length, 'נשקים בארמון', 'ok')}
-        ${kpi(all.filter((x) => x.kind === 'amral').length, 'אמר״ל')}
+        ${kpi(all.filter((x) => x.kind === 'amral').length, 'אקילה')}
         ${kpi(all.filter((x) => x.kind === 'tzelem').length, 'צל״ם')}
         ${byLoc.map((l) => kpi(l.n, l.name, l.id === 'armon' ? 'ok' : 'warn')).join('')}
       </div>
@@ -5532,6 +5552,11 @@ function armLoan(form) {
   const loc = form.loc.value;
   const who = form.who.value.trim();
   if (!it) return setFormErr(form, 'נא לבחור פריט');
+  // The picker does not offer these, but the picker is a screen and this is
+  // the gate: a weapon leaves the armoury through the deposit flow, not here.
+  if (!canLoan(reg, it.kind)) {
+    return setFormErr(form, `${nameOf(reg.kinds, it.kind)} אינו מושאל מכאן — שנו את המיקום ברישום`);
+  }
   if (!LOAN_LOCS.has(loc)) return setFormErr(form, 'נא לבחור לאן הפריט יוצא');
   // A kind that may not go there is refused rather than quietly corrected —
   // only צל״ם goes out on an operation, and the register is where that is said.
@@ -5544,7 +5569,6 @@ function armLoan(form) {
   it.loc = loc;
   it.mission = who;
   it.since = Date.now();
-  it.due = form.due.value || '';
   invSave();
 }
 
@@ -6794,7 +6818,7 @@ async function soldierIdentSubmit(form) {
     return setFormErr(form, 'מספר נשק: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
   }
   if (amral && !serialRe.test(amral)) {
-    return setFormErr(form, 'מספר אמר״ל: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+    return setFormErr(form, 'מספר אקילה: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
   }
   if (scope && !serialRe.test(scope)) {
     return setFormErr(form, 'מספר כוונת: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
@@ -7208,7 +7232,7 @@ function editDistance(a, b) {
 // Every serial already in use, excluding one record (the one being approved).
 // Every serial the unit already has on its books, from wherever it is held.
 // A number identifies one physical thing, so it may appear once — a weapon
-// serial, a מק״ט of an אמר״ל, a sight, an item in either register. `except`
+// serial, a מק״ט of an אקילה, a sight, an item in either register. `except`
 // drops the row being edited, so a record does not collide with itself.
 function serialIndex(except) {
   const out = [];
@@ -7764,7 +7788,6 @@ $app.addEventListener('input', (e) => {
     case 'arm-search':  S.regQ = { ...S.regQ, [regOf(el).key]: el.value }; S.page = {}; rerenderKeepFocus(el); break;
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'arm-mission': S.inv[regOf(el).key][+el.dataset.i].mission = el.value; break;
-    case 'arm-due':     S.inv[regOf(el).key][+el.dataset.i].due = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
@@ -7840,9 +7863,6 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'flt-state') { fltSetState(el.dataset.id, el.dataset.st); return; }
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
-  // a due date decides whether the row reads as overdue, so it redraws once
-  // the picker closes rather than on every digit
-  if (el.dataset.act === 'arm-due') { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
   if (el.dataset.act === 'rf-pick') {
     S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
