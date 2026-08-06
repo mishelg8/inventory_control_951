@@ -2000,21 +2000,33 @@ function renderSoldierDone() {
     .filter(([, n]) => n)
     .map(([k, n]) => `<span class="tagi">${k} <span class="num">${esc(n)}</span></span>`)
     .join('');
+  /* Finishing one of the three pages is rarely finishing. Somebody who has
+     just been written down is standing there to be issued a weapon, and the
+     screen used to say "you may close this page" and offer no way anywhere —
+     not even back to the menu, so the only way on was the browser's back
+     button. Each page now points at the one that usually follows it. */
+  const next = {
+    details: [['#weapon', 'רישום נשק'], ['#gear', 'חתימה על ציוד']],
+    weapon: [['#gear', 'חתימה על ציוד']],
+    gear: [],
+  }[S.flow] || [];
+  const heading = { weapon: 'רישום הנשק נשלח', gear: 'החתימה נשלחה' }[S.flow] || 'הרישום נשלח';
+
   render(`
     ${stepsBar(4)}
     <section class="panel center">
       <div class="big-ok" aria-hidden="true"></div>
-      <h1 class="panel-title">${S.suppMode ? 'ההשלמה נשלחה' : 'הרישום נשלח'}</h1>
-      <p class="panel-sub">${
-        S.suppMode
-          ? 'הציוד הנוסף נקלט במצב <span class="state wait">ממתין לאישור</span> — לאחר אישור המנהל הוא יתווסף לרישום הקיים שלך.'
-          : 'הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — מנהל הציוד יאשר אותה ויעדכן אתכם.'
-      }</p>
+      <h1 class="panel-title">${esc(heading)}</h1>
+      <p class="panel-sub">הרשומה נקלטה במצב <span class="state wait">ממתין לאישור</span> — מנהל הציוד יאשר אותה ויעדכן אתכם.</p>
       <div class="tags center">${list}</div>
       ${serials ? `<div class="tags center">${serials}</div>` : ''}
       <div class="fp num"><span aria-hidden="true">🔒</span><span class="fp-code">${esc(S.rid.slice(0, 16))}</span></div>
-      <p class="muted-txt mt">סיימנו — אפשר לסגור את הדף.</p>
+      ${next.length
+        ? `<p class="muted-txt mt">${S.flow === 'details' ? 'קיבלתם נשק או ציוד? המשיכו מכאן:' : 'קיבלתם גם ציוד?'}</p>
+           ${next.map(([href, label]) => `<a class="btn primary wide mt" href="${href}">${esc(label)}</a>`).join('')}`
+        : '<p class="muted-txt mt">סיימנו — אפשר לסגור את הדף.</p>'}
       <button class="btn ghost wide mt" data-act="s-reset">תיקון ורישום מחדש</button>
+      ${backToMenu()}
     </section>`, 'sign-4');
 }
 
@@ -2291,9 +2303,24 @@ function extrasRow(rec) {
     const key = `${rec.rid}:${k.id}`;
     const shown = S.docs[key];
     const hasDoc = lic[k.id].doc;
+    /* The soldier types a licence number and an expiry date, and this card
+       showed neither — only a tick and a link to a photograph. To read the two
+       facts the form had asked for, an admin had to open the image and read
+       them off it, or go to another tab entirely. They are printed here now,
+       and the date carries its own verdict: a licence that has run out is not
+       a date, it is a problem, and it should not need arithmetic to see. */
+    const info = k.id === 'civil' ? lic.civil : null;
+    const st = info ? licState(info.exp) : null;
+    const stTone = { expired: 'bad', soon: 'warn' }[st] || '';
+    const stWord = { expired: 'פג תוקף', soon: 'פג בקרוב', nodate: 'ללא תאריך' }[st] || '';
     return `
       <div class="licv">
         <span class="tagi lic-chip">✓ ${esc(k.short)}</span>
+        ${info && info.no ? `<span class="lic-f">מס׳ <span class="num">${esc(info.no)}</span></span>` : ''}
+        ${info && info.exp
+          ? `<span class="lic-f">בתוקף עד <span class="num">${esc(fmtDay(info.exp))}</span></span>`
+          : info ? '<span class="lic-f muted-txt">ללא תאריך תוקף</span>' : ''}
+        ${stWord ? `<span class="state ${stTone === 'bad' ? 'live' : stTone === 'warn' ? 'wait' : 'done'}">${esc(stWord)}</span>` : ''}
         ${hasDoc
           ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">${
               shown ? 'הסתרה' : 'הצגת צילום'
