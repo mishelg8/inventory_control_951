@@ -2445,6 +2445,12 @@ body.printing .printdoc {
      a pseudo-element hit area, so it is simply drawn bigger. */
   .tbl .kitbox { width: 28px; height: 28px; }
   .tbl td .input.mini { min-width: 84px; }
+  /* "בחירת כל השורות בעמוד" sits above the table with its checkbox inside a
+     label, so the label is the target and it was already 164px wide — but
+     only 30px tall, which is the dimension a thumb actually misses. The one
+     control left short after the sweep, and the one that selects a whole page
+     of records before somebody approves them in a batch. */
+  .bulk-all { display: inline-flex; align-items: center; min-height: 44px; }
 }
 
 /* The chevron is drawn now rather than typed, so it takes the size it is
