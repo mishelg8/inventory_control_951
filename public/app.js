@@ -4954,12 +4954,20 @@ function renderAmmoTab() {
 
   // Who is holding what, right now.
   const out = ammoOut();
-  const outRows = out.map((r) => `
+  const onShelf = (name) => (S.inv.ammo || []).some((x) => x.name === name);
+  const outRows = out.map((r, i) => `
     <tr>
-      <td>${esc(r.name)}</td>
+      <td>${esc(r.name)}${onShelf(r.name) ? '' : '<span class="dim"> · אינו במלאי</span>'}</td>
       <td><strong>${esc(r.who)}</strong><span class="dim"> · ${esc(nameOf(AMMO_DESTS, r.dest))}</span></td>
       <td class="num warn"><strong>${r.n}</strong></td>
       <td class="num">${esc(fmtDate(r.last))}</td>
+      <td class="nowrap">
+        ${askBtn(`aout:${i}`, 'ammo-out-return', '↩ החזרה',
+                 onShelf(r.name)
+                   ? `להחזיר ${r.n} × ${r.name} מ${r.who} למלאי?`
+                   : `${r.name} כבר לא במלאי — לסגור את ההשאלה של ${r.who} בלי להחזיר?`,
+                 { data: { i }, yes: 'כן', cls: 'btn primary small' })}
+      </td>
     </tr>`).join('');
 
   return `
@@ -5010,15 +5018,21 @@ function renderAmmoTab() {
 
     <section class="panel${out.length ? ' alert' : ''}">
       <h2 class="panel-title">בהשאלה עכשיו ${out.length ? `<span class="pill warn num">${out.reduce((n, r) => n + r.n, 0)}</span>` : ''}</h2>
-      <p class="panel-sub">מה שנמסר לחייל או למשימה וטרם הוחזר, מחושב מהיומן. להחזרה: מלאו כמות בשורת הפריט למעלה, בחרו את אותו יעד ואת אותו שם, ולחצו "↩ החזרה".</p>
+      <p class="panel-sub">מה שנמסר לחייל או למשימה וטרם הוחזר, מחושב מהיומן. ↩ החזרה בשורה מחזירה את הכמות למלאי וסוגרת את ההשאלה. פריט שכבר נמחק מהמלאי — ההשאלה נסגרת בלבד, בלי להוסיף למלאי שאינו קיים.</p>
       ${out.length
         ? `<div class="tbl-scroll">
-             <table class="tbl" data-phone="0,1,2">
-               <thead><tr><th>פריט</th><th>אצל מי</th><th class="num">כמות</th><th class="num">תנועה אחרונה</th></tr></thead>
+             <table class="tbl" data-phone="0,1,-1">
+               <thead><tr><th>פריט</th><th>אצל מי</th><th class="num">כמות</th><th class="num">תנועה אחרונה</th><th></th></tr></thead>
                <tbody>${outRows}</tbody>
              </table>
            </div>
-           ${reportButtons('ammoOut')}`
+           <div class="rec-actions mt">
+             ${csvBtn('ammoOut', 'ייצוא ל-CSV')}
+             <button class="btn ghost" data-act="rep-pdf" data-r="ammoOut">הפקת PDF</button>
+             ${askBtn('aout-all', 'ammo-out-all', 'סגירת כל ההשאלות',
+                      `לסגור את ${out.length === 1 ? 'ההשאלה הפתוחה' : `${out.length} ההשאלות הפתוחות`}? מה שקיים במלאי יוחזר אליו, והשאר ייסגר ביומן.`,
+                      { yes: 'כן, לסגור הכול', tone: 'danger', cls: 'btn danger' })}
+           </div>`
         : '<p class="empty">אין תחמושת בהשאלה — הכול הוחזר או נוצל.</p>'}
     </section>
 
@@ -5808,6 +5822,46 @@ function ammoMove(i, action) {
     note: (draft.note || '').trim().slice(0, 120),
   });
   S.ammoDraft[it.id] = { ...draft, qty: '', note: '' };
+  invSave();
+}
+
+/* Closing an outstanding loan from the panel that shows it.
+
+   The return used to live only in the stock row above: fill a quantity, pick
+   the same destination, retype the same name, press. That works while the item
+   is still on the shelf — and it is unreachable the moment somebody deletes
+   the stock line, because then there is no row to fill in. The loan stays open
+   for ever, on a screen with no button on it, which is exactly where this was
+   found: forty-four rounds owed by people, against items that no longer exist.
+
+   So the loan closes from its own row. If the item is still stocked the rounds
+   go back on the shelf; if it is not, the movement is written and nothing is
+   added to a stock line that is not there. Either way the debt is settled and
+   the log says what happened. */
+function ammoCloseLoan(row, now) {
+  const it = (S.inv.ammo || []).find((x) => x.name === row.name);
+  if (it) it.qty = Math.max(0, Math.min(999999, it.qty + row.n));
+  logPush('ammoLog', {
+    t: now, action: 'return', name: row.name, qty: row.n,
+    dest: row.dest, who: row.who,
+    note: it ? '' : 'הפריט אינו במלאי — ההשאלה נסגרה',
+  });
+}
+
+function ammoOutReturn(i) {
+  const row = ammoOut()[i];
+  if (!row) return;
+  S.askDel = '';
+  ammoCloseLoan(row, Date.now());
+  invSave();
+}
+
+function ammoOutAll() {
+  const rows = ammoOut();          // snapshot: closing them changes the reading
+  if (!rows.length) return;
+  S.askDel = '';
+  const now = Date.now();
+  for (const row of rows) ammoCloseLoan(row, now);
   invSave();
 }
 
@@ -8350,6 +8404,8 @@ function dispatch(act, el) {
     case 'ammo-issue': ammoMove(+el.dataset.i, 'issue'); break;
     case 'ammo-add-qty': ammoMove(+el.dataset.i, 'add'); break;
     case 'ammo-return': ammoMove(+el.dataset.i, 'return'); break;
+    case 'ammo-out-return': ammoOutReturn(+el.dataset.i); break;
+    case 'ammo-out-all': ammoOutAll(); break;
     case 'ammo-del':
       S.inv.ammo.splice(+el.dataset.i, 1); S.askDel = ''; invSave();
       break;
