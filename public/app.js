@@ -175,6 +175,11 @@ function routeFromHash() {
   if (h === '#fault') return 'fault';
   if (h === '#refuel') return 'refuel';
   if (h === '#sign') return 'soldier';
+  // The sign-up split into the three things it always was: being written down,
+  // being issued a weapon, and signing for kit. They happen on three different
+  // days, so they are three different pages rather than three steps of one.
+  if (h === '#weapon') return 'weapon';
+  if (h === '#gear') return 'gear';
   return 'home';   // the link a soldier is given lands on the chooser
 }
 
@@ -332,6 +337,7 @@ function lock() {
 
 function resetSoldier() {
   S.sStep = 1;
+  S.flow = 'details';           // which of the three pages is being filled
   S.ident = null;
   S.rid = null;
   S.suppMode = false;
@@ -710,9 +716,25 @@ const ADMIN_SUB = 'מסייעת 951 · ניהול ציוד, ארמון, קשר �
 const SOLDIER_SUB = 'מסייעת 951 · רישום ומעקב ציוד אישי';
 const HOME_SUB = 'רישום ומעקב ציוד אישי';
 
+/* What a pending submission is, on the admin's screen. A row that says only
+   "ממתין" tells them there is something to do and not what — and with three
+   pages feeding one list, "what" is the first thing they need. */
+const KIND_TAG = {
+  details: 'פרטים אישיים',
+  weapon: 'רישום נשק',
+  gear: 'חתימה על ציוד',
+};
+
+const KIND_NOTE = {
+  weapon: 'רישום נשק — באישור, המספרים יתווספו לרישום הקיים של החייל.',
+  gear: 'חתימה על ציוד — באישור, הפריטים יתווספו לרישום הקיים של החייל.',
+};
+
 const ROUTE_TITLE = {
   home: 'מסייעת 951',
-  soldier: 'רישום ראשוני',
+  soldier: 'רישום פרטים אישיים',
+  weapon: 'רישום נשק',
+  gear: 'חתימה על ציוד',
   report: 'בקשת ציוד / דיווח חוסר',
   deposit: 'אפסון נשק בארמון',
   fault: 'דיווח תקלות בינוי',
@@ -765,6 +787,8 @@ function renderRoute() {
   else if (S.route === 'deposit') renderDeposit();
   else if (S.route === 'fault') renderFault();
   else if (S.route === 'refuel') renderRefuel();
+  else if (S.route === 'weapon') renderWeaponPage();
+  else if (S.route === 'gear') renderGearPage();
   else if (S.route === 'home') renderHome();
   else renderSoldier();
 }
@@ -795,8 +819,43 @@ function renderHome() {
           </svg>
         </span>
         <span class="choice-txt">
-          <span class="choice-t">רישום ראשוני</span>
-          <span class="choice-s">רישום הציוד האישי שקיבלתם — קסדה, ווסט, מחסניות ועוד.</span>
+          <span class="choice-t">רישום פרטים אישיים</span>
+          <span class="choice-s">מתחילים כאן — שם, מספר אישי, מחלקה ורישיונות נהיגה.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#weapon">
+        <span class="choice-ico arm" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 9h15l3 3-3 3h-4l-2-3H3z"/>
+            <path d="M7 15v3"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">רישום נשק</span>
+          <span class="choice-s">המספרים שעל הנשק, האקילה והכוונת שקיבלתם.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#gear">
+        <span class="choice-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 17c2.5-4 5-4 7.5 0"/>
+            <path d="M3 20h18"/>
+            <path d="M14 13l3.5-3.5a2 2 0 0 1 3 2.6L17 16"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">חתימה על ציוד</span>
+          <span class="choice-s">קסדה, ווסט, מחסניות ועוד — בחירה וחתימה באצבע.</span>
         </span>
         <span class="choice-go" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
@@ -1402,8 +1461,14 @@ async function depositSubmit(form) {
 
 /* ── Soldier views (PLAN §7.1) ─────────────────────────────────────── */
 
-function stepsBar(n) {
-  const labels = ['פרטים', 'ציוד', 'אישור', 'סיום'];
+/* Only the kit-signing page has steps worth counting. Registering details or a
+   weapon is one form and a confirmation, and a four-dot progress bar over a
+   single form promises a journey that is not there. */
+function stepsBar(n, labels = ['זיהוי', 'ציוד', 'אישור', 'סיום']) {
+  // Only the kit page has more than one step. The other two showed a four-dot
+  // bar over a single form, and then again on the "sent" screen — counting a
+  // journey nobody made.
+  if (S.flow !== 'gear') return '';
   return `<ol class="steps" aria-hidden="true">${labels
     .map((lbl, i) => {
       const idx = i + 1;
@@ -1415,19 +1480,68 @@ function stepsBar(n) {
     .join('')}</ol>`;
 }
 
+/* Redraw whichever of the three pages is being filled.
+   The kit page reuses the list and the signature screens, and those screens
+   redraw themselves after every tick of a checkbox — through this, now. When
+   they called renderSoldier directly, ticking the first item on the kit page
+   threw the soldier back to the personal-details form, because that is what
+   renderSoldier draws. */
+const renderFlow = () => {
+  if (S.flow === 'weapon') renderWeaponPage();
+  else if (S.flow === 'gear') renderGearPage();
+  else renderSoldier();
+};
+
+function notConfigured() {
+  if (S.config && S.config.ready) return false;
+  render(`
+    <section class="panel center">
+      <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
+      <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר להירשם.</p>
+    </section>`);
+  return true;
+}
+
+// Page one: who you are. Nothing is signed for here, so there is no signature
+// and no list — a form and a confirmation.
 function renderSoldier() {
-  if (!S.config || !S.config.ready) {
-    render(`
-      <section class="panel center">
-        <h1 class="panel-title">המערכת עדיין לא הוגדרה</h1>
-        <p class="panel-sub mb0">מנהל הציוד צריך להשלים את ההקמה לפני שאפשר להירשם.</p>
-      </section>`);
-    return;
-  }
-  if (S.sStep === 1) renderSoldierStep1();
+  if (notConfigured()) return;
+  S.flow = 'details';
+  if (S.sStep >= 4) renderSoldierDone();
+  else renderSoldierStep1();
+}
+
+// Page two: the numbers on the weapon you were issued.
+function renderWeaponPage() {
+  if (notConfigured()) return;
+  S.flow = 'weapon';
+  if (S.sStep >= 4) renderSoldierDone();
+  else renderWeaponForm();
+}
+
+// Page three: what you took, and your signature under it. This is the only one
+// of the three that is a slip rather than a note, so it keeps the steps.
+function renderGearPage() {
+  if (notConfigured()) return;
+  S.flow = 'gear';
+  if (S.sStep === 1) renderGearIdent();
   else if (S.sStep === 2) renderSoldierStep2();
   else if (S.sStep === 3) renderSoldierConfirm();
   else renderSoldierDone();
+}
+
+/* The two later pages attach to a soldier who is already written down, which
+   is why they ask for a personal number and not for a life story. If nobody
+   has been registered under that number the answer is not an error message
+   about a missing record — it is the page that fixes it. */
+async function findSoldier(form, pn) {
+  const rid = await deriveRid(pn, S.config.idSalt);
+  const st = await api(`/status/${rid}`);
+  if (!st.exists) {
+    setFormErr(form, 'המספר האישי הזה עוד לא רשום — מלאו קודם "רישום פרטים אישיים" בתפריט');
+    return null;
+  }
+  return rid;
 }
 
 // The camera / gallery pair, shared by both licence kinds.
@@ -1506,11 +1620,10 @@ function renderSoldierStep1() {
     (d) => `<option value="${d.id}"${v.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`
   ).join('');
   render(`
-    ${stepsBar(1)}
     <section class="panel center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
-      <h1 class="panel-title center">רישום ציוד אישי</h1>
-      <p class="panel-sub center">מלאו פרטים, בחרו את הציוד שקיבלתם ושלחו לאישור. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
+      <h1 class="panel-title center">רישום פרטים אישיים</h1>
+      <p class="panel-sub center">זה הרישום הראשון, ורק אחריו אפשר לרשום נשק או לחתום על ציוד. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
       <form data-form="ident" novalidate>
         <!-- The weapon and accessory numbers below have always shown the shape
              they expect. These three did not, so the form opened with three
@@ -1540,6 +1653,40 @@ function renderSoldierStep1() {
           </select>
         </label>
         <fieldset class="lic-set">
+          <legend class="field-label">רישיונות נהיגה</legend>
+          ${LIC_KINDS.map(licBlock).join('')}
+        </fieldset>
+
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחה לאישור</button>
+      </form>
+      ${backToMenu()}
+    </section>`, 'sign-1');
+}
+
+/* Registering a weapon. The numbers used to sit halfway down the sign-up form,
+   between a soldier's phone number and their driving licence, and were filled
+   in by people who had not been issued a weapon yet because the form asked. */
+function renderWeaponForm() {
+  const v = S.ident || { pn: '', name: '', weapon: '', amral: '', scope: '' };
+  render(`
+    <section class="panel center-head">
+      <h1 class="panel-title center">רישום נשק</h1>
+      <p class="panel-sub center">המספרים שעל הנשק והאמצעים שקיבלתם. אפשר למלא רק את מה שקיבלתם ולהשאיר את השאר ריק.</p>
+      <form data-form="weapon" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">מספר אישי</span>
+            <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                   maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+          </label>
+          <label class="field">
+            <span class="field-label">שם מלא</span>
+            <input class="input" name="name" autocomplete="off" maxlength="60"
+                   value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+          </label>
+        </div>
+        <fieldset class="lic-set">
           <legend class="field-label">נשק ואמצעים נלווים</legend>
           <div class="grid2">
             <label class="field">
@@ -1563,17 +1710,37 @@ function renderSoldierStep1() {
           </div>
           <span class="field-hint">אם לא קיבלתם — אפשר להשאיר ריק.</span>
         </fieldset>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit">שליחה לאישור</button>
+      </form>
+      ${backToMenu()}
+    </section>`, 'weapon-1');
+}
 
-        <fieldset class="lic-set">
-          <legend class="field-label">רישיונות נהיגה</legend>
-          ${LIC_KINDS.map(licBlock).join('')}
-        </fieldset>
-
+// Signing for kit starts by saying who is signing.
+function renderGearIdent() {
+  const v = S.ident || { pn: '', name: '' };
+  render(`
+    ${stepsBar(1)}
+    <section class="panel center-head">
+      <h1 class="panel-title center">חתימה על ציוד</h1>
+      <p class="panel-sub center">מי חותם, מה קיבלתם, וחתימה. אפשר לחתום שוב בכל פעם שמקבלים ציוד נוסף.</p>
+      <form data-form="gear-ident" novalidate>
+        <label class="field">
+          <span class="field-label">מספר אישי</span>
+          <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                 maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+        </label>
+        <label class="field">
+          <span class="field-label">שם מלא</span>
+          <input class="input" name="name" autocomplete="off" maxlength="60"
+                 value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+        </label>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">המשך</button>
       </form>
       ${backToMenu()}
-    </section>`, 'sign-1');
+    </section>`, 'gear-1');
 }
 
 function renderSoldierStep2() {
@@ -1817,7 +1984,7 @@ async function ensureSignature() {
 
 function clearSignature() {
   S.sig = null;
-  renderSoldier();
+  renderFlow();
 }
 
 function renderSoldierDone() {
@@ -2552,10 +2719,10 @@ function pendingCard(rec) {
           <div class="rec-meta">מ״א <span class="num">${esc(d.pn)}</span> · ${esc(deptName(d.dept))}</div>
           <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
         </div>
-        <span class="state wait">${d.supp ? 'השלמה' : 'ממתין'}</span>
+        <span class="state wait">${esc(KIND_TAG[d.kind] || (d.supp ? 'השלמה' : 'ממתין'))}</span>
       </header>
       ${d.supp
-        ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
+        ? `<p class="muted-txt">${esc(KIND_NOTE[d.kind] || 'השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.')}</p>`
         : ''}
       ${phoneRow(rec)}
       ${extrasRow(rec)}
@@ -2642,7 +2809,7 @@ function renderPendingTab() {
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
             ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
           </button>
-          ${d.supp ? '<span class="tagi supp">השלמה</span>' : ''}
+          ${d.supp ? `<span class="tagi supp">${esc(KIND_TAG[d.kind] || 'השלמה')}</span>` : ''}
         </td>
         <td class="num">${esc(d.pn)}</td>
         <td>${esc(deptName(d.dept))}</td>
@@ -2723,7 +2890,7 @@ function pendingDetail(rec) {
   return `
     <div class="rowdetail">
       ${d.supp
-        ? '<p class="muted-txt">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
+        ? `<p class="muted-txt">${esc(KIND_NOTE[d.kind] || 'השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.')}</p>`
         : ''}
       <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
       ${phoneRow(rec)}
@@ -6801,61 +6968,144 @@ function bringIntoView(el, block = 'center') {
 
 /* — soldier actions — */
 
+/* Sealing and posting a record, shared by all three pages. Each seals its own
+   fields; what they have in common is the envelope, the ticket, the blind
+   indexes of any serial numbers, and the photos that travel separately so that
+   listing soldiers never drags image data along with it. */
+async function sendRecord(rid, payload, docs = []) {
+  const pubKey = await importPubKey(S.config.pub);
+  const sealed = await seal(pubKey, payload);
+  await api('/records', {
+    body: {
+      rid, ticket: await getTicket(), ...sealed,
+      tags: await serialTags(payload, S.config.idSalt),
+    },
+  });
+  for (const [kind, bytes] of docs) {
+    await api('/docs', { body: { rid, kind, ...await sealBytes(pubKey, bytes) } });
+  }
+}
+
+const identOk = (form, pn, name) => {
+  if (!/^\d{5,9}$/.test(pn)) { setFormErr(form, 'מספר אישי: 5–9 ספרות'); return false; }
+  if (name.length < 2) { setFormErr(form, 'נא למלא שם מלא'); return false; }
+  return true;
+};
+
+// Page one. Nothing is signed for, so nothing is signed.
 async function soldierIdentSubmit(form) {
   const pn = form.pn.value.trim();
   const name = form.name.value.trim();
   const phone = form.phone.value.trim();
   const dept = form.dept.value;
+  if (!identOk(form, pn, name)) return;
+  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
+  if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  setFormErr(form, '');
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const now = Date.now();
+    const rid = await deriveRid(pn, S.config.idSalt);
+    S.ident = { pn, name, phone, dept };
+    S.rid = rid;
+    const payload = {
+      kind: 'details', pn, name, phone, dept,
+      createdAt: now, log: [{ a: 'submit', t: now }],
+    };
+    const lic = {};
+    for (const k of LIC_KINDS) {
+      if (!S.lic[k.id]) continue;
+      lic[k.id] = { has: true, doc: !!S.licPhoto[k.id] };
+      if (k.id === 'civil') {
+        if (S.licNo) lic.civil.no = S.licNo;
+        if (S.licExp) lic.civil.exp = S.licExp;
+      }
+    }
+    if (Object.keys(lic).length) payload.lic = lic;
+    const docs = LIC_KINDS
+      .filter((k) => S.lic[k.id] && S.licPhoto[k.id])
+      .map((k) => [k.id, S.licPhoto[k.id].bytes]);
+    await sendRecord(rid, payload, docs);
+    S.sStep = 4;
+    renderFlow();
+  });
+  if (S.sStep === 1) {
+    btn.disabled = false;
+    btn.textContent = 'שליחה לאישור';
+  }
+}
+
+/* Page two. It merges into the soldier's record on approval, which is what
+   `supp` has always meant here — the flag is the merge, the kind is the label,
+   and reusing the flag means reusing a merge that already works. */
+async function weaponSubmit(form) {
+  const pn = form.pn.value.trim();
+  const name = form.name.value.trim();
   const weapon = form.weapon.value.trim();
   const amral = form.amral.value.trim();
   const scope = form.scope.value.trim();
-  if (!/^\d{5,9}$/.test(pn)) return setFormErr(form, 'מספר אישי: 5–9 ספרות');
-  if (name.length < 2) return setFormErr(form, 'נא למלא שם מלא');
-  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
-  if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  if (!identOk(form, pn, name)) return;
   const serialRe = /^[A-Za-z0-9\-/]{3,20}$/;
-  if (weapon && !serialRe.test(weapon)) {
-    return setFormErr(form, 'מספר נשק: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
+  for (const [val, label] of [[weapon, 'מספר נשק'], [amral, 'מספר אקילה'], [scope, 'מספר כוונת']]) {
+    if (val && !serialRe.test(val)) {
+      return setFormErr(form, `${label}: 3–20 תווים (ספרות, אותיות באנגלית, - או /)`);
+    }
   }
-  if (amral && !serialRe.test(amral)) {
-    return setFormErr(form, 'מספר אקילה: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
-  }
-  if (scope && !serialRe.test(scope)) {
-    return setFormErr(form, 'מספר כוונת: 3–20 תווים (ספרות, אותיות באנגלית, - או /)');
-  }
-  // A number already on the books stops the soldier here, at step one,
-  // rather than after they have gone on to tick their equipment.
+  if (!weapon && !amral && !scope) return setFormErr(form, 'נא למלא לפחות מספר אחד');
+  // A number already on the books stops the soldier here, not after the send.
   for (const [f, label] of SERIAL_FIELDS) {
     await checkSerial(f, { weapon, amral, scope }[f], label);
   }
   if (anySerialTaken()) {
-    const first = SERIAL_FIELDS.map(([f]) => S.serialWarn[f]).find(Boolean);
-    return setFormErr(form, first);
+    return setFormErr(form, SERIAL_FIELDS.map(([f]) => S.serialWarn[f]).find(Boolean));
   }
+  setFormErr(form, '');
+  S.ident = { pn, name, weapon, amral, scope };
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    if (!(await findSoldier(form, pn))) return;
+    const now = Date.now();
+    const rid = await deriveRid(`${pn}:weapon`, S.config.idSalt);
+    S.rid = rid;
+    const payload = {
+      kind: 'weapon', supp: true, pn, name,
+      createdAt: now, log: [{ a: 'submit', t: now }],
+    };
+    if (weapon) payload.weapon = weapon;
+    if (amral) payload.amral = amral;
+    if (scope) payload.scope = scope;
+    await sendRecord(rid, payload);
+    S.sStep = 4;
+    renderWeaponPage();
+  });
+  if (S.sStep === 1) {
+    btn.disabled = false;
+    btn.textContent = 'שליחה לאישור';
+  }
+}
+
+// Page three, step one: who is signing. The kit list and the signature follow.
+async function gearIdentSubmit(form) {
+  const pn = form.pn.value.trim();
+  const name = form.name.value.trim();
+  if (!identOk(form, pn, name)) return;
   setFormErr(form, '');
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'בודק…';
   await withBusy(async () => {
-    const rid = await deriveRid(pn, S.config.idSalt);
+    if (!(await findSoldier(form, pn))) return;
+    const rid = await deriveRid(`${pn}:gear`, S.config.idSalt);
     const st = await api(`/status/${rid}`);
-    S.ident = { pn, name, phone, dept, weapon, amral, scope };
-    if (st.exists && st.status === 'approved') {
-      // main record already approved → supplement mode: the soldier registers
-      // only the additional gear, and the admin merges it on approval
-      const suppRid = await deriveRid(`${pn}:supp`, S.config.idSalt);
-      const suppSt = await api(`/status/${suppRid}`);
-      S.suppMode = true;
-      S.rid = suppRid;
-      S.existingPending = !!suppSt.exists;
-    } else {
-      S.suppMode = false;
-      S.rid = rid;
-      S.existingPending = !!st.exists;
-    }
-    if (!Object.keys(S.sel).length) S.sel = {};
+    S.ident = { pn, name };
+    S.rid = rid;
+    S.existingPending = !!st.exists;
     S.sStep = 2;
-    renderSoldier();
+    renderGearPage();
   });
   if (S.sStep === 1) {
     btn.disabled = false;
@@ -6870,15 +7120,15 @@ async function soldierIdentSubmit(form) {
 function captureIdentForm() {
   const f = $app.querySelector('form[data-form="ident"]');
   if (!f) return;
+  // The serial numbers moved to their own page, so this form no longer has
+  // those fields to read — asking for them by name would throw here, on the
+  // way to re-rendering after a licence box is ticked.
   S.ident = {
     ...(S.ident || {}),
     pn: f.pn.value.trim(),
     name: f.name.value.trim(),
     phone: f.phone.value.trim(),
     dept: f.dept.value,
-    weapon: f.weapon.value.trim(),
-    amral: f.amral.value.trim(),
-    scope: f.scope.value.trim(),
   };
   const no = $app.querySelector('[data-act="lic-no"]');
   const exp = $app.querySelector('[data-act="lic-exp"]');
@@ -6893,13 +7143,13 @@ function licToggle(kind) {
     delete S.licPhoto[kind];                   // unticking discards the photo
     if (kind === 'civil') { S.licNo = ''; S.licExp = ''; }
   }
-  renderSoldier();
+  renderFlow();
 }
 
 function licClear(kind) {
   captureIdentForm();
   delete S.licPhoto[kind];
-  renderSoldier();
+  renderFlow();
 }
 
 async function licFile(kind, input) {
@@ -6916,7 +7166,7 @@ async function licFile(kind, input) {
     let bin = '';
     for (const b of bytes) bin += String.fromCharCode(b);
     S.licPhoto[kind] = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
-    renderSoldier();
+    renderFlow();
     toast('התמונה נקלטה');
   } catch (e) {
     toast(e.message || 'עיבוד התמונה נכשל', true);
@@ -6962,14 +7212,14 @@ function soldierToggle(itemId) {
   const item = itemById(itemId);
   if (itemId in S.sel) delete S.sel[itemId];
   else S.sel[itemId] = item.qty ? item.min : 1;
-  renderSoldier();
+  renderFlow();
 }
 
 function soldierStep(itemId, delta) {
   const item = itemById(itemId);
   const cur = S.sel[itemId] || item.min;
   S.sel[itemId] = Math.min(item.max, Math.max(item.min, cur + delta));
-  renderSoldier();
+  renderFlow();
 }
 
 // A one-shot permit fetched just before submitting. The server will not accept
@@ -6997,54 +7247,21 @@ async function soldierSubmit() {
     const now = Date.now();
     const items = {};
     for (const [id, q] of Object.entries(S.sel)) items[id] = { t: q, r: 0 };
+    // Kit and a signature, and the name so the admin can read the row without
+    // going to fetch it. Everything else about this soldier is already on their
+    // record, put there by the page that asks for it.
     const payload = {
+      kind: 'gear', supp: true,
       pn: S.ident.pn,
       name: S.ident.name,
-      phone: S.ident.phone,
-      dept: S.ident.dept,
       items,
+      signed: now,                    // the console shows there is one to open
       createdAt: now,
       log: [{ a: 'submit', t: now }],
     };
-    if (S.ident.weapon) payload.weapon = S.ident.weapon;
-    if (S.ident.amral) payload.amral = S.ident.amral;
-    if (S.ident.scope) payload.scope = S.ident.scope;
-    // which licences were declared, and which of them have a photo attached
-    const lic = {};
-    for (const k of LIC_KINDS) {
-      if (!S.lic[k.id]) continue;
-      lic[k.id] = { has: true, doc: !!S.licPhoto[k.id] };
-      if (k.id === 'civil') {
-        if (S.licNo) lic.civil.no = S.licNo;
-        if (S.licExp) lic.civil.exp = S.licExp;
-      }
-    }
-    if (Object.keys(lic).length) payload.lic = lic;
-    payload.signed = now;                       // the console shows there is one to open
-    if (S.suppMode) payload.supp = true;
-
-    const pubKey = await importPubKey(S.config.pub);
-    const sealed = await seal(pubKey, payload);
-    await api('/records', {
-      body: {
-        rid: S.rid, ticket: await getTicket(), ...sealed,
-        // blind indexes of the numbers, so the server can refuse a serial
-        // that is already taken without ever seeing one
-        tags: await serialTags(payload, S.config.idSalt),
-      },
-    });
-
-    // Photos ride separately so listing soldiers never pulls image data.
-    for (const k of LIC_KINDS) {
-      const shot = S.licPhoto[k.id];
-      if (!S.lic[k.id] || !shot) continue;
-      const sealedDoc = await sealBytes(pubKey, shot.bytes);
-      await api('/docs', { body: { rid: S.rid, kind: k.id, ...sealedDoc } });
-    }
-    // The signature travels the same way, for the same reason.
-    await api('/docs', { body: { rid: S.rid, kind: 'signature', ...await sealBytes(pubKey, S.sig.bytes) } });
+    await sendRecord(S.rid, payload, [['signature', S.sig.bytes]]);
     S.sStep = 4;
-    renderSoldier();
+    renderGearPage();
   });
 }
 
@@ -7929,7 +8146,7 @@ $app.addEventListener('change', (e) => {
   if (el.dataset.act === 'lic-toggle') licToggle(el.dataset.kind);
   else if (el.dataset.act === 'lic-file') licFile(el.dataset.kind, el);
   // committed date → re-render so the validity hint updates
-  else if (el.dataset.act === 'lic-exp') { S.licExp = el.value; captureIdentForm(); renderSoldier(); }
+  else if (el.dataset.act === 'lic-exp') { S.licExp = el.value; captureIdentForm(); renderFlow(); }
 });
 
 $app.addEventListener('submit', (e) => {
@@ -7938,6 +8155,8 @@ $app.addEventListener('submit', (e) => {
   e.preventDefault();
   const kind = form.dataset.form;
   if (kind === 'ident') soldierIdentSubmit(form);
+  else if (kind === 'weapon') weaponSubmit(form);
+  else if (kind === 'gear-ident') gearIdentSubmit(form);
   else if (kind === 'setup') setupSubmit(form);
   else if (kind === 'login') loginSubmit(form);
   else if (kind === 'rotate') rotateSubmit(form);
@@ -7961,9 +8180,9 @@ function dispatch(act, el) {
     case 's-inc': soldierStep(item, 1); break;
     case 's-dec': soldierStep(item, -1); break;
     case 's-submit': soldierSubmit(); break;
-    case 's-back': S.sStep = 1; renderSoldier(); break;
-    case 's-edit': S.sStep = 2; renderSoldier(); break;
-    case 's-edit-ident': S.sStep = 1; renderSoldier(); break;
+    case 's-back': S.sStep = 1; renderFlow(); break;
+    case 's-edit': S.sStep = 2; renderFlow(); break;
+    case 's-edit-ident': S.sStep = 1; renderFlow(); break;
     case 's-review':
       if (!Object.keys(S.sel).length) {
         const e = $app.querySelector('[data-err]');
@@ -7971,14 +8190,14 @@ function dispatch(act, el) {
         return;
       }
       S.sStep = 3;
-      renderSoldier();
+      renderFlow();
       break;
     case 's-remove':
       delete S.sel[el.dataset.item];
       if (!Object.keys(S.sel).length) S.sStep = 2;
-      renderSoldier();
+      renderFlow();
       break;
-    case 's-reset': resetSoldier(); renderSoldier(); break;
+    case 's-reset': resetSoldier(); renderFlow(); break;
     case 'lic-clear': licClear(el.dataset.kind); break;
     // admin console
     // Moving between screens keeps a trail, so "חזרה" goes back the way you

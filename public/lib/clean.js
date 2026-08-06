@@ -54,6 +54,15 @@ function cleanRecord(raw) {
   }
 
   return {
+    /* What this submission is. The sign-up used to be one form that asked for
+       everything at once; it is three now, because the three things happen on
+       three different days — a soldier is written down, is issued a weapon,
+       and signs for kit, and rarely all in one morning.
+
+       'full' is the old combined form, and it is the fallback on purpose:
+       every record sealed before this existed carries no kind at all, and must
+       keep reading as what it was. */
+    kind: ['details', 'weapon', 'gear'].includes(raw.kind) ? raw.kind : 'full',
     pn: asText(raw.pn, 9),
     name: asText(raw.name, 60),
     phone: asText(raw.phone, 15),
