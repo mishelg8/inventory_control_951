@@ -1595,6 +1595,23 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 /* The number and the expiry the soldier typed, beside the tick rather than
    inside the photograph of the licence. */
 .lic-f { font-size: var(--t-sm); color: var(--ink-2); white-space: nowrap; }
+/* A licence arrives as a thumbnail — big enough to tell a licence from a
+   passport at a glance, small enough that two of them sit side by side on a
+   phone. Pressing one opens it to the size you actually read it at. */
+.lic-shot-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  display: block;
+  max-width: 100%;
+}
+.lic-shot-btn:has(.doc-img.big) { cursor: zoom-out; }
+.doc-img:not(.big) {
+  width: 108px;
+  height: 72px;
+  object-fit: cover;
+}
 .doc-img {
   width: 100%;
   max-height: 400px;

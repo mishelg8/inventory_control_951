@@ -244,6 +244,8 @@ const S = {
   recsSince: 0,                 // newest updated_at held, so a tick asks only for what moved
   inv: null,                    // { open:{}, extra:[], notes } — decrypted inventory
   docs: {},                     // "rid:kind" -> data URL, fetched on demand
+  docBig: new Set(),            // which of them are open at full size
+  docTried: new Set(),          // already asked for, so an auto-load runs once
   docOrder: [],                 // those keys, least recently shown first
   reports: [],                  // { id, status, created_at, data|null, damaged }
   repsSince: 0,                 // as recsSince, for reports
@@ -2249,6 +2251,25 @@ function renderConsole() {
       <div class="cmain">${body}</div>
     </div>`);
   if (S.role === 'viewer') stripWriteControls();
+  autoDocs();
+}
+
+/* Photographs are fetched and decrypted only when asked for — a roster of a
+   hundred soldiers must not drag a hundred images behind it. Opening one
+   soldier's record is asking, though, so both their licences come down at
+   once and appear as thumbnails, rather than making somebody press twice per
+   licence to find out what is in them.
+
+   Bounded by `docTried`: one attempt per photo per session, so a render
+   triggered by the arrival of an image cannot ask for it again. */
+function autoDocs() {
+  for (const btn of $app.querySelectorAll('[data-act="doc"][data-rid][data-kind]')) {
+    const key = `${btn.dataset.rid}:${btn.dataset.kind}`;
+    if (S.docs[key] || S.docTried.has(key)) continue;
+    S.docTried.add(key);
+    toggleDoc(btn.dataset.rid, btn.dataset.kind);
+    return;                     // one at a time: each arrival re-renders anyway
+  }
 }
 
 // Everything a viewer is allowed to touch. Anything else that can be clicked or
@@ -2333,12 +2354,19 @@ function extrasRow(rec) {
             ? `<span class="lic-f">בתוקף עד <span class="num">${esc(fmtDay(info.exp))}</span></span>`
             : info ? '<span class="lic-f muted-txt">ללא תאריך תוקף</span>' : ''}
           ${hasDoc
-            ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">${
-                shown ? 'הסתרה' : 'הצגת צילום'
-              }</button>`
+            ? (shown
+                ? ''
+                : `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">הצגת צילום</button>`)
             : '<span class="muted-txt">ללא צילום</span>'}
         </div>
-        ${shown ? `<img class="doc-img" src="${shown}" alt="צילום ${esc(k.short)}">` : ''}
+        ${shown
+          ? `<button class="lic-shot-btn" type="button" data-act="doc-zoom"
+                     data-rid="${esc(rec.rid)}" data-kind="${k.id}"
+                     aria-label="${S.docBig.has(key) ? 'הקטנת' : 'הגדלת'} צילום ${esc(k.short)}">
+               <img class="doc-img${S.docBig.has(key) ? ' big' : ''}" src="${shown}"
+                    alt="צילום ${esc(k.short)}">
+             </button>`
+          : ''}
       </div>`;
   });
   if (chips.length) bits.push(`<div class="licv-wrap">${chips.join('')}</div>`);
@@ -8521,6 +8549,15 @@ function dispatch(act, el) {
       bringIntoView($app, 'start');
       break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
+    // The photo is already decrypted and on screen as a thumbnail; this only
+    // decides how big it is drawn, so it never goes back to the server.
+    case 'doc-zoom': {
+      const key = `${rid}:${el.dataset.kind}`;
+      if (S.docBig.has(key)) S.docBig.delete(key);
+      else S.docBig.add(key);
+      renderConsole();
+      break;
+    }
     // shortage reports
     case 'rep-filter': S.repFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'rep-sent': repMarkSent(el.dataset.id); break;
