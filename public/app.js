@@ -2128,6 +2128,7 @@ const TABS = [
   { id: 'tzelem',  name: 'דו״ח צלם',     needs: ['vault'] },
   { id: 'ammo',    name: 'תחמושת ואלפא', needs: ['vault'] },
   { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
+  { id: 'lic',     name: 'רישיונות נהיגה', needs: ['records'] },
   { id: 'sum',     name: 'דוחות',        needs: ['records'] },
   { id: 'sec',     name: 'אבטחה',        needs: [], adminOnly: true },
 ];
@@ -2184,6 +2185,7 @@ function renderConsole() {
     ['tzelem',  'דו״ח צלם',     null],
     ['ammo',    'תחמושת ואלפא', null],
     ['veh',     'רכבים',        (openRefuels() + vehAlerts()) || null, openRefuels() > 0],
+    ['lic',     'רישיונות',     licAlerts() || null, licAlerts() > 0],
     ['sum',     'דוחות',        null],
     ['sec',     'אבטחה',        null],
   ];
@@ -2211,6 +2213,7 @@ function renderConsole() {
   else if (S.tab === 'tzelem') body = renderTzelemTab();
   else if (S.tab === 'ammo') body = renderAmmoTab();
   else if (S.tab === 'veh') body = renderVehTab();
+  else if (S.tab === 'lic') body = renderLicTab();
   else if (S.tab === 'sum') body = renderSummaryTab();
   else body = renderSecurityTab();
 
@@ -2313,19 +2316,28 @@ function extrasRow(rec) {
     const st = info ? licState(info.exp) : null;
     const stTone = { expired: 'bad', soon: 'warn' }[st] || '';
     const stWord = { expired: 'פג תוקף', soon: 'פג בקרוב', nodate: 'ללא תאריך' }[st] || '';
+    /* Two lines, not one wrapping run. What it is and whether it is valid
+       belong together on top; the number, the date and the photograph are
+       details underneath. Left as a single flex row it broke wherever the
+       words happened to end on a phone — the verdict landing between the date
+       and the photo link, reading as three unrelated fragments. */
     return `
       <div class="licv">
-        <span class="tagi lic-chip">✓ ${esc(k.short)}</span>
-        ${info && info.no ? `<span class="lic-f">מס׳ <span class="num">${esc(info.no)}</span></span>` : ''}
-        ${info && info.exp
-          ? `<span class="lic-f">בתוקף עד <span class="num">${esc(fmtDay(info.exp))}</span></span>`
-          : info ? '<span class="lic-f muted-txt">ללא תאריך תוקף</span>' : ''}
-        ${stWord ? `<span class="state ${stTone === 'bad' ? 'live' : stTone === 'warn' ? 'wait' : 'done'}">${esc(stWord)}</span>` : ''}
-        ${hasDoc
-          ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">${
-              shown ? 'הסתרה' : 'הצגת צילום'
-            }</button>`
-          : '<span class="muted-txt">ללא צילום</span>'}
+        <div class="licv-head">
+          <span class="tagi lic-chip">✓ ${esc(k.short)}</span>
+          ${stWord ? `<span class="state ${stTone === 'bad' ? 'live' : stTone === 'warn' ? 'wait' : 'done'}">${esc(stWord)}</span>` : ''}
+        </div>
+        <div class="licv-body">
+          ${info && info.no ? `<span class="lic-f">מס׳ <span class="num">${esc(info.no)}</span></span>` : ''}
+          ${info && info.exp
+            ? `<span class="lic-f">בתוקף עד <span class="num">${esc(fmtDay(info.exp))}</span></span>`
+            : info ? '<span class="lic-f muted-txt">ללא תאריך תוקף</span>' : ''}
+          ${hasDoc
+            ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">${
+                shown ? 'הסתרה' : 'הצגת צילום'
+              }</button>`
+            : '<span class="muted-txt">ללא צילום</span>'}
+        </div>
         ${shown ? `<img class="doc-img" src="${shown}" alt="צילום ${esc(k.short)}">` : ''}
       </div>`;
   });
@@ -3131,7 +3143,6 @@ function renderSummaryTab() {
       ${reportButtons('summary')}
     </section>
 
-    ${licencePanel(approved)}
     ${weaponsPanel(approved)}
     ${ledgerPanel(approved)}`;
 }
@@ -3169,6 +3180,27 @@ function licenceRows(approved, filtered = true) {
 }
 
 const LIC_RANK = { expired: 0, none: 1, nodate: 2, soon: 3, valid: 4 };
+
+/* How many licences need attention: expired, missing, or with no date on them
+   at all. Drives the count on the tab, so the sidebar says there is something
+   here without anyone having to open the screen. */
+function licAlerts() {
+  return licenceRows(S.recs.filter((r) => r.status === 'approved' && !r.damaged), false)
+    .filter((r) => r.st === 'none' || r.st === 'expired' || r.st === 'nodate').length;
+}
+
+/* Driving licences, on a screen of their own.
+
+   They were a table at the bottom of the reports tab, beneath two others —
+   which is where you put something consulted once a month, not something with
+   an expiry date on it. Chasing a renewal meant scrolling past the weapons
+   list to find it, and nothing anywhere said how many had lapsed. */
+function renderLicTab() {
+  // licencePanel already carries the heading, the figures and the table. A
+  // wrapper around it only said "רישיונות נהיגה" twice, with two sets of
+  // counts under two identical titles.
+  return licencePanel(S.recs.filter((r) => r.status === 'approved' && !r.damaged));
+}
 
 function licencePanel(approved) {
   const rows = licenceRows(approved);

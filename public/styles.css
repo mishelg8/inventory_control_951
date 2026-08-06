@@ -1589,7 +1589,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic-size { font-size: var(--t-2xs); color: var(--muted); }
 
 .licv-wrap { display: flex; flex-direction: column; gap: 5px; margin: 7px 0; }
-.licv { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+.licv { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.licv-head { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.licv-body { display: flex; align-items: center; gap: var(--s-3) var(--s-5); flex-wrap: wrap; }
 /* The number and the expiry the soldier typed, beside the tick rather than
    inside the photograph of the licence. */
 .lic-f { font-size: var(--t-sm); color: var(--ink-2); white-space: nowrap; }

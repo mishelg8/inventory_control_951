@@ -224,6 +224,7 @@ const TAB_NEEDS = {
   tzelem: ['vault'],
   ammo: ['vault'],
   veh: ['vault'],
+  lic: ['records'],
   sum: ['records'],
   sec: [],
 };
