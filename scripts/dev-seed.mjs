@@ -120,7 +120,7 @@ async function waitForServer() {
   throw new Error(`no dev server at ${BASE} — start one with: npx wrangler pages dev`);
 }
 
-/* ── a signature, drawn without a canvas ───────────────────────────── */
+/* ── pictures, drawn without a canvas ──────────────────────────────── */
 
 // A greyscale PNG with a scribble in it. The console shows the soldier's
 // signature as an image; a blank one would prove the plumbing and nothing
@@ -142,7 +142,34 @@ function scribblePng(w = 320, h = 120) {
     const u = t / 1200;
     ink(20 + u * (w - 40), h / 2 + Math.sin(u * 18) * 28 * (1 - u * 0.6) - u * 10);
   }
+  return greyPng(px, w, h);
+}
 
+/* A licence card. The console draws the civil and the military licence beside
+   each other as thumbnails, and until now the seed attached neither — so the
+   one part of that screen that could not be checked locally was whether a
+   photograph appears at all, and whether the two can be told apart. These are
+   deliberately unalike: same card, one pale and one dark, each with a portrait
+   box and ruled lines where the writing goes. They are landscape, like the
+   real thing, so the thumbnail crop is honest. */
+function licencePng(dark, w = 340, h = 214) {
+  const px = new Uint8Array(w * h).fill(dark ? 70 : 205);
+  const rect = (x0, y0, x1, y1, v) => {
+    for (let y = Math.max(0, y0); y < Math.min(h, y1); y += 1) {
+      for (let x = Math.max(0, x0); x < Math.min(w, x1); x += 1) px[y * w + x] = v;
+    }
+  };
+  rect(8, 8, w - 8, h - 8, dark ? 110 : 248);            // the card face
+  rect(8, 8, w - 8, 34, dark ? 30 : 150);                // the header band
+  rect(24, 52, 108, 168, dark ? 210 : 110);              // where the portrait goes
+  for (let i = 0; i < 5; i += 1) {                       // the printed lines
+    rect(124, 58 + i * 22, w - 30 - (i % 2) * 46, 70 + i * 22, dark ? 215 : 85);
+  }
+  return greyPng(px, w, h);
+}
+
+// One greyscale PNG encoder for both of them.
+function greyPng(px, w, h) {
   const raw = new Uint8Array((w + 1) * h);
   for (let y = 0; y < h; y += 1) {
     raw[y * (w + 1)] = 0;                                  // filter: none
@@ -214,9 +241,20 @@ const soldierPayload = (i) => {
     amral: armed && i % 2 === 0 ? `A${31000 + i}` : '',
     scope: armed && i % 3 === 0 ? `S${9100 + i}` : '',
     items,
+    /* Licences, in the three states the screen has to tell apart: a pair with
+       photographs attached, a civil one on its own, and — through everybody
+       else — none at all. An expiry in the past on one of them, because a
+       licence screen that has never drawn a red row has not been looked at. */
     ...(i % 5 === 0
-      ? { lic: { civil: { has: true, doc: false, no: `${5500000 + i}`, exp: '2029-06-30' }, military: { has: true, doc: false } } }
-      : {}),
+      ? {
+        lic: {
+          civil: { has: true, doc: true, no: `${5500000 + i}`, exp: i === 0 ? '2024-03-01' : '2029-06-30' },
+          military: { has: true, doc: true },
+        },
+      }
+      : i % 7 === 3
+        ? { lic: { civil: { has: true, doc: true, no: `${5600000 + i}`, exp: '2027-11-15' } } }
+        : {}),
     createdAt: at,
     approvedAt: STATE_OF(i) === 'approved' ? at + 2 * 60 * 60 * 1000 : null,
     notified: null,
@@ -443,6 +481,14 @@ async function main() {
     await api('/docs', {
       body: { rid, kind: 'signature', ...await sealBytes(pubKey, scribblePng()) },
     });
+
+    // and whichever licences they said they had a photograph of
+    for (const kind of ['civil', 'military']) {
+      if (!(d.lic && d.lic[kind] && d.lic[kind].doc)) continue;
+      await api('/docs', {
+        body: { rid, kind, ...await sealBytes(pubKey, licencePng(kind === 'military')) },
+      });
+    }
 
     const state = STATE_OF(i);
     if (state === 'approved') {

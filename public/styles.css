@@ -1606,8 +1606,22 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   display: block;
   max-width: 100%;
 }
-.lic-shot-btn:has(.doc-img.big) { cursor: zoom-out; }
-.doc-img:not(.big) {
+/* Opened, the button has to take the width it is offered. Left to size itself
+   around its content it stays a thumbnail's width in a column that centres on
+   its items, and pressing appears to do nothing at all. */
+.lic-shot-btn:has(.doc-img.big) { cursor: zoom-out; width: 100%; }
+/* The two licences of one soldier, on the licence screen: side by side while
+   they are thumbnails, and each captioned, because a driving licence and a
+   military one are the same size and shape and nothing on the picture itself
+   says which is which. An opened one takes the row to itself. */
+.licshots { display: flex; flex-wrap: wrap; gap: var(--s-5); align-items: flex-start; }
+.licshot { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.licshot:has(.doc-img.big) { flex: 1 1 100%; }
+.licshot-cap { font-size: var(--t-2xs); color: var(--muted); }
+/* Licences only. A signature is not a thumbnail waiting to be opened — there
+   is nothing to press it for — and cropping it to a licence's proportions
+   turned a legible strip of handwriting into a square of one letter. */
+.doc-img:not(.big):not(.sig-img) {
   width: 108px;
   height: 72px;
   object-fit: cover;

@@ -2260,10 +2260,17 @@ function renderConsole() {
    once and appear as thumbnails, rather than making somebody press twice per
    licence to find out what is in them.
 
+   Only buttons marked `data-auto` are fetched on sight, and only the record
+   card marks them. The licence screen lists everybody at once, and the
+   decrypted cache holds twelve images: auto-loading a table of a hundred
+   soldiers would spend a hundred round trips to end up showing the last
+   twelve. There you press, and the press brings both of that soldier's
+   licences down together.
+
    Bounded by `docTried`: one attempt per photo per session, so a render
    triggered by the arrival of an image cannot ask for it again. */
 function autoDocs() {
-  for (const btn of $app.querySelectorAll('[data-act="doc"][data-rid][data-kind]')) {
+  for (const btn of $app.querySelectorAll('[data-act="doc"][data-auto][data-rid][data-kind]')) {
     const key = `${btn.dataset.rid}:${btn.dataset.kind}`;
     if (S.docs[key] || S.docTried.has(key)) continue;
     S.docTried.add(key);
@@ -2279,7 +2286,7 @@ function autoDocs() {
 // this only keeps the screen honest about what is possible.
 const READ_ACTS = new Set([
   'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
-  'reveal', 'rep-reveal', 'doc', 'expand', 'rep-filter', 'dep-filter', 'rf-filter',
+  'reveal', 'rep-reveal', 'doc', 'doc-zoom', 'lic-docs', 'expand', 'rep-filter', 'dep-filter', 'rf-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
   'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
@@ -2356,7 +2363,7 @@ function extrasRow(rec) {
           ${hasDoc
             ? (shown
                 ? ''
-                : `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.rid)}" data-kind="${k.id}">הצגת צילום</button>`)
+                : `<button class="linkbtn" data-act="doc" data-auto="1" data-rid="${esc(rec.rid)}" data-kind="${k.id}">הצגת צילום</button>`)
             : '<span class="muted-txt">ללא צילום</span>'}
         </div>
         ${shown
@@ -3203,6 +3210,10 @@ function licenceRows(approved, filtered = true) {
       st,
       doc: !!(civ && civ.doc),
       mil: !!((d.lic || {}).military && d.lic.military.has),
+      // The military licence is a photograph and nothing else — there is no
+      // number and no expiry to type — so whether one was attached is the only
+      // thing the screen can say about it.
+      milDoc: !!((d.lic || {}).military && d.lic.military.doc),
     };
   });
 }
@@ -3241,6 +3252,15 @@ function licencePanel(approved) {
     .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'))
     .map((r) => {
       const alarm = r.st === 'expired' || r.st === 'none' || r.st === 'nodate';
+      /* A soldier has two licences and the screen only ever offered one of
+         them, so seeing the military one meant leaving this table and opening
+         the record. Both are here now, side by side and small: one press
+         brings the pair down — they travel in the same request — and pressing
+         a thumbnail opens it to the size you can actually read a licence at. */
+      const shots = LIC_KINDS
+        .filter((k) => (k.id === 'civil' ? r.doc : r.milDoc))
+        .map((k) => ({ k, key: `${r.rid}:${k.id}`, src: S.docs[`${r.rid}:${k.id}`] }));
+      const open = shots.filter((s) => s.src);
       return `<tr${alarm ? ' class="row-short"' : ''}>
           <td>${esc(r.name)}</td>
           <td class="num">${esc(r.pn)}</td>
@@ -3251,14 +3271,25 @@ function licencePanel(approved) {
             alarm ? '⚠ ' : r.st === 'valid' ? '✓ ' : ''
           }${LIC_LABEL[r.st]}</td>
           <td>${r.mil ? '✓' : '—'}</td>
-          <td>${r.doc
-            ? `<button class="linkbtn" data-act="doc" data-rid="${esc(r.rid)}" data-kind="civil">${
-                S.docs[`${r.rid}:civil`] ? 'הסתרה' : 'צפייה'
+          <td>${shots.length
+            ? `<button class="linkbtn" data-act="lic-docs" data-rid="${esc(r.rid)}">${
+                open.length ? 'הסתרה' : shots.length > 1 ? 'צפייה בשניים' : 'צפייה'
               }</button>`
             : '—'}</td>
         </tr>
-        ${S.docs[`${r.rid}:civil`]
-          ? `<tr><td colspan="8"><img class="doc-img" src="${S.docs[`${r.rid}:civil`]}" alt="צילום רישיון של ${esc(r.name)}"></td></tr>`
+        ${open.length
+          ? `<tr class="lic-shots"><td colspan="8"><div class="licshots">${open
+              .map(({ k, key, src }) => `
+                <figure class="licshot">
+                  <button class="lic-shot-btn" type="button" data-act="doc-zoom"
+                          data-rid="${esc(r.rid)}" data-kind="${k.id}"
+                          aria-label="${S.docBig.has(key) ? 'הקטנת' : 'הגדלת'} ${esc(k.short)} של ${esc(r.name)}">
+                    <img class="doc-img${S.docBig.has(key) ? ' big' : ''}" src="${src}"
+                         alt="${esc(k.short)} של ${esc(r.name)}">
+                  </button>
+                  <figcaption class="licshot-cap">${esc(k.short)}</figcaption>
+                </figure>`)
+              .join('')}</div></td></tr>`
           : ''}`;
     })
     .join('');
@@ -3266,7 +3297,7 @@ function licencePanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רישיונות נהיגה</h2>
-      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. מכבד את החיפוש והסינון.</p>
+      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
       <div class="stat-row">
         <div class="stat"><span class="stat-n num">${ok.length}</span><span class="stat-l">✓ בתוקף</span></div>
         <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
@@ -4130,9 +4161,11 @@ function renderOverviewTab() {
       t: 'בקשות חוסר פתוחות', s: 'חיילים שמחכים לתשובה' },
     shortItems.length && { n: shortItems.length, tone: 'bad', tab: 'inv',
       t: 'פריטים בחוסר', s: shortItems.map((i) => i.name).join(', ') },
-    licBad && { n: licBad, tone: 'bad', tab: 'sum',
+    // Licences have a screen of their own now; these two still sent you to the
+    // reports tab, where the table they were pointing at no longer is.
+    licBad && { n: licBad, tone: 'bad', tab: 'lic',
       t: 'רישיונות לא בתוקף', s: 'חיילים שאסור שינהגו' },
-    licSoon && { n: licSoon, tone: 'warn', tab: 'sum',
+    licSoon && { n: licSoon, tone: 'warn', tab: 'lic',
       t: 'רישיונות פגים בקרוב', s: 'כדאי לחדש לפני שיפוג' },
     vehLate.length && { n: vehLate.length, tone: 'bad', tab: 'veh',
       t: 'רכבים עם טיפול שעבר', s: vehLate.map((v) => v.plate).filter(Boolean).join(', ') || 'ללא מספר רכב' },
@@ -5648,6 +5681,12 @@ function docCache(key, dataUrl) {
   while (S.docOrder.length > DOC_CACHE_MAX) {
     const oldest = S.docOrder.shift();
     delete S.docs[oldest];
+    // An evicted photo must be allowed back. `docTried` exists to stop an
+    // auto-load looping, not to make eviction permanent — leaving the key in
+    // it means the thumbnail vanishes on the thirteenth soldier and never
+    // comes back for the rest of the session.
+    S.docTried.delete(oldest);
+    S.docBig.delete(oldest);
   }
   return dataUrl;
 }
@@ -5655,6 +5694,8 @@ function docCache(key, dataUrl) {
 const docForget = (key) => {
   delete S.docs[key];
   S.docOrder = S.docOrder.filter((k) => k !== key);
+  S.docTried.delete(key);
+  S.docBig.delete(key);
 };
 
 // Pulls and decrypts one receipt. Cached afterwards, so re-opening is free.
@@ -7861,8 +7902,32 @@ const invSave = () =>
     toast('המלאי נשמר');
   });
 
-// Fetches and decrypts one licence photo the first time it is asked for;
-// afterwards the toggle just hides the copy already held in memory.
+/* One request already carries every photograph a record has — the civil
+   licence, the military one and the signature come back together — so asking
+   for one and throwing the rest away meant a second round trip to see the
+   other side of the same soldier. Everything that arrives is kept, and the
+   caller says which one it was actually waiting for so a missing photo can
+   still be reported. A single bad decrypt does not cost the others. */
+async function fetchDocs(rid, want) {
+  const { docs } = await api(`/admin/docs/${rid}`);
+  for (const row of docs || []) {
+    const key = `${rid}:${row.kind}`;
+    if (S.docs[key]) continue;
+    try {
+      const bytes = new Uint8Array(await openBytes(S.priv, row));
+      let bin = '';
+      for (const b of bytes) bin += String.fromCharCode(b);
+      docCache(key, `data:image/jpeg;base64,${btoa(bin)}`);
+    } catch {
+      // One unreadable photo must not cost the others their trip; only the one
+      // that was actually asked for is worth interrupting anybody about.
+      if (row.kind === want) toast('פענוח הצילום נכשל — ייתכן שהנתונים שובשו', true);
+    }
+  }
+}
+
+// Fetches and decrypts a record's photographs the first time one is asked for;
+// afterwards the toggle just hides the copies already held in memory.
 const toggleDoc = (rid, kind) =>
   withBusy(async () => {
     const key = `${rid}:${kind}`;
@@ -7871,22 +7936,28 @@ const toggleDoc = (rid, kind) =>
       renderConsole();
       return;
     }
-    const { docs } = await api(`/admin/docs/${rid}`);
-    const row = (docs || []).find((x) => x.kind === kind);
-    if (!row) {
-      toast('הצילום לא נמצא', true);
-      return;
-    }
-    try {
-      const bytes = new Uint8Array(await openBytes(S.priv, row));
-      let bin = '';
-      for (const b of bytes) bin += String.fromCharCode(b);
-      docCache(key, `data:image/jpeg;base64,${btoa(bin)}`);
-      renderConsole();
-    } catch {
-      toast('פענוח הצילום נכשל — ייתכן שהנתונים שובשו', true);
-    }
+    await fetchDocs(rid, kind);
+    if (!S.docs[key]) toast('הצילום לא נמצא', true);
+    renderConsole();
   });
+
+/* The licence screen shows a soldier's photographs side by side, so it opens
+   and closes them as a pair rather than one at a time. Closing drops only the
+   licences — a signature the card below is showing stays where it is. */
+const toggleLicDocs = (rid) => {
+  const keys = LIC_KINDS.map((k) => `${rid}:${k.id}`);
+  const has = () => keys.some((k) => S.docs[k]);
+  if (has()) {
+    for (const k of keys) docForget(k);
+    renderConsole();
+    return;
+  }
+  withBusy(async () => {
+    await fetchDocs(rid);
+    if (!has()) toast('הצילום לא נמצא', true);
+    renderConsole();
+  });
+};
 
 async function rotateSubmit(form) {
   const pw = form.pw.value;
@@ -8549,6 +8620,9 @@ function dispatch(act, el) {
       bringIntoView($app, 'start');
       break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
+    // Both of a soldier's licences at once — they arrive in the same response,
+    // so showing one and hiding the other only costs a second look.
+    case 'lic-docs': toggleLicDocs(rid); break;
     // The photo is already decrypted and on screen as a thumbnail; this only
     // decides how big it is drawn, so it never goes back to the server.
     case 'doc-zoom': {
