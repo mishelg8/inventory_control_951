@@ -225,6 +225,14 @@ const SOLDIERS = [
 // pending / approved / deleted — one of each state the console has a screen for
 const STATE_OF = (i) => (i < 3 ? 'pending' : i === 11 ? 'deleted' : 'approved');
 
+/* And one waiting submission of each of the three forms, carrying exactly what
+   that form sends and nothing else — the details page asks for a telephone and
+   a department, the weapon page for serials, the kit page for kit and a
+   signature. Seeding all three as the old combined form meant the approval
+   screen was only ever tested against a submission that had everything, which
+   is the one kind it no longer receives. */
+const PENDING_KIND = ['details', 'weapon', 'gear'];
+
 /* Registered, but has not signed for kit yet. Since the sign-up became three
    forms this is the ordinary state of a soldier on their first day, and the
    seed had no such soldier at all — every record it wrote carried a helmet, a
@@ -250,6 +258,28 @@ const soldierPayload = (i) => {
   if (!NO_KIT.has(i) && i % 2) items.knee = { t: 1, r: back ? 1 : 0 };
   if (!NO_KIT.has(i) && i % 4 === 0) items.mitznefet = { t: 1, r: back ? 1 : 0 };
   const at = ago(30 - i * 2);
+
+  /* The three waiting submissions carry only what their own form sends. Each
+     page asks a third of what the old combined one did, and the drawer that
+     shows them has to be right about which third — a kit signature arrives
+     with no telephone number and no department at all. */
+  if (i < 3) {
+    const kind = PENDING_KIND[i];
+    const base = { kind, pn, name, createdAt: at, log: [{ a: 'submit', t: at }] };
+    if (kind === 'details') {
+      return {
+        ...base,
+        phone: `050000${String(1000 + i)}`,
+        dept,
+        lic: { civil: { has: true, doc: true, no: `${5700000 + i}`, exp: '2028-04-20' } },
+      };
+    }
+    if (kind === 'weapon') {
+      return { ...base, supp: true, weapon: `W${70000 + i * 7}`, amral: `A${31000 + i}` };
+    }
+    return { ...base, supp: true, items, signed: at };
+  }
+
   return {
     // which of the three forms this came from; 'full' is the old combined one
     kind: NO_KIT.has(i) ? 'details' : 'full',
@@ -497,10 +527,14 @@ async function main() {
     const tags = await serialTags(d, idSalt);
     await api('/records', { body: { rid, ...await seal(pubKey, d), ticket: await ticket(), tags } });
 
-    // the soldier's own hand, on the last page of the form
-    await api('/docs', {
-      body: { rid, kind: 'signature', ...await sealBytes(pubKey, scribblePng()) },
-    });
+    // the soldier's own hand, on the last page of the form — the kit page is
+    // the only one that asks for it, so only a record that says it was signed
+    // has one to fetch
+    if (d.signed) {
+      await api('/docs', {
+        body: { rid, kind: 'signature', ...await sealBytes(pubKey, scribblePng()) },
+      });
+    }
 
     // and whichever licences they said they had a photograph of
     for (const kind of ['civil', 'military']) {

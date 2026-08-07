@@ -3035,16 +3035,56 @@ function pendingDetail(rec) {
         </span>
       </li>`;
   }).join('');
+  if (S.recEdit === rec.rid) {
+    return `<div class="rowdetail">${recEditor(rec)}${fpStrip(rec.rid)}</div>`;
+  }
+
+  const shown = S.revealed.has(rec.rid);
+  const serials = [['נשק', d.weapon], ['אקילה', d.amral], ['כוונת יום', d.scope]]
+    .filter(([, v]) => v);
+  const docs = docsRow(rec);
+
+  /* Only the fields this submission actually carries.
+     The sign-up is three forms now, and each asks for a third of what the old
+     one did — so a soldier signing for kit sends no telephone number, and the
+     drawer printed an empty one anyway, next to a mask with nothing behind it
+     and a הצגה that revealed the same nothing. A form that was not asked is
+     not a blank to be filled in later; it is not part of this submission, and
+     the card it would have gone in does not appear either. */
+  const who = [
+    d.name && dfield('שם מלא', esc(d.name)),
+    d.pn && dfield('מספר אישי', `<span class="num">${esc(d.pn)}</span>`),
+    d.dept && dfield('מחלקה', esc(deptName(d.dept))),
+    d.phone && dfield('טלפון', `<span class="num">${esc(shown ? d.phone : maskPhone(d.phone))}</span>
+      <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>`),
+    dfield('נשלח', esc(fmtDate(d.createdAt))),
+  ].filter(Boolean).join('');
+
+  const cards = [
+    dcard('פרטי החייל', DICO.person, who),
+    serials.length
+      ? dcard('נשק ואמצעים', DICO.bolt,
+        serials.map(([k, v]) => dfield(k, `<span class="num">${esc(v)}</span>`)).join(''))
+      : '',
+    rows ? dcard('ציוד לאישור', DICO.box, `<ul class="dkit">${rows}</ul>`) : '',
+    docs ? dcard('מסמכים ורישיונות', DICO.folder, docs) : '',
+    dcard('פעולות', DICO.pen, `
+      <button class="dact" data-act="rec-edit" data-rid="${esc(rec.rid)}">
+        ${DICO.pen}<span>תיקון פרטים</span></button>
+      <p class="dempty">האישור והמחיקה נמצאים בשורה עצמה.</p>`, 'is-acts'),
+  ].filter(Boolean).join('');
+
   return `
     <div class="rowdetail">
-      ${d.supp
-        ? `<p class="muted-txt">${esc(KIND_NOTE[d.kind] || 'השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.')}</p>`
+      ${d.kind && d.kind !== 'full'
+        ? `<p class="dkind">${esc(KIND_TAG[d.kind] || '')}${
+            KIND_NOTE[d.kind] ? ` · ${esc(KIND_NOTE[d.kind].split(' — ')[1] || '')}` : ''
+          }</p>`
         : ''}
-      <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
-      ${phoneRow(rec)}
-      ${extrasRow(rec)}
-      ${recEditor(rec)}
-      <ul>${rows}</ul>
+      ${d.supp && !KIND_NOTE[d.kind]
+        ? '<p class="dkind">השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.</p>'
+        : ''}
+      <div class="dgrid">${cards}</div>
       ${fpStrip(rec.rid)}
     </div>`;
 }

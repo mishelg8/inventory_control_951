@@ -560,8 +560,24 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .dnote.warn { color: var(--warn-ink); }
 .dempty { margin: 0; font-size: var(--t-sm); color: var(--muted); font-style: italic; }
 
+/* Which of the three forms a submission came from, above its cards — what
+   the approver is about to add to a soldier who may already exist. */
+.dkind {
+  margin: 0 0 var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  border-inline-start: 3px solid var(--pine);
+  border-radius: var(--r-sm);
+  background: var(--pine-tint);
+  color: var(--pine-deep);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
 .dkit { margin: 0 !important; }
 .dkit .rec-row { padding-inline: 0; }
+/* The card's own heading is already a rule; the first item's need not be a
+   second one four pixels under it. */
+.dkit .rec-row:first-child { border-top: 0; }
 
 /* One action per line, each reading as a sentence with its icon — rather
    than a row of buttons that wrapped into a shape depending on how many of
