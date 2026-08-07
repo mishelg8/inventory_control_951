@@ -2356,6 +2356,28 @@ function fpStrip(rid) {
   return `<footer class="fp"><span aria-hidden="true">🔒</span><span class="fp-code num">${esc(rid.slice(0, 16))}</span></footer>`;
 }
 
+/* Two letters in a circle, in front of the name.
+
+   A roster is read by looking for one soldier in a column of forty, and forty
+   names in the same weight and the same colour give the eye nothing to aim
+   at. An initial is found by shape before it is read, which is what makes the
+   second pass down a list faster than the first. */
+const initials = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '··';
+  return parts[0].slice(0, 1) + (parts[1] ? parts[1].slice(0, 1) : '');
+};
+
+const avatar = (name) => `<span class="ava" aria-hidden="true">${esc(initials(name))}</span>`;
+
+// A department reads as a label, not as prose: a soldier belongs to one, it is
+// the same word on every row, and it wants a shape rather than another line in
+// the same weight as the name beside it.
+const deptPill = (dept) => {
+  const name = deptName(dept);
+  return name ? `<span class="pill">${esc(name)}</span>` : '<span class="dim">—</span>';
+};
+
 /* ── The cards a record's drawer is made of ────────────────────────────
    Same 24-grid and stroke as every other icon here, so a heading in a
    drawer weighs the same as the chevron that opened it. */
@@ -2955,7 +2977,7 @@ function renderPendingTab() {
                    ${S.picked.has(rec.rid) ? 'checked' : ''} aria-label="בחירת ${esc(d.name)}"></td>
         <td class="lg-name">
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
-            ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
+            ${avatar(d.name)}<span class="rowlink-n">${esc(d.name)}</span><span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
           </button>
           ${d.supp ? `<span class="tagi supp">${esc(KIND_TAG[d.kind] || 'השלמה')}</span>` : ''}
         </td>
@@ -3129,11 +3151,11 @@ function renderTrackTab() {
       <tr class="${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}">
         <td class="lg-name">
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
-            ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
+            ${avatar(d.name)}<span class="rowlink-n">${esc(d.name)}</span><span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
           </button>
         </td>
         <td class="num">${esc(d.pn)}</td>
-        <td>${esc(deptName(d.dept))}</td>
+        <td>${deptPill(d.dept)}</td>
         <td class="chips">${
           st === 'none'
             ? '<span class="nokit">טרם חתם על ציוד</span>'
@@ -3145,13 +3167,17 @@ function renderTrackTab() {
         <td class="num">${esc(fmtShort(d.approvedAt))}</td>
         <td class="num">${d.notified ? '<span class="sent">✓</span>' : '<span class="unsent">—</span>'}</td>
         <td class="nowrap">
-          ${out > 0
-            ? `<button class="btn ghost small" data-act="creditall" data-rid="${esc(rec.rid)}">זיכוי מלא</button>`
-            : ''}
-          <a class="btn wa small" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
-             data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>
-          ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, '✕', 'מחיקת הרשומה',
-                    'למחוק את הרשומה?')}
+          <span class="rowacts">
+            ${out > 0
+              ? `<button class="iconbtn ok" data-act="creditall" data-rid="${esc(rec.rid)}"
+                         title="זיכוי מלא" aria-label="זיכוי מלא — ${esc(d.name)}">${DICO.check}</button>`
+              : ''}
+            <a class="iconbtn wa" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
+               data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer"
+               title="שליחת וואטסאפ" aria-label="שליחת וואטסאפ ל${esc(d.name)}">${DICO.wa}</a>
+            ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, '✕', 'מחיקת הרשומה',
+                      'למחוק את הרשומה?')}
+          </span>
         </td>
       </tr>
       ${open ? `<tr class="sub"><td colspan="8">${trackDetail(rec)}</td></tr>` : ''}`;
@@ -3716,8 +3742,11 @@ const REPORTS = {
           ...ITEMS.flatMap((i) => [`${i.name} — הוחתם`, `${i.name} — אצלו כעת`]),
           'סה״כ בחוץ',
         ],
+        // The same soldiers the screen shows: those holding something. An
+        // export that listed everybody would have contradicted the table it
+        // sits under, which is worse than either answer on its own.
         rows: S.recs
-          .filter((r) => r.status === 'approved' && !r.damaged && r.data)
+          .filter((r) => r.status === 'approved' && !r.damaged && r.data && outstanding(r.data) > 0)
           .map((rec) => {
             const d = rec.data;
             return [
@@ -4055,7 +4084,21 @@ function downloadCsv(lines, filename) {
 // "who is signed for what" is answerable at a glance. Respects the active
 // search and department filter.
 function ledgerPanel(approved) {
-  const visible = applyFilters(approved);
+  /* Who is signed for something — not everyone who has ever been approved.
+
+     The table answers one question, and it was listing two kinds of soldier
+     who are not an answer to it: one who has brought everything back, and one
+     who never signed for anything at all. Both showed a row of dots and a
+     zero, which reads as a soldier holding nothing rather than as a soldier
+     who does not belong on this page; and the first kind is worse, because
+     crediting a soldier in full is meant to take them off it, and did not.
+
+     They are counted underneath instead, so it is clear they were left out
+     rather than lost. */
+  const inScope = applyFilters(approved);
+  const visible = inScope.filter((rec) => outstanding(rec.data) > 0);
+  const settled = inScope.filter((rec) => gearState(rec.data) === 'done').length;
+  const never = inScope.filter((rec) => gearState(rec.data) === 'none').length;
   const heads = ITEMS.map(
     (i) => `<th class="num lg-col" title="${esc(i.name)}"><span class="tbl-ico" aria-hidden="true">${i.icon}</span><span class="lg-h">${esc(i.name)}</span></th>`
   ).join('');
@@ -4073,7 +4116,7 @@ function ledgerPanel(approved) {
       }).join('');
       return `<tr>
         <td class="lg-name">
-          <span class="lg-nm">${esc(d.name)}</span>
+          <span class="lg-nm">${avatar(d.name)}${esc(d.name)}</span>
           <span class="lg-sub num">${esc(d.pn)}</span>
           <span class="lg-sub">${esc(deptName(d.dept))}</span>
           ${d.weapon ? `<span class="lg-sub">נשק <span class="num">${esc(d.weapon)}</span></span>` : ''}
@@ -4089,7 +4132,13 @@ function ledgerPanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">מי חתום על מה</h2>
-      <p class="panel-sub">כל שורה היא חייל, כל עמודה פריט. המספר הוא מה שעדיין אצלו, מתוך מה שהוחתם. ✓ = הוחזר במלואו.</p>
+      <p class="panel-sub">רק חיילים שמחזיקים ציוד כרגע. כל שורה היא חייל, כל עמודה פריט; המספר הוא מה שעדיין אצלו, מתוך מה שהוחתם.</p>
+      ${settled || never
+        ? `<p class="lg-left">${[
+            settled ? `<span class="num">${settled}</span> ${settled === 1 ? 'חייל החזיר' : 'חיילים החזירו'} הכל` : '',
+            never ? `<span class="num">${never}</span> ${never === 1 ? 'טרם חתם' : 'טרם חתמו'} על ציוד` : '',
+          ].filter(Boolean).join(' · ')} — אינם מופיעים כאן. הם נמצאים במעקב ציוד.</p>`
+        : ''}
       ${visible.length
         ? `<div class="tbl-scroll">
              <table class="tbl lg" data-phone="0,-1">
@@ -4099,7 +4148,9 @@ function ledgerPanel(approved) {
            </div>
            ${pager('ledger', pgLg)}
            ${reportButtons('ledger')}`
-        : '<p class="empty">אין חיילים שתואמים את החיפוש.</p>'}
+        : `<p class="empty">${
+            inScope.length ? 'אף חייל לא מחזיק ציוד כרגע.' : 'אין חיילים שתואמים את החיפוש.'
+          }</p>`}
     </section>`;
 }
 

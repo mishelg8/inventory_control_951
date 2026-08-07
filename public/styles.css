@@ -401,8 +401,40 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   cursor: pointer;
   text-align: start;
 }
-.rowlink:hover { text-decoration: underline; }
+.rowlink:hover .rowlink-n { text-decoration: underline; }
 .row-caret { font-size: var(--t-3xs); color: var(--muted-2); }
+
+/* An initial in a circle, in front of a name in a roster. Flat and quiet: it
+   is a landmark for the eye running down the column, not a decoration, and a
+   list of forty of them must not read as forty badges. */
+.ava {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--pine-tint);
+  color: var(--pine-deep);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.lg-nm .ava { margin-inline-end: var(--s-3); vertical-align: middle; }
+
+/* A value that names a category rather than describing one — a department, a
+   kind, a place. Same shape wherever it appears, so the eye learns it once. */
+.pill {
+  display: inline-block;
+  padding: 2px var(--s-4);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .tagi.supp { background: var(--brass-tint); color: #6A5416; margin-inline-start: var(--s-3); }
 
 .chips { display: flex; flex-wrap: wrap; gap: var(--s-2); max-width: 320px; }
@@ -1364,6 +1396,66 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   border-radius: var(--r-md);
 }
 .tbl { width: 100%; font-size: var(--t-md); table-layout: auto; }
+/* A roster is read one row at a time, and rows that touch are read as a
+   block. The extra four pixels are what let the eye stop on one. */
+.tbl.roster tbody td { padding-block: var(--s-5); }
+/* The kit column was being given whatever width the other seven left over,
+   which was about one chip — so five items stacked into five lines and every
+   row in the table grew to match. Asking for enough room for two across
+   halves the height of the whole roster. */
+.tbl.roster:not(.folded) td.chips { min-width: 178px; }
+
+/* Row actions as circles, not as sentences.
+
+   "זיכוי מלא" and "וואטסאפ" spelled out took a column the table could not
+   spare, so the two of them stacked and every row in the roster grew to the
+   height of two buttons — for the sake of two words the icons say. Round,
+   they sit side by side in a third of the width, and the row is one line
+   again. The words survive as the title and the accessible name, which is
+   where a screen reader was reading them from in the first place. */
+.rowacts { display: inline-flex; align-items: center; gap: var(--s-3); }
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.iconbtn svg { width: 16px; height: 16px; }
+.iconbtn:hover { border-color: var(--muted-2); background: var(--surface-2); }
+.iconbtn.wa { border-color: var(--pine); background: var(--pine); color: #fff; }
+.iconbtn.wa:hover { background: var(--pine-deep); border-color: var(--pine-deep); }
+.iconbtn.ok { border-color: var(--pine); color: var(--pine-deep); background: var(--pine-tint); }
+/* The delete keeps its own colour but takes the same shape as the two beside
+   it — three controls in a row, one of them a bare glyph, read as two
+   buttons and a typo. */
+.rowacts .danger-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  text-decoration: none;
+}
+.rowacts .danger-link:hover { border-color: var(--bad-ink); background: var(--bad-tint); }
+
+@media (pointer: coarse) {
+  .iconbtn, .rowacts .danger-link { width: 40px; height: 40px; }
+}
 .tbl th, .tbl td {
   padding: 10px 13px;
   text-align: right;
@@ -1439,6 +1531,17 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lg-h { font-size: var(--t-3xs); display: block; font-weight: 700; }
 .lg-name { text-align: right; min-width: 148px; white-space: normal !important; }
 .lg-nm { display: block; font-weight: 700; font-size: var(--t-sm); }
+/* How many were left off this table, and why — so that a soldier missing from
+   "מי חתום על מה" reads as answered rather than as lost. */
+.lg-left {
+  margin: 0 0 var(--s-5);
+  padding: var(--s-3) var(--s-5);
+  border-inline-start: 3px solid var(--line-hard);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
 .lg-sub { display: inline-block; font-size: var(--t-2xs); color: var(--muted); margin-inline-end: var(--s-3); }
 .lg-of { font-size: var(--t-3xs); color: var(--muted-2); }
 .tbl.lg td.held { color: var(--warn-ink); font-weight: 700; }
