@@ -2356,19 +2356,53 @@ function fpStrip(rid) {
   return `<footer class="fp"><span aria-hidden="true">🔒</span><span class="fp-code num">${esc(rid.slice(0, 16))}</span></footer>`;
 }
 
+/* ── The cards a record's drawer is made of ────────────────────────────
+   Same 24-grid and stroke as every other icon here, so a heading in a
+   drawer weighs the same as the chevron that opened it. */
+const DICO = {
+  person: `${SVG_OPEN}<circle cx="12" cy="8" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>`,
+  box: `${SVG_OPEN}<path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></svg>`,
+  folder: `${SVG_OPEN}<path d="M3 6.5h6l2 2.5h10v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>`,
+  bolt: `${SVG_OPEN}<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>`,
+  wa: `${SVG_OPEN}<path d="M20.5 11.5a8.5 8.5 0 0 1-12.6 7.4L3.5 20.5l1.6-4.3A8.5 8.5 0 1 1 20.5 11.5z"/></svg>`,
+  check: `${SVG_OPEN}<path d="M4 12.5 9.5 18 20 6.5"/></svg>`,
+  pen: `${SVG_OPEN}<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M14.5 6.5 17.5 9.5"/></svg>`,
+};
+
+// A titled box in the drawer's grid. `body` is already-built HTML.
+const dcard = (title, icon, body, cls = '') => `
+  <section class="dcard${cls ? ` ${cls}` : ''}">
+    <h4 class="dcard-h"><span class="dcard-i" aria-hidden="true">${icon}</span>${esc(title)}</h4>
+    <div class="dcard-b">${body}</div>
+  </section>`;
+
+// A labelled line inside one. The label is text and is escaped here; the value
+// is markup the caller has already escaped, because most of them carry a
+// `.num` span or a button and would otherwise have to be assembled twice.
+const dfield = (label, value) =>
+  `<div class="dfield"><span class="dfield-l">${esc(label)}</span><span class="dfield-v">${value}</span></div>`;
+
 // Weapon serial + licence chips, with an on-demand viewer for the photos.
 // Images are fetched and decrypted only when the admin asks for one.
 function extrasRow(rec) {
+  const serials = [
+    ['נשק', rec.data.weapon], ['אקילה', rec.data.amral], ['כוונת', rec.data.scope],
+  ].filter(([, v]) => v);
+  return (serials.length
+    ? `<div class="rec-meta">${serials
+      .map(([k, v]) => `${k} <span class="num">${esc(v)}</span>`)
+      .join(' · ')}</div>`
+    : '') + docsRow(rec);
+}
+
+/* The licences and the signature on their own, without the serials in front
+   of them. The drawer's cards print the serials under the soldier's personal
+   details, where they belong, and printing them twice made the documents card
+   open on two catalogue numbers. The pending screen still wants both together,
+   which is what extrasRow is now. */
+function docsRow(rec) {
   const d = rec.data;
   const bits = [];
-  const serials = [
-    ['נשק', d.weapon], ['אקילה', d.amral], ['כוונת', d.scope],
-  ].filter(([, v]) => v);
-  if (serials.length) {
-    bits.push(`<div class="rec-meta">${serials
-      .map(([k, v]) => `${k} <span class="num">${esc(v)}</span>`)
-      .join(' · ')}</div>`);
-  }
   const lic = d.lic || {};
   const chips = LIC_KINDS.filter((k) => lic[k.id] && lic[k.id].has).map((k) => {
     const key = `${rec.rid}:${k.id}`;
@@ -3136,25 +3170,73 @@ function trackDetail(rec) {
       </li>`;
   }).join('');
   const anyBack = d.items && Object.values(d.items).some((it) => (it.r || 0) > 0);
+  const shown = S.revealed.has(rec.rid);
+  const serials = [['נשק', d.weapon], ['אקילה', d.amral], ['כוונת יום', d.scope]]
+    .filter(([, v]) => v);
+
+  /* Editing takes the whole drawer. It is a form, it wants the width, and
+     it has its own save and cancel — leaving the cards up beside it invited
+     somebody to press a stepper halfway through typing a name. */
+  if (S.recEdit === rec.rid) {
+    return `<div class="rowdetail">${recEditor(rec)}${fpStrip(rec.rid)}</div>`;
+  }
+
+  const personal = [
+    dfield('שם מלא', esc(d.name)),
+    dfield('מספר אישי', `<span class="num">${esc(d.pn)}</span>`),
+    dfield('מחלקה', esc(deptName(d.dept))),
+    dfield('טלפון', `<span class="num">${esc(shown ? d.phone : maskPhone(d.phone))}</span>
+      <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>`),
+    dfield('תאריך אישור', esc(fmtDate(d.approvedAt))),
+    ...serials.map(([k, v]) => dfield(k, `<span class="num">${esc(v)}</span>`)),
+  ].join('');
+
+  const notes = `
+    <p class="dnote ${d.notified ? 'ok' : 'warn'}">${
+      d.notified ? '✓ הודעת רישום נשלחה' : 'הודעת רישום טרם נשלחה'
+    }</p>
+    ${anyBack
+      ? `<p class="dnote ${d.returnNotified ? 'ok' : 'warn'}">${
+          d.returnNotified ? '✓ הודעת זיכוי נשלחה' : 'הודעת זיכוי טרם נשלחה'
+        }</p>`
+      : ''}`;
+
+  const kit = rows
+    ? `<ul class="dkit">${rows}</ul>`
+    : '<p class="dempty">טרם חתם על ציוד. הפריטים יופיעו כאן אחרי החתימה.</p>';
+
+  const actions = `
+    <a class="dact" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
+       data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
+      ${DICO.wa}<span>${d.notified ? 'הודעת רישום — שליחה חוזרת' : 'שליחת הודעת רישום'}</span></a>
+    ${anyBack
+      ? `<a class="dact" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
+            data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
+           ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}</span></a>`
+      : ''}
+    ${outstanding(d) > 0
+      ? `<button class="dact" data-act="creditall" data-rid="${esc(rec.rid)}">
+           ${DICO.check}<span>זיכוי מלא</span></button>`
+      : ''}
+    <button class="dact" data-act="rec-edit" data-rid="${esc(rec.rid)}">
+      ${DICO.pen}<span>עריכת פרטים</span></button>
+    <div class="dact-del">${
+      delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקת הרשומה', 'מחיקת הרשומה')
+    }</div>`;
+
+  /* The drawer as cards rather than one column of lines.
+     It had grown into a strip of meta rows, a list, and a row of buttons —
+     everything the same size and the same colour, so finding the phone number
+     meant reading the whole thing. The same facts in four boxes, each with a
+     heading, are found by looking rather than by reading; and on a phone the
+     grid is one column, which is the same list it always was, only labelled. */
   return `
     <div class="rowdetail">
-      <div class="rec-meta">אושר ${esc(fmtDate(d.approvedAt))}</div>
-      ${phoneRow(rec)}
-      <div class="rec-meta">${d.notified
-        ? '<span class="sent">✓ הודעת רישום נשלחה</span>'
-        : '<span class="unsent">הודעת רישום טרם נשלחה</span>'}${
-        d.returnNotified ? ' · <span class="sent">✓ הודעת זיכוי נשלחה</span>' : ''}</div>
-      ${extrasRow(rec)}
-      ${recEditor(rec)}
-      <ul>${rows}</ul>
-      <div class="rec-actions">
-        ${anyBack
-          ? `<a class="btn wa ghost-wa" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
-                data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">${
-                  d.returnNotified ? 'זיכוי — שליחה חוזרת' : 'הודעת זיכוי'
-                }</a>`
-          : ''}
-        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקת הרשומה', 'מחיקת הרשומה')}
+      <div class="dgrid">
+        ${dcard('פרטים אישיים', DICO.person, personal + notes)}
+        ${dcard('ציוד — אצלו / הוחתם', DICO.box, kit)}
+        ${dcard('מסמכים ורישיונות', DICO.folder, docsRow(rec) || '<p class="dempty">לא צורפו רישיונות או צילומים.</p>')}
+        ${dcard('פעולות', DICO.bolt, actions, 'is-acts')}
       </div>
       ${fpStrip(rec.rid)}
     </div>`;

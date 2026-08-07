@@ -503,6 +503,99 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .rowdetail { padding: 2px 0; }
 .rowdetail ul { margin: 8px 0; }
 
+/* ── A record's drawer, as cards ───────────────────────────────────────
+   The drawer used to be one column of meta lines, a list and a row of
+   buttons, all the same size and colour: finding the phone number meant
+   reading the whole thing. Four titled boxes are found by looking instead.
+
+   auto-fit rather than a column count, so the grid answers to the width it
+   is given — one column on a phone, which is the list it always was, only
+   labelled; three or four on a console screen. */
+.dgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: var(--s-5);
+  margin: var(--s-3) 0 var(--s-5);
+  align-items: start;
+}
+.dcard {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.dcard-h {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.dcard-i { display: flex; color: var(--pine); }
+.dcard-i svg { width: 15px; height: 15px; }
+.dcard-b { padding: var(--s-4) var(--s-5); }
+
+/* Label right, value left, and a rule between lines rather than around each —
+   at six fields a box of boxes is louder than the numbers in it. */
+.dfield {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-5);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--t-sm);
+}
+.dfield:last-child { border-bottom: 0; }
+.dfield-l { flex: none; color: var(--muted); }
+.dfield-v { text-align: start; font-weight: 600; color: var(--ink); }
+
+.dnote { margin: var(--s-4) 0 0; font-size: var(--t-xs); font-weight: 600; }
+.dnote.ok { color: var(--ok-ink); }
+.dnote.warn { color: var(--warn-ink); }
+.dempty { margin: 0; font-size: var(--t-sm); color: var(--muted); font-style: italic; }
+
+.dkit { margin: 0 !important; }
+.dkit .rec-row { padding-inline: 0; }
+
+/* One action per line, each reading as a sentence with its icon — rather
+   than a row of buttons that wrapped into a shape depending on how many of
+   them a particular soldier happened to have. */
+.dcard.is-acts .dcard-b { padding: var(--s-3); }
+.dact {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--s-3) var(--s-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.dact:hover { background: var(--surface-2); }
+.dact svg { width: 16px; height: 16px; flex: none; color: var(--pine); }
+.dact-del { margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--line-soft); }
+.dact-del .btn { width: 100%; min-height: 40px; }
+
+@media (pointer: coarse) {
+  .dact { min-height: 44px; }
+  .dact-del .btn { min-height: 44px; }
+}
+
 /* ── Expanded detail rows ──────────────────────────────────────────── */
 .tbl tr.sub > td { background: var(--bg); padding: var(--s-7) var(--s-6); }
 .tbl.compact { font-size: var(--t-sm); }
