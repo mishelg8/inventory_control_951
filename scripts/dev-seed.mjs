@@ -225,14 +225,34 @@ const SOLDIERS = [
 // pending / approved / deleted — one of each state the console has a screen for
 const STATE_OF = (i) => (i < 3 ? 'pending' : i === 11 ? 'deleted' : 'approved');
 
+/* Registered, but has not signed for kit yet. Since the sign-up became three
+   forms this is the ordinary state of a soldier on their first day, and the
+   seed had no such soldier at all — every record it wrote carried a helmet, a
+   vest and four magazines, so the one case the tracking screen got wrong was
+   the one case that could not happen locally. */
+const NO_KIT = new Set([5, 7]);
+
+// And one who has brought everything back, so the third filter is not empty
+// either — with a magazine outstanding on everybody else, it never was.
+const RETURNED = new Set([9]);
+
 const soldierPayload = (i) => {
   const [name, dept, armed] = SOLDIERS[i];
   const pn = String(8000001 + i);
-  const items = { helmet: { t: 1, r: 0 }, vest: { t: 1, r: 0 }, mags: { t: 4, r: i % 3 } };
-  if (i % 2) items.knee = { t: 1, r: 0 };
-  if (i % 4 === 0) items.mitznefet = { t: 1, r: 0 };
+  const back = RETURNED.has(i);
+  const items = NO_KIT.has(i)
+    ? {}
+    : {
+      helmet: { t: 1, r: back ? 1 : 0 },
+      vest: { t: 1, r: back ? 1 : 0 },
+      mags: { t: 4, r: back ? 4 : i % 3 },
+    };
+  if (!NO_KIT.has(i) && i % 2) items.knee = { t: 1, r: back ? 1 : 0 };
+  if (!NO_KIT.has(i) && i % 4 === 0) items.mitznefet = { t: 1, r: back ? 1 : 0 };
   const at = ago(30 - i * 2);
   return {
+    // which of the three forms this came from; 'full' is the old combined one
+    kind: NO_KIT.has(i) ? 'details' : 'full',
     pn,
     name,
     phone: `050000${String(1000 + i)}`,

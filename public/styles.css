@@ -364,6 +364,10 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .roster .col-pick { width: 34px; }
 .roster tr.is-open > td { background: var(--pine-tint); }
 .roster tr.row-done .lg-name { color: var(--muted); }
+/* A soldier who has signed for nothing yet. Not greyed out like a finished
+   row — they have not finished, they have not started — and not shouted at
+   either: on the day a company registers, this is most of the roster. */
+.nokit { font-size: var(--t-sm); font-weight: 600; color: var(--muted); font-style: italic; }
 
 .th-sort { padding: 0; }
 .th-btn {
@@ -952,6 +956,18 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   color: var(--pine-deep);
   font-weight: 700;
 }
+/* How many are behind each filter, on the filter itself. Without it you have
+   to press a filter to find out whether it has anything in it — which is how
+   a whole category of soldier stayed hidden. */
+.filter-n {
+  margin-inline-start: var(--s-2);
+  padding: 0 var(--s-3);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+}
+.filter[aria-pressed="true"] .filter-n { background: var(--surface); }
 
 .search { position: relative; margin-bottom: 9px; }
 .search-in { min-height: 46px; padding-inline-end: 62px; }

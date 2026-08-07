@@ -255,7 +255,13 @@ const S = {
   regQ: {},                     // section key -> search query
   regKind: {},                  // register id -> item-type filter ('all' or a kind)
   tab: 'over',
-  filter: 'out',
+  /* The tracking screen opens on everybody. It used to open on 'ציוד בחוץ',
+     which is the right question to ask about kit and the wrong one to ask of
+     a screen people open to look somebody up: a soldier who had signed for
+     nothing was not in the list, and nothing on the screen said a filter was
+     the reason. The counts on the filters say so now, and narrowing is one
+     press away. */
+  filter: 'all',
   q: '',                        // free-text search over name / pn / phone
   dept: 'all',                  // department filter
   collapsed: new Set(),         // department ids folded shut
@@ -656,18 +662,38 @@ function foldTable(table, keep, ti) {
     row.appendChild(tog);
     row.after(panel);
 
+    /* One row, one drawer.
+
+       A roster row can already open a drawer of its own — the return
+       steppers, the messaging, the record — off the soldier's name. Folding
+       then added a second one, for the columns it had taken away, with its
+       own chevron and its own state. On a phone that is two controls a
+       centimetre apart that look alike and do different things: press the
+       obvious one and you get the department and the date, and nothing tells
+       you the steppers are behind the name instead. Every soldier needed two
+       taps in two places, and the second was unfindable.
+
+       Where a row has its own drawer, the chevron drives that, and the folded
+       columns simply open with it. Where it has none — a register, a ledger —
+       the chevron keeps its own state as before. */
+    const own = row.querySelector('[data-act="expand"][data-rid]');
     const paint = (on) => {
       panel.classList.toggle('on', on);
       row.classList.toggle('exp', on);
       btn.setAttribute('aria-expanded', String(on));
       btn.setAttribute('aria-label', on ? 'סגירת שאר הפרטים' : 'הצגת שאר הפרטים');
     };
-    paint(S.openRows.has(key));
-    btn.addEventListener('click', () => {
-      const on = !panel.classList.contains('on');
-      paint(on);
-      if (on) S.openRows.add(key); else S.openRows.delete(key);
-    });
+    if (own) {
+      paint(S.expanded.has(own.dataset.rid));
+      btn.addEventListener('click', () => own.click());
+    } else {
+      paint(S.openRows.has(key));
+      btn.addEventListener('click', () => {
+        const on = !panel.classList.contains('on');
+        paint(on);
+        if (on) S.openRows.add(key); else S.openRows.delete(key);
+      });
+    }
   });
 }
 
@@ -2106,6 +2132,20 @@ function renderLogin() {
 const outstanding = (data) =>
   Object.values(data.items || {}).reduce((sum, it) => sum + (it.t - (it.r || 0)), 0);
 
+/* Where a soldier stands on kit, in three states rather than two.
+   Never having taken anything is not the same as having brought it back, and
+   the tracking screen could only tell the difference by asking whether
+   anything was outstanding — which is 'no' for both.
+
+   It cost nothing while the sign-up was one form that asked for details and
+   kit together: every approved record had items, so an empty one did not
+   exist. Since the split it is the ordinary case — a soldier registers their
+   details on Sunday and signs for kit whenever the quartermaster is free —
+   and those soldiers were filed under 'הוחזר במלואו', behind a filter that
+   opens on 'ציוד בחוץ'. They were on the roster and on no screen. */
+const gearState = (data) =>
+  (Object.keys(data.items || {}).length === 0 ? 'none' : outstanding(data) > 0 ? 'out' : 'done');
+
 function counts() {
   const pending = S.recs.filter((r) => r.status === 'pending').length;
   const approved = S.recs.filter((r) => r.status === 'approved').length;
@@ -2977,22 +3017,29 @@ function pendingDetail(rec) {
 
 function renderTrackTab() {
   const approved = S.recs.filter((r) => r.status === 'approved');
+  // Counted before the filter is applied, so each button can say how many are
+  // behind it — including the one you are not looking at.
+  const tally = { out: 0, none: 0, done: 0 };
+  for (const rec of approved) tally[gearState(rec.data)] += 1;
+
   const filters = [
-    ['out', 'ציוד בחוץ'],
-    ['done', 'הוחזר במלואו'],
-    ['all', 'הכל'],
+    ['out', 'ציוד בחוץ', tally.out],
+    ['none', 'טרם חתם על ציוד', tally.none],
+    ['done', 'הוחזר במלואו', tally.done],
+    ['all', 'הכל', approved.length],
   ]
     .map(
-      ([id, label]) =>
-        `<button class="filter" aria-pressed="${S.filter === id}" data-act="filter" data-filter="${id}">${label}</button>`
+      ([id, label, n]) =>
+        `<button class="filter" aria-pressed="${S.filter === id}" data-act="filter" data-filter="${id}">${label}${
+          n ? ` <span class="filter-n num">${n}</span>` : ''
+        }</button>`
     )
     .join('');
 
   const visible = sortRecs(
-    applyFilters(approved).filter((rec) => {
-      const out = outstanding(rec.data) > 0;
-      return S.filter === 'all' || (S.filter === 'out' ? out : !out);
-    }),
+    applyFilters(approved).filter(
+      (rec) => S.filter === 'all' || gearState(rec.data) === S.filter
+    ),
     S.sort.key === 'date' ? 'approved' : S.sort.key
   );
 
@@ -3002,9 +3049,10 @@ function renderTrackTab() {
   const rows = p.slice.map((rec) => {
     const d = rec.data;
     const out = outstanding(d);
+    const st = gearState(d);
     const open = S.expanded.has(rec.rid);
     return `
-      <tr class="${open ? 'is-open' : ''}${out > 0 ? '' : ' row-done'}">
+      <tr class="${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}">
         <td class="lg-name">
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
             ${esc(d.name)}<span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
@@ -3012,8 +3060,14 @@ function renderTrackTab() {
         </td>
         <td class="num">${esc(d.pn)}</td>
         <td>${esc(deptName(d.dept))}</td>
-        <td class="chips">${itemChips(d, 'track') || '<span class="dim">—</span>'}</td>
-        <td class="num ${out > 0 ? 'warn' : 'ok'}">${out > 0 ? out : '✓'}</td>
+        <td class="chips">${
+          st === 'none'
+            ? '<span class="nokit">טרם חתם על ציוד</span>'
+            : itemChips(d, 'track') || '<span class="dim">—</span>'
+        }</td>
+        <td class="num ${st === 'out' ? 'warn' : st === 'none' ? 'dim' : 'ok'}">${
+          st === 'out' ? out : st === 'none' ? '·' : '✓'
+        }</td>
         <td class="num">${esc(fmtShort(d.approvedAt))}</td>
         <td class="num">${d.notified ? '<span class="sent">✓</span>' : '<span class="unsent">—</span>'}</td>
         <td class="nowrap">
@@ -3035,7 +3089,7 @@ function renderTrackTab() {
     ${broken}
     <section class="panel">
       <h2 class="panel-title">מעקב ציוד</h2>
-      <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו. לחיצה על השם פותחת את הזיכוי פריט־פריט.</p>
+      <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו, · = טרם חתם על ציוד כלל. לחיצה על השם פותחת את הזיכוי פריט־פריט.</p>
       ${p.slice.length
         ? `<div class="tbl-scroll">
              <table class="tbl roster" data-phone="0,4,-1">
