@@ -3656,6 +3656,12 @@ function licencePanel(approved) {
     .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'))
     .map((r) => {
       const alarm = r.st === 'expired' || r.st === 'none' || r.st === 'nodate';
+      /* Holding the civilian licence and not the military one is not a fault —
+         the soldier may drive, just not the unit's vehicles — so it cannot be
+         red. It is still the thing a מפל״ג needs to see at a glance when
+         handing out keys, hence its own tint. A missing or expired civilian
+         licence outranks it: red first. */
+      const civOnly = !alarm && !r.mil;
       /* A soldier has two licences and the screen only ever offered one of
          them, so seeing the military one meant leaving this table and opening
          the record. Both are here now, side by side and small: one press
@@ -3665,7 +3671,7 @@ function licencePanel(approved) {
         .filter((k) => (k.id === 'civil' ? r.doc : r.milDoc))
         .map((k) => ({ k, key: `${r.rid}:${k.id}`, src: S.docs[`${r.rid}:${k.id}`] }));
       const open = shots.filter((s) => s.src);
-      return `<tr${alarm ? ' class="row-short"' : ''}>
+      return `<tr${alarm ? ' class="row-short"' : civOnly ? ' class="row-civonly"' : ''}>
           <td>${esc(r.name)}</td>
           <td class="num">${esc(r.pn)}</td>
           <td>${esc(r.dept)}</td>
@@ -3704,7 +3710,7 @@ function licencePanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רישיונות נהיגה</h2>
-      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
+      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. אזרחי בלבד, בלי רישיון צבאי — מסומן בצהוב. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
       <div class="stat-row">
         <div class="stat"><span class="stat-n num">${ok.length}</span><span class="stat-l">✓ בתוקף</span></div>
         <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
