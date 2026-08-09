@@ -2893,52 +2893,77 @@ function waPhone(raw) {
 /* The text and the way it travels are two different things. The same message
    either opens in the sender's own WhatsApp (wa.me) or goes out over the
    unit's linked line (GREEN-API) — so it is built once, here, and the caller
-   decides how it leaves. */
-function waSignMsg(d, rid) {
-  const lines = ITEMS.filter((i) => d.items[i.id])
-    .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
-    .join('\n');
-  // Serials the soldier registered — they are signed for just like the kit.
-  const serials = [['נשק', d.weapon], ['אקילה', d.amral], ['כוונת', d.scope]]
-    .filter(([, n]) => n)
-    .map(([k, n]) => `• ${k}: ${n}`)
-    .join('\n');
-  const msg =
-    '*אישור רישום ראשוני — מסייעת 951*\n\n' +
-    `שלום ${d.name},\n` +
-    'רישום הציוד שלך אושר והוחתמת על:\n\n' +
-    `${lines}\n\n` +
-    (serials ? `*מספרים סידוריים:*\n${serials}\n\n` : '') +
-    `מס' רישום: ${rid.slice(0, 8)}\n` +
-    'נא לשמור הודעה זו לצורך החזרת הציוד.';
-  return msg;
+   decides how it leaves.
+
+   Every one of these says what happened and nothing else. They used to carry
+   kit lists, serial numbers and registration numbers, which was defensible
+   while a message only ever opened in the sender's own WhatsApp. They go out
+   over a third party's servers now, so a message says only what a soldier
+   needs in order to know where they stand. Whoever needs the detail has the
+   console.
+
+   One heading per subject, deliberately: a soldier who gets four of these in a
+   week has to be able to tell at a glance which is which. */
+const WA_HEAD = {
+  full:     'אישור רישום ראשוני',
+  details:  'עדכון פרטים אישיים',
+  weapon:   'רישום נשק',
+  gear:     'חתימה על ציוד',
+  deposit:  'אפסון נשק',
+  credit:   'זיכוי ציוד',
+  fault:    'תקלת בינוי',
+  report:   'בקשת ציוד',
+};
+
+const waMsg = (topic, name, body) =>
+  `*${WA_HEAD[topic]} — מסייעת 951*\n\nשלום ${name},\n${body}`;
+
+// Approval of a submission. Which submission it was decides what it says —
+// "הרישום בוצע בהצלחה" under a weapon registration would tell the soldier
+// nothing about the thing they actually sent in.
+const SIGN_BODY = {
+  full:    'הרישום בוצע בהצלחה',
+  details: 'הפרטים האישיים שלך עודכנו בהצלחה',
+  weapon:  'רישום הנשק נקלט בהצלחה',
+  gear:    'החתימה על הציוד נקלטה בהצלחה',
+};
+
+const waSignMsg = (d) =>
+  waMsg(SIGN_BODY[d.kind] ? d.kind : 'full', d.name, SIGN_BODY[d.kind] || SIGN_BODY.full);
+
+// The weapon reached the armoury and is no longer the soldier's responsibility.
+const waDepositMsg = (d) =>
+  waMsg('deposit', d.name, 'הנשק שאפסנת נקלט בארמון ורשום שם על שמך');
+
+// A building fault, once somebody has actually dealt with it.
+const waFaultMsg = (d, st) =>
+  waMsg('fault', d.name, st === 'done'
+    ? 'התקלה שדיווחת טופלה'
+    : 'התקלה שדיווחת הועברה לטיפול');
+
+// A shortage request. Partial is its own answer: something arrived, the rest
+// has not, and saying "טופל" would be a lie the soldier finds out about later.
+const waReportMsg = (d, st) =>
+  waMsg('report', d.name, st === 'done'
+    ? 'הבקשה שהגשת טופלה במלואה'
+    : 'הבקשה שהגשת טופלה חלקית — היתרה תושלם בהמשך');
+
+const waLink = (d) =>
+  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waSignMsg(d))}`;
+
+/* Return receipt. Whether anything is still outstanding is the one fact worth
+   carrying — it is what the soldier would otherwise have to come and ask, and
+   it is a count, not an inventory. */
+function waReturnMsg(d) {
+  const left = ITEMS.filter((i) => d.items[i.id])
+    .reduce((n, i) => n + (d.items[i.id].t - (d.items[i.id].r || 0)), 0);
+  return waMsg('credit', d.name, left > 0
+    ? `הציוד שהחזרת זוכה על שמך. עדיין רשומים עליך ${left} פריטים`
+    : 'הציוד שהחזרת זוכה על שמך. אין ציוד נוסף הרשום עליך — החשבון סגור');
 }
 
-const waLink = (d, rid) =>
-  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waSignMsg(d, rid))}`;
-
-// Return receipt — what came back, and what is still outstanding.
-function waReturnMsg(d, rid) {
-  const back = ITEMS.filter((i) => d.items[i.id] && (d.items[i.id].r || 0) > 0)
-    .map((i) => `• ${i.name} ×${d.items[i.id].r}`)
-    .join('\n');
-  const left = ITEMS.filter((i) => d.items[i.id] && d.items[i.id].t - (d.items[i.id].r || 0) > 0)
-    .map((i) => `• ${i.name} ×${d.items[i.id].t - (d.items[i.id].r || 0)}`)
-    .join('\n');
-  const msg =
-    '*זיכוי ציוד — מסייעת 951*\n\n' +
-    `שלום ${d.name},\n` +
-    'הציוד הבא הוחזר וזוכה על שמך:\n\n' +
-    `${back}\n\n` +
-    (left
-      ? `*עדיין רשום עליך:*\n${left}\n\n`
-      : '*אין ציוד נוסף הרשום על שמך — החשבון סגור.*\n\n') +
-    `מס' רישום: ${rid.slice(0, 8)}`;
-  return msg;
-}
-
-const returnWaLink = (d, rid) =>
-  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waReturnMsg(d, rid))}`;
+const returnWaLink = (d) =>
+  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waReturnMsg(d))}`;
 
 function damagedCard(rec) {
   return `
@@ -3268,7 +3293,7 @@ function renderTrackTab() {
               ? `<button class="iconbtn ok" data-act="creditall" data-rid="${esc(rec.rid)}"
                          title="זיכוי מלא" aria-label="זיכוי מלא — ${esc(d.name)}">${DICO.check}</button>`
               : ''}
-            <a class="iconbtn wa" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
+            <a class="iconbtn wa" href="${esc(waLink(d))}" data-act="wa-sign"
                data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer"
                title="${waAuto() ? 'שליחת וואטסאפ מהקו — יוצא מיד' : 'שליחת וואטסאפ'}"
                aria-label="שליחת וואטסאפ ל${esc(d.name)}">${DICO.wa}</a>
@@ -3375,12 +3400,12 @@ function trackDetail(rec) {
     : '<p class="dempty">טרם חתם על ציוד. הפריטים יופיעו כאן אחרי החתימה.</p>';
 
   const actions = `
-    <a class="dact" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
+    <a class="dact" href="${esc(waLink(d))}" data-act="wa-sign"
        data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
       ${DICO.wa}<span>${d.notified ? 'הודעת רישום — שליחה חוזרת' : 'שליחת הודעת רישום'}${
         waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>
     ${anyBack
-      ? `<a class="dact" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
+      ? `<a class="dact" href="${esc(returnWaLink(d))}" data-act="wa-ret"
             data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
            ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}${
              waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`
@@ -5053,7 +5078,8 @@ const depApprove = (id) =>
       toast('הפריטים נקלטו אך סימון הבקשה נכשל — רעננו ונסו שוב', true);
       throw e;
     }
-    toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון`);
+    const w = await waNotify(d.phone, waDepositMsg(d));
+    toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון${waNote(w)}`);
   });
 
 // `where` splits the register into what is physically on the shelf and what has
@@ -6794,9 +6820,14 @@ const fltSetState = (id, next) =>
       renderConsole();
       throw e;
     }
-    toast(next === 'done' ? 'התקלה סומנה כטופלה'
+    // Only the two states that are an answer to the soldier are worth a
+    // message. Reopening is an internal move and nobody is waiting to hear it.
+    const w = (next === 'done' || next === 'partial')
+      ? await waNotify(rec.data && rec.data.phone, waFaultMsg(rec.data || {}, next))
+      : { sent: false, why: 'off' };
+    toast((next === 'done' ? 'התקלה סומנה כטופלה'
       : next === 'partial' ? 'סומן כהועבר לטיפול'
-      : 'הוחזר למצב פתוח');
+      : 'הוחזר למצב פתוח') + waNote(w));
   });
 
 // The wrapped private key, saved to a file. Without the password it is inert,
@@ -7219,6 +7250,32 @@ async function waProbe() {
   } catch { /* leaves waAuto() false, which is the wa.me path */ }
 }
 
+/* Fired by an approval rather than by somebody pressing a message button, so
+   it must never be the reason an approval appears to fail: the approval is
+   already saved by the time this runs, and a line that is down — or a soldier
+   with no phone number on file — is not an error in the approval. It reports
+   what happened and returns; the manual button is still there. */
+async function waNotify(phone, message) {
+  if (!waAuto()) return { sent: false, why: 'off' };
+  const to = String(phone || '').trim();
+  if (!to) return { sent: false, why: 'nophone' };
+  try {
+    await api('/admin/wa/send', { method: 'POST', body: { phone: to, message } });
+    return { sent: true };
+  } catch (e) {
+    return { sent: false, why: 'failed', err: (e && e.message) || 'השליחה נכשלה' };
+  }
+}
+
+/* What to add to the toast an approval already shows. Silent when there is no
+   line at all — that is the ordinary state, and announcing it on every
+   approval is noise. A failure while a line is up is worth the interruption. */
+const waNote = (r) =>
+  r.sent ? ' · הודעה נשלחה'
+    : r.why === 'nophone' ? ' · אין טלפון ברשומה'
+      : r.why === 'failed' ? ` · ההודעה לא נשלחה (${r.err})`
+        : '';
+
 /* One soldier's message, out over the unit's line. The record is marked sent
    only after the provider has accepted it — a message that failed must not
    leave a ✓ behind, because the next person to look at the row would believe
@@ -7230,7 +7287,7 @@ const waSendRec = (rid, kind) =>
     const d = rec.data;
     const phone = String(d.phone || '').trim();
     if (!phone) { toast('אין מספר טלפון ברשומה', true); return; }
-    const message = kind === 'notified' ? waSignMsg(d, rec.rid) : waReturnMsg(d, rec.rid);
+    const message = kind === 'notified' ? waSignMsg(d) : waReturnMsg(d);
     try {
       await api('/admin/wa/send', { method: 'POST', body: { phone, message } });
     } catch (e) {
@@ -7471,13 +7528,16 @@ const repSetState = (id, next) =>
       renderConsole();
       throw e;
     }
-    toast(
-      next === 'done'
-        ? (rec.data && rec.data.phone ? 'סומן כטופל — אפשר לעדכן את החייל' : 'סומן כטופל')
-        : next === 'partial'
-          ? (rec.data && rec.data.phone ? 'סומן כטופל חלקית — אפשר לעדכן את החייל' : 'סומן כטופל חלקית')
-          : 'הוחזר לטיפול'
-    );
+    const w = (next === 'done' || next === 'partial')
+      ? await waNotify(rec.data && rec.data.phone, waReportMsg(rec.data || {}, next))
+      : { sent: false, why: 'off' };
+    if (w.sent) repMarkSent(id);
+    const head = next === 'done' ? 'סומן כטופל'
+      : next === 'partial' ? 'סומן כטופל חלקית'
+        : 'הוחזר לטיפול';
+    toast(head + (waAuto() || next === 'open'
+      ? waNote(w)
+      : (rec.data && rec.data.phone ? ' — אפשר לעדכן את החייל' : '')));
   });
 
 // Records that the admin actually opened the reply link.
@@ -8624,13 +8684,21 @@ function approveBtn(rec, cls) {
 const adminApprove = (rid) =>
   withBusy(async () => {
     S.askDel = '';
+    const rec = findRec(rid);
+    const d = rec && rec.data ? { ...rec.data } : null;
     const r = await approveCore(rid);
     S.picked.delete(rid);
     renderConsole();
     if (r.skipped) return;
-    toast(r.merged
-      ? `ההשלמה מוזגה לרישום של ${r.name} — שלחו הודעה במעקב ציוד`
-      : `אושר: ${r.name} — שלחו הודעה במעקב ציוד`);
+    // The approval is saved; the message is a consequence of it, not a
+    // condition for it. Sent from the copy taken before approval, because
+    // approveCore may have merged the submission away.
+    const w = d ? await waNotify(d.phone, waSignMsg(d)) : { sent: false, why: 'off' };
+    if (w.sent) markSent(rid, 'notified', 'auto');
+    renderConsole();
+    toast((r.merged
+      ? `ההשלמה מוזגה לרישום של ${r.name}`
+      : `אושר: ${r.name}`) + (waAuto() ? waNote(w) : ' — שלחו הודעה במעקב ציוד'));
   });
 
 // Bulk approval. Each record is saved on its own, so a failure part-way leaves
@@ -8719,7 +8787,10 @@ const adminCreditAll = (rid) =>
     rec.data.log.push({ a: 'credit', t: Date.now() });
     await saveRec(rec);
     renderConsole();
-    toast(`זוכה במלואו: ${rec.data.name}`);
+    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data));
+    if (w.sent) markSent(rid, 'returnNotified', 'auto');
+    renderConsole();
+    toast(`זוכה במלואו: ${rec.data.name}${waNote(w)}`);
   });
 
 const adminDelete = (rid) =>
