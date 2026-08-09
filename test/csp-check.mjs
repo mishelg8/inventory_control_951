@@ -9,7 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Every file the browser actually loads. A module added under lib/ without
 // being listed here would be the one place an inline style could slip back in.
 const files = [
-  'public/app.js', 'public/index.html', 'public/styles.css',
+  'public/app.js', 'public/index.html', 'public/styles.css', 'public/sw.js',
   ...readdirSync(join(root, 'public/lib')).filter((f) => f.endsWith('.js')).map((f) => `public/lib/${f}`),
 ];
 const problems = [];

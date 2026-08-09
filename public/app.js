@@ -264,6 +264,7 @@ const S = {
   licNo: '',                    // civilian licence number (typed, not OCR'd)
   licExp: '',                   // civilian licence expiry, ISO yyyy-mm-dd
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
+  sharedPhoto: null,            // a picture handed over by Android's share sheet
 
   // admin
   adminView: 'login',           // 'setup' | 'login' | 'console'
@@ -1660,6 +1661,11 @@ function licCapture(kind) {
         <input class="vis-hidden" type="file" accept="image/*"
                data-act="lic-file" data-kind="${kind.id}">
       </label>
+      ${S.sharedPhoto && !shot
+        ? `<button type="button" class="btn ghost lic-pick" data-act="lic-shared" data-kind="${kind.id}">
+             📥 התמונה ששיתפתם
+           </button>`
+        : ''}
     </div>
     ${shot ? '' : `<p class="field-hint center">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
          <p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>`}`;
@@ -7912,6 +7918,18 @@ function licClear(kind) {
   renderFlow();
 }
 
+// A photo that arrived through Android's share sheet. It is already compressed
+// — claimSharedPhoto() did that on the way in — so this only decides which
+// licence it belongs to, which is the one thing the share sheet cannot say.
+function licUseShared(kind) {
+  if (!S.sharedPhoto) return;
+  captureIdentForm();
+  S.licPhoto[kind] = S.sharedPhoto;
+  S.sharedPhoto = null;
+  renderFlow();
+  toast('התמונה צורפה');
+}
+
 async function licFile(kind, input) {
   const file = input.files && input.files[0];
   if (!file) return;
@@ -8993,6 +9011,7 @@ function dispatch(act, el) {
       break;
     case 's-reset': resetSoldier(); renderFlow(); break;
     case 'lic-clear': licClear(el.dataset.kind); break;
+    case 'lic-shared': licUseShared(el.dataset.kind); break;
     // admin console
     // Moving between screens keeps a trail, so "חזרה" goes back the way you
     // came rather than always to the overview. Re-picking the screen you are
@@ -9352,12 +9371,71 @@ window.addEventListener('hashchange', () => {
   renderRoute();
 });
 
+/* ── Arriving from the gallery ─────────────────────────────────────────
+   On phones whose gallery ignores the intent a file input sends — Samsung's,
+   among others — no `accept` value can reach it, because the gallery never
+   offers to answer. So the app registers as a share target and the soldier
+   goes the other way round: gallery, שיתוף, מסייעת 951.
+
+   Android POSTs the picture to /share-target, the service worker parks it and
+   redirects here, and this claims it. The photo is compressed on arrival like
+   any other, held in memory only, and never attached to anything by itself —
+   the soldier still says which licence it belongs to. */
+
+function registerShareTarget() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {
+    /* No worker means no share sheet entry, and nothing else. Both upload
+       buttons keep working exactly as they did. */
+  });
+}
+
+async function claimSharedPhoto() {
+  const url = new URL(location.href);
+  if (url.searchParams.get('shared') !== '1') return;
+
+  /* Off the address bar before anything can go wrong, so a reload does not
+     look like a second share and the flag cannot survive into a bookmark. */
+  url.searchParams.delete('shared');
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+
+  if (!('caches' in window)) return;
+  try {
+    const cache = await caches.open('tzayad-share-v1');
+    const res = await cache.match('/__shared-photo');
+    if (!res) return;
+    const blob = await res.blob();
+    if (!blob.size) return;
+
+    const file = new File([blob], 'shared', { type: blob.type || 'image/jpeg' });
+    if (notAnImage(file)) { toast('הקובץ ששותף אינו תמונה', true); return; }
+
+    const { bytes, size } = await compressImage(file);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    S.sharedPhoto = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
+
+    /* Claimed, so the worker's copy goes now rather than sitting in a cache
+       on somebody's phone until the next share overwrites it. */
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage('shared-photo-taken');
+    } else {
+      await cache.delete('/__shared-photo');
+    }
+    toast('התמונה ששיתפתם מוכנה — בחרו לאיזה רישיון לצרף אותה');
+  } catch (e) {
+    toast(e.message || 'לא הצלחנו לקרוא את התמונה ששותפה', true);
+  }
+}
+
 async function boot() {
   if (!window.crypto || !window.crypto.subtle) {
     render('<section class="panel"><p class="mb0">הדפדפן לא תומך בהצפנה הנדרשת. יש לפתוח את הקישור בדפדפן עדכני דרך HTTPS.</p></section>');
     return;
   }
   render('<p class="loading">טוען…</p>');
+  registerShareTarget();
+  await claimSharedPhoto();
   try {
     S.config = await api('/config');
   } catch (e) {
