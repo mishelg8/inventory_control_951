@@ -2380,7 +2380,7 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>
-    ${creditDialog()}`);
+    ${creditDialog()}${gearDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -3386,14 +3386,6 @@ function trackDetail(rec) {
   if (S.licEdit === rec.rid) {
     return `<div class="rowdetail">${licEditor(licRow(rec))}${fpStrip(rec.rid)}</div>`;
   }
-  /* Kit handed over after the fact. The soldier signed on a phone before he
-     left, then took a magazine pouch on his way out of the gate and is now in
-     the field — and the console could raise a count it already had but could
-     not add an item that was never on the form. So the whole drawer, same as
-     the other two editors, and the same catalogue the soldier signed from. */
-  if (S.gearAdd === rec.rid) {
-    return `<div class="rowdetail">${gearAddEditor(rec)}${fpStrip(rec.rid)}</div>`;
-  }
 
   const personal = [
     dfield('שם מלא', esc(d.name)),
@@ -3431,7 +3423,7 @@ function trackDetail(rec) {
              waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`
       : ''}
     <button class="dact" data-act="gear-add" data-rid="${esc(rec.rid)}">
-      ${DICO.box}<span>הוספת ציוד</span></button>
+      ${DICO.box}<span>החתמת ציוד</span></button>
     ${outstanding(d) > 0
       ? `<button class="dact" data-act="creditall" data-rid="${esc(rec.rid)}">
            ${DICO.check}<span>זיכוי מלא</span></button>`
@@ -8808,12 +8800,20 @@ const adminCredit = (rid, itemId, delta) =>
     renderConsole();
   });
 
-/* Kit signed for after the soldier has already gone. The catalogue in full,
+/* Kit signed for after the soldier has already gone — he took a magazine pouch
+   on his way out of the gate and is now in the field. The catalogue in full,
    because the point is to add something that was never on his form; what he
    already holds is shown beside each line so nobody adds a second helmet to a
    man who has one. Nothing is written until save — a stepper here is a draft,
-   not a change to the record. */
-function gearAddEditor(rec) {
+   not a change to the record.
+
+   In the middle of the screen rather than inside the row: it is a list to read
+   and choose from, and a drawer inside a table cell is the wrong shape for
+   that. Same box as the credit question, for the same reason. */
+function gearDialog() {
+  if (!S.gearAdd) return '';
+  const rec = findRec(S.gearAdd);
+  if (!rec || rec.damaged) return '';
   const d = rec.data;
   const draft = S.gearDraft;
   const rows = ITEMS.map((item) => {
@@ -8836,15 +8836,19 @@ function gearAddEditor(rec) {
   }).join('');
   const total = Object.values(draft).reduce((a, b) => a + b, 0);
   return `
-    <div class="recedit">
-      <h3 class="recedit-t">הוספת ציוד — ${esc(d.name)}</h3>
-      <p class="field-hint">להחתמה מרחוק: הפריטים נוספים למה שכבר רשום על החייל, והפעולה נרשמת ביומן הרשומה.</p>
-      <ul class="dkit">${rows}</ul>
-      <div class="rec-actions">
-        <button class="btn primary" type="button" data-act="gear-add-save"
-                data-rid="${esc(rec.rid)}" ${total ? '' : 'disabled'}>
-          ${total ? `הוספת ${total} פריטים` : 'בחרו פריטים'}</button>
-        <button class="btn ghost" type="button" data-act="gear-add-cancel">ביטול</button>
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gearq" data-act="modal-keep">
+        <h2 class="modal-title" id="gearq">איזה ציוד להקצות ל${esc(d.name)}?</h2>
+        <p class="modal-sub">להחתמה מרחוק — חייל שכבר יצא. הפריטים נוספים למה שכבר רשום עליו, והפעולה נרשמת ביומן הרשומה.</p>
+        <ul class="modal-list modal-pick">${rows}</ul>
+        <p class="modal-note">${total
+          ? `<span class="num">${total}</span> פריטים ייחתמו`
+          : 'בחרו כמות לפריט אחד לפחות'}</p>
+        <div class="modal-acts">
+          <button class="btn ghost" type="button" data-act="gear-add-cancel">ביטול</button>
+          <button class="btn primary" type="button" data-act="gear-add-save"
+                  data-rid="${esc(rec.rid)}" ${total ? '' : 'disabled'}>החתמה</button>
+        </div>
       </div>
     </div>`;
 }
@@ -8897,8 +8901,8 @@ function creditDialog() {
     .filter((x) => x.out > 0);
   const done = ITEMS.filter((i) => d.items[i.id]).length - held.length;
   return `
-    <div class="modal-back" data-act="credit-cancel">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="creditq">
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="creditq" data-act="modal-keep">
         <h2 class="modal-title" id="creditq">האם ${esc(d.name)} החזיר את כל הציוד?</h2>
         <p class="modal-sub">אישור מזכה את כל הפריטים שלמטה בבת אחת. הפעולה נרשמת ביומן הרשומה, ומבטלים אותה רק פריט־פריט.</p>
         ${held.length
@@ -9221,10 +9225,10 @@ $app.addEventListener('click', (e) => {
   const act = el.dataset.act;
   // toggling an equipment row shouldn't fire when a stepper button inside it was hit
   if (act === 's-toggle' && e.target.closest('.step-btn')) return;
-  /* The backdrop closes the question; the card standing on it does not. Both
-     carry the same action because the backdrop wraps the card, so the press
-     has to have landed on the backdrop itself. */
-  if (act === 'credit-cancel' && el.classList.contains('modal-back') && e.target !== el) return;
+  /* The backdrop closes the dialog; the card standing on it does not. The card
+     carries a do-nothing action of its own so that a press inside it stops
+     there instead of finding the backdrop underneath. */
+  if (act === 'modal-keep') return;
   /* The two message buttons stay anchors carrying a wa.me address, and that
      address is still what happens when there is no line to send on. When there
      is one, the navigation is cancelled here and the message goes out over it
@@ -9246,12 +9250,20 @@ $app.addEventListener('click', (e) => {
   dispatch(act, el);
 });
 
-// Escape answers "no" to the credit question, which is the safe answer.
+/* Both dialogs are questions, and closing one without answering is always the
+   safe outcome — nothing is written until the confirm button is pressed. */
+function closeModals() {
+  if (!S.creditAsk && !S.gearAdd) return false;
+  S.creditAsk = '';
+  S.gearAdd = '';
+  S.gearDraft = {};
+  renderConsole();
+  return true;
+}
+
+// Escape answers "no", which is the safe answer to either of them.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && S.creditAsk) {
-    S.creditAsk = '';
-    renderConsole();
-  }
+  if (e.key === 'Escape') closeModals();
 });
 
 $app.addEventListener('keydown', (e) => {
@@ -9551,6 +9563,7 @@ function dispatch(act, el) {
     case 'credit': adminCredit(rid, item, d); break;
     case 'creditall': S.askDel = ''; S.creditAsk = rid; renderConsole(); break;
     case 'credit-cancel': S.creditAsk = ''; renderConsole(); break;
+    case 'modal-close': closeModals(); break;
     case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
     case 'gear-add-cancel': S.gearAdd = ''; S.gearDraft = {}; renderConsole(); break;
     case 'gear-add-save': gearAddSave(rid); break;
