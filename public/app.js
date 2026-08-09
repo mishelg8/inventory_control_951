@@ -1303,7 +1303,8 @@ function renderRefuel() {
                  <span>✓ קבלה מצורפת (${Math.round(S.rfPhoto.size / 1024)}KB)</span>
                  <button type="button" class="linkbtn danger-link" data-act="rf-photo-clear">הסרה</button>
                </div>`
-            : '<p class="field-hint mb0">טרם צורפה קבלה.</p>'}
+            : `<p class="field-hint">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
+               <p class="field-hint mb0">טרם צורפה קבלה.</p>`}
         </fieldset>
 
         <p class="form-err" data-err></p>
@@ -1660,7 +1661,8 @@ function licCapture(kind) {
                data-act="lic-file" data-kind="${kind.id}">
       </label>
     </div>
-    ${shot ? '' : '<p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>'}`;
+    ${shot ? '' : `<p class="field-hint center">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
+         <p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>`}`;
 }
 
 // Checkbox, then the fields that licence needs. The civilian one also takes
