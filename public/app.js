@@ -2331,11 +2331,13 @@ function renderConsole() {
   else if (S.tab === 'wa') body = renderWaTab();
   else body = renderSecurityTab();
 
-  // Asked for once when the screen opens, not polled: the state changes when
-  // somebody scans, and they are standing right here when they do.
-  if (S.tab === 'wa' && !S.wa.loaded) waRefresh();
-
-  // The gateway is only worth polling while somebody is looking at it.
+  // Asked for when the screen opens, and then kept asking while a line is
+  // still being linked — see waPollStart(). Only while this tab is open.
+  if (S.tab === 'wa') {
+    if (!S.wa.loaded) waRefresh();
+    else if (S.wa.enabled && S.wa.state !== 'authorized') waPollStart();
+    else waPollStop();
+  } else waPollStop();
 
   render(`
     <div class="conbar">
@@ -7120,6 +7122,28 @@ const WA_STATE = {
   unknown:       { label: 'לא ידוע',      tone: 'off',  hint: 'הספק החזיר מצב שאיננו מכירים.' },
 };
 const waState = () => WA_STATE[S.wa.state] || WA_STATE.unknown;
+
+/* The screen used to ask once and then sit there, on the theory that whoever
+   scans is standing in front of it. They are — and that is exactly the moment
+   nothing tells the screen anything: the phone links the line at the provider,
+   and the console goes on showing a QR and "המשך לסרוק" until somebody thinks
+   to press רענון. So it asks again every few seconds, but only while this tab
+   is open and only until a line is linked. Once it says מחובר, the timer is
+   gone. */
+const WA_POLL_MS = 5000;
+let waPoll = null;
+
+function waPollStop() {
+  if (waPoll) { clearInterval(waPoll); waPoll = null; }
+}
+
+function waPollStart() {
+  if (waPoll) return;
+  waPoll = setInterval(() => {
+    if (S.tab !== 'wa' || !S.wa.enabled || S.wa.state === 'authorized') return waPollStop();
+    if (!S.wa.busy) waRefresh();
+  }, WA_POLL_MS);
+}
 
 async function waRefresh() {
   S.wa.busy = true;
