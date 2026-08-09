@@ -265,6 +265,8 @@ const S = {
   licExp: '',                   // civilian licence expiry, ISO yyyy-mm-dd
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
+  wa: { loaded: false, enabled: false, reachable: false, state: '', qr: null,
+        err: null, to: '', body: '', busy: false },
 
   // correcting a licence from the console: which row is open, and its draft
   licEdit: '',                  // rid, '' when nothing is being corrected
@@ -2238,6 +2240,7 @@ const TABS = [
   { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
   { id: 'lic',     name: 'רישיונות נהיגה', needs: ['records'] },
   { id: 'sum',     name: 'דוחות',        needs: ['records'] },
+  { id: 'wa',      name: 'וואטסאפ',      needs: [], adminOnly: true },
   { id: 'sec',     name: 'אבטחה',        needs: [], adminOnly: true },
 ];
 
@@ -2295,6 +2298,8 @@ function renderConsole() {
     ['veh',     'רכבים',        (openRefuels() + vehAlerts()) || null, openRefuels() > 0],
     ['lic',     'רישיונות',     licAlerts() || null, licAlerts() > 0],
     ['sum',     'דוחות',        null],
+    ['wa',      'וואטסאפ',      S.wa.loaded && S.wa.state !== 'authorized' ? '!' : null,
+                                 S.wa.loaded && S.wa.enabled && S.wa.state !== 'authorized'],
     ['sec',     'אבטחה',        null],
   ];
 
@@ -2323,7 +2328,12 @@ function renderConsole() {
   else if (S.tab === 'veh') body = renderVehTab();
   else if (S.tab === 'lic') body = renderLicTab();
   else if (S.tab === 'sum') body = renderSummaryTab();
+  else if (S.tab === 'wa') body = renderWaTab();
   else body = renderSecurityTab();
+
+  // Asked for once when the screen opens, not polled: the state changes when
+  // somebody scans, and they are standing right here when they do.
+  if (S.tab === 'wa' && !S.wa.loaded) waRefresh();
 
   // The gateway is only worth polling while somebody is looking at it.
 
@@ -7051,6 +7061,135 @@ function auditPanel() {
     </section>`;
 }
 
+/* ── וואטסאפ ──────────────────────────────────────────────────────── */
+
+/* A hosted service holds the session, so this screen is thin on purpose:
+   is a line linked, the code that links one, and a way to prove it works
+   before anyone sends to a real soldier.
+
+   None of it is load-bearing. With the service unconfigured this says so and
+   the wa.me buttons elsewhere carry on exactly as they always have — they open
+   a chat from the admin's own device, with no detail passing through anyone's
+   server, which is still the safer of the two. */
+
+const WA_STATE = {
+  authorized:    { label: 'מחובר',        tone: 'ok',   hint: 'הקו מקושר. אפשר לשלוח.' },
+  notAuthorized: { label: 'לא מחובר',     tone: 'warn', hint: 'סרקו את הקוד מהטלפון של הקו שישמש לשליחה.' },
+  starting:      { label: 'מתחיל…',       tone: 'warn', hint: 'המופע עולה אצל הספק. המתינו כמה שניות ורעננו.' },
+  blocked:       { label: 'חסום',         tone: 'bad',  hint: 'המופע חסום אצל הספק — בדקו את החשבון שלכם שם.' },
+  sleepMode:     { label: 'במצב שינה',    tone: 'warn', hint: 'המופע נרדם מחוסר שימוש. רעננו כדי להעיר אותו.' },
+  yellowCard:    { label: 'הוגבל זמנית',  tone: 'bad',  hint: 'הספק הגביל את המופע זמנית בשל קצב שליחה.' },
+  unknown:       { label: 'לא ידוע',      tone: 'off',  hint: 'הספק החזיר מצב שאיננו מכירים.' },
+};
+const waState = () => WA_STATE[S.wa.state] || WA_STATE.unknown;
+
+async function waRefresh() {
+  S.wa.busy = true;
+  try {
+    const r = await api('/admin/wa/status');
+    S.wa.loaded = true;
+    S.wa.enabled = r.enabled !== false;
+    S.wa.reachable = r.reachable !== false;
+    S.wa.state = r.state || '';
+    S.wa.err = r.error || null;
+    // The code is only worth fetching when there is nothing linked; asking for
+    // it while a line is connected returns "alreadyLogged" and nothing useful.
+    S.wa.qr = null;
+    if (S.wa.enabled && S.wa.reachable && S.wa.state === 'notAuthorized') await waQr();
+  } catch (e) {
+    S.wa.loaded = true;
+    S.wa.reachable = false;
+    S.wa.err = (e && e.message) || 'השירות אינו מגיב';
+  }
+  S.wa.busy = false;
+  renderConsole();
+}
+
+async function waQr() {
+  try {
+    const r = await api('/admin/wa/qr');
+    S.wa.qr = r && r.type === 'qrCode' && r.message ? `data:image/png;base64,${r.message}` : null;
+  } catch { S.wa.qr = null; }
+}
+
+const waTestSend = () =>
+  withBusy(async () => {
+    const phone = (S.wa.to || '').trim();
+    const message = (S.wa.body || '').trim();
+    if (!/^0\d{8,9}$/.test(phone)) { toast('מספר טלפון — ספרות בלבד, למשל 0501234567', true); return; }
+    if (!message) { toast('נא לכתוב טקסט', true); return; }
+    await api('/admin/wa/send', { method: 'POST', body: { phone, message } });
+    S.wa.body = '';
+    renderConsole();
+    toast('נשלח');
+  });
+
+function renderWaTab() {
+  if (!S.wa.loaded) return '<p class="loading">טוען…</p>';
+
+  if (!S.wa.enabled) {
+    return `
+      <section class="panel">
+        <h2 class="panel-title">וואטסאפ</h2>
+        <div class="callout">
+          <p class="callout-title">אינו מוגדר</p>
+          <p class="mb0">חסרים <code>GREEN_API_URL</code>, <code>GREEN_ID</code> ו-<code>GREEN_TOKEN</code> בהגדרות הפרויקט בקלאודפלייר. עד שיוגדרו, כפתורי הוואטסאפ במסכים האחרים עובדים כרגיל.</p>
+        </div>
+      </section>`;
+  }
+
+  const st = waState();
+  return `
+    <section class="panel">
+      <h2 class="panel-title">וואטסאפ</h2>
+      <p class="panel-sub">הקו שממנו נשלחות הודעות השירות. וואטסאפ־ווב רץ אצל הספק, לא כאן.</p>
+
+      <div class="wa-status">
+        <span class="wa-dot ${st.tone}" aria-hidden="true"></span>
+        <span class="wa-status-text">
+          <strong>${esc(st.label)}</strong>
+          <span class="muted">${esc(S.wa.reachable ? st.hint : 'השירות אינו מגיב.')}</span>
+          ${S.wa.err ? `<span class="bad">${esc(S.wa.err)}</span>` : ''}
+        </span>
+      </div>
+
+      ${S.wa.qr
+        ? `<div class="wa-qr">
+             <img class="wa-qr-img" src="${S.wa.qr}" alt="קוד QR לקישור הקו">
+             <p class="field-hint mb0">בטלפון של הקו: וואטסאפ ← הגדרות ← מכשירים מקושרים ← קישור מכשיר. הקוד מתחלף — אם פג, לחצו רענון.</p>
+           </div>`
+        : ''}
+
+      <div class="rec-actions">
+        <button class="btn ghost small" data-act="wa-refresh">רענון</button>
+      </div>
+    </section>
+
+    ${S.wa.state === 'authorized'
+      ? `<section class="panel">
+           <h2 class="panel-title">הודעת בדיקה</h2>
+           <p class="panel-sub">הדרך לוודא שהקו עובד, לפני ששולחים למישהו אמיתי.</p>
+           <label class="field">
+             <span class="field-label">אל מספר</span>
+             <input class="input num" inputmode="numeric" maxlength="10" data-act="wa-test-to"
+                    value="${esc(S.wa.to)}" placeholder="0501234567">
+           </label>
+           <label class="field">
+             <span class="field-label">טקסט</span>
+             <textarea class="input area" rows="3" maxlength="1200" data-act="wa-test-body"
+                       placeholder="בדיקה מהמסייעת">${esc(S.wa.body)}</textarea>
+           </label>
+           <button class="btn primary" data-act="wa-test-send">שליחה</button>
+         </section>`
+      : ''}
+
+    <div class="callout risk">
+      <p class="callout-title">שתי אזהרות</p>
+      <p>שליחה כזאת אינה שירות רשמי של וואטסאפ והיא מנוגדת לתנאי השימוש. חשבון ששולח כך עלול להיחסם, לפעמים לצמיתות. השתמשו בקו ייעודי — לא במספר אישי.</p>
+      <p class="mb0">טקסט ההודעה ומספר הנמען עוברים דרך שרתי הספק. כפתורי ה-wa.me במסכים האחרים אינם עושים זאת — הם פותחים צ'אט מהמכשיר שלכם. למידע רגיש, העדיפו אותם.</p>
+    </div>`;
+}
+
 function renderSecurityTab() {
   return `
     <div class="callout">
@@ -8826,6 +8965,8 @@ $app.addEventListener('input', (e) => {
     case 'ammo-name':    S.inv.ammo[+el.dataset.i].name = el.value; break;
     case 'rec-f':        if (S.recDraft) S.recDraft[el.dataset.k] = el.value; break;
     case 'lic-ed-no':    if (S.licDraft) S.licDraft.no = el.value.trim(); break;
+    case 'wa-test-to':   S.wa.to = el.value; break;
+    case 'wa-test-body': S.wa.body = el.value; break;
     case 'rep-f':        if (S.repDraft) S.repDraft[el.dataset.k] = el.value; break;
     case 'ammo-open':
       S.inv.ammo[+el.dataset.i].open =
@@ -8992,6 +9133,8 @@ function dispatch(act, el) {
     case 's-reset': resetSoldier(); renderFlow(); break;
     case 'lic-clear': licClear(el.dataset.kind); break;
     case 'lic-shared': licUseShared(el.dataset.kind); break;
+    case 'wa-refresh': waRefresh(); break;
+    case 'wa-test-send': waTestSend(); break;
     // admin console
     // Moving between screens keeps a trail, so "חזרה" goes back the way you
     // came rather than always to the overview. Re-picking the screen you are

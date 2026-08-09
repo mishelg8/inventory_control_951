@@ -229,6 +229,7 @@ const TAB_NEEDS = {
   // Neither screen reads a soldier's data: one is the gateway's own state,
   // the other is users and the audit trail. Both are administrator-only, and
   // that is enforced above rather than through a scope.
+  wa: [],
   sec: [],
 };
 
@@ -691,7 +692,7 @@ export async function onRequest(context) {
         // the wipe stay with the administrator whatever screens were granted.
         // Sending on the unit's WhatsApp line is the same kind of authority:
         // it goes out under the unit's name and it can get the number banned.
-        if (['users', 'audit', 'trash', 'rotate', 'wipe'].includes(seg[1])) {
+        if (['users', 'audit', 'trash', 'rotate', 'wipe', 'wa'].includes(seg[1])) {
           return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
         }
       }
@@ -1243,6 +1244,78 @@ export async function onRequest(context) {
           .prepare('SELECT at, username, action, target, detail FROM audit ORDER BY at DESC LIMIT 500')
           .all();
         return json({ audit: results });
+      }
+
+      /* ── /api/admin/wa/* — WhatsApp through GREEN-API ─────────────
+         A hosted service runs the browser and the session; we only ask it
+         things. That is the whole reason it is here: the same job on our own
+         machine needed a browser we could not afford to run.
+
+         Three calls and no more. The token is a Pages secret and never
+         reaches a browser — the console asks, this signs nothing and stores
+         nothing, and the recipient's number and the message text pass through
+         on their way out and are not written down on this side: not to D1,
+         not to a log line. They are, however, read by GREEN-API, which is the
+         cost of not owning the machine. */
+      if (seg[1] === 'wa' && seg.length === 3) {
+        const base = (env.GREEN_API_URL || '').replace(/\/+$/, '');
+        const id = env.GREEN_ID || '';
+        const token = env.GREEN_TOKEN || '';
+        if (!base || !id || !token) {
+          // Not configured is a normal state: the wa.me links carry on.
+          if (method === 'GET') return json({ enabled: false });
+          return err(503, 'שירות הוואטסאפ אינו מוגדר');
+        }
+        const call = async (path, init) => {
+          try {
+            const r = await fetch(`${base}/waInstance${id}/${path}/${token}`, {
+              ...init,
+              signal: AbortSignal.timeout(20000),
+            });
+            const text = await r.text();
+            let data;
+            try { data = JSON.parse(text); } catch { data = null; }
+            return { ok: r.ok, status: r.status, data };
+          } catch {
+            return { ok: false, status: 0, data: null };
+          }
+        };
+
+        if (method === 'GET' && seg[2] === 'status') {
+          const r = await call('getStateInstance');
+          if (!r.ok) return json({ enabled: true, reachable: false, error: 'השירות אינו מגיב' }, 502);
+          return json({ enabled: true, reachable: true, state: (r.data && r.data.stateInstance) || 'unknown' });
+        }
+
+        if (method === 'GET' && seg[2] === 'qr') {
+          const r = await call('qr');
+          if (!r.ok) return json({ enabled: true, reachable: false, error: 'השירות אינו מגיב' }, 502);
+          // { type: 'qrCode' | 'alreadyLogged' | 'error', message: <base64 png | text> }
+          return json({ enabled: true, reachable: true, ...(r.data || {}) });
+        }
+
+        if (method === 'POST' && seg[2] === 'send') {
+          const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const digits = String(b.phone || '').replace(/\D/g, '');
+          const text = String(b.message || '');
+          // Israeli local (0xx…) to international, since that is what the
+          // console holds and what the service expects.
+          const intl = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
+          if (!/^\d{9,15}$/.test(intl)) return err(400, 'מספר טלפון לא תקין');
+          if (!text.trim() || text.length > 1200) return err(400, 'הודעה ריקה או ארוכה מדי');
+          const r = await call('sendMessage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId: `${intl}@c.us`, message: text }),
+          });
+          // The number and the text are deliberately absent from the trail.
+          await audit(db, now, session, 'wa-send', null, null);
+          if (!r.ok) return json({ enabled: true, reachable: false, error: 'השליחה נכשלה' }, 502);
+          return json({ enabled: true, reachable: true, id: (r.data && r.data.idMessage) || null });
+        }
+
+        return err(404, 'נתיב לא קיים');
       }
 
       // POST /api/admin/rotate

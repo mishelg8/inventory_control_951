@@ -2771,3 +2771,49 @@ body.printing .printdoc {
     min-height: 40px;
   }
 }
+
+/* ── וואטסאפ ──────────────────────────────────────────────────────── */
+
+/* Linked or not, readable across a room: a dot with a word beside it, not a
+   status buried in a table. */
+.wa-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
+}
+.wa-dot {
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex: none;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.wa-dot.ok   { background: var(--ok-fill); }
+.wa-dot.warn { background: var(--warn-fill); }
+.wa-dot.bad  { background: var(--bad-fill); }
+.wa-dot.off  { background: var(--muted-2); }
+.wa-status-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wa-status-text strong { font-size: var(--t-md); }
+.wa-status-text .muted,
+.wa-status-text .bad { font-size: var(--t-sm); }
+
+/* The code is scanned off the screen by a phone held at arm's length, so it
+   gets a white bed and a size that survives a dim room. */
+.wa-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
+  text-align: center;
+}
+.wa-qr-img {
+  width: 260px;
+  max-width: 100%;
+  height: auto;
+  padding: var(--s-4);
+  background: #FFF;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}

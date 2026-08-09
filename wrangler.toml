@@ -6,3 +6,15 @@ pages_build_output_dir = "public"
 binding = "DB"
 database_name = "tzayad"
 database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
+
+# The WhatsApp service (GREEN-API). The instance id and its host are not
+# secrets — they identify which instance, and the API refuses every call that
+# does not also carry the token. The token itself is an encrypted secret set
+# with `wrangler pages secret put GREEN_TOKEN`, and it must never appear here.
+#
+# With any of the three missing the console says so plainly and the wa.me
+# buttons keep working, which is the state this project was in before and the
+# state it falls back to.
+[vars]
+GREEN_API_URL = "https://7107.api.greenapi.com"
+GREEN_ID = "710722705388"
