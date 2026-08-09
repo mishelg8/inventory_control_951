@@ -3523,7 +3523,7 @@ function licenceRows(approved, filtered = true) {
 // the table, so they are separate pieces — same split as the report editor.
 const licEditLink = (r) =>
   `<button class="linkbtn" data-act="${S.licEdit === r.rid ? 'lic-cancel' : 'lic-edit'}"
-           data-rid="${esc(r.rid)}">${S.licEdit === r.rid ? 'סגירה' : '✎ תיקון'}</button>`;
+           data-rid="${esc(r.rid)}">${S.licEdit === r.rid ? 'סגירה' : 'תיקון רשומה'}</button>`;
 
 function licEditor(r) {
   if (S.licEdit !== r.rid) return '';
@@ -3670,7 +3670,7 @@ function licencePanel(approved) {
           <td>${r.mil ? '✓' : '—'}</td>
           <td class="lic-acts">${shots.length
             ? `<button class="linkbtn" data-act="lic-docs" data-rid="${esc(r.rid)}">${
-                open.length ? 'הסתרה' : shots.length > 1 ? 'צפייה בשניים' : 'צפייה'
+                open.length ? 'הסתרה' : 'צפייה ברשומה'
               }</button>`
             : ''}${licEditLink(r)}</td>
         </tr>
