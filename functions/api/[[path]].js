@@ -949,12 +949,23 @@ export async function onRequest(context) {
         return json({ docs: results });
       }
 
-      // PUT | DELETE /api/admin/docs/:rid/:kind — admin-owned attachments.
-      // Only 'fuel' (a refuelling receipt): these belong to the vault rather
-      // than to any soldier, so unlike POST /docs there is no record to check.
+      // PUT | DELETE /api/admin/docs/:rid/:kind — attachments the office owns.
+      //
+      // 'fuel' is a refuelling receipt: it belongs to the vault rather than to
+      // any soldier, so unlike POST /docs there is no record to check.
+      //
+      // 'civil' and 'military' are licence photographs, and they are here for
+      // the opposite reason: POST /docs deliberately refuses to touch a record
+      // once it is approved, which is right for a soldier and wrong for the
+      // office. A licence that was photographed out of focus, or forgotten, is
+      // found after approval or not at all — so the correction has to be
+      // possible from the console. A signature is not on this list: that is
+      // the soldier's own hand and nobody else's to replace.
       if (seg[1] === 'docs' && seg.length === 4) {
         const [, , rid, kind] = seg;
-        if (!isHex(rid, HEX32) || kind !== 'fuel') return err(400, 'בקשה לא תקינה');
+        if (!isHex(rid, HEX32) || !['fuel', 'civil', 'military'].includes(kind)) {
+          return err(400, 'בקשה לא תקינה');
+        }
 
         if (method === 'PUT') {
           const b = await readBody(request);

@@ -1826,6 +1826,22 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .lic-pick { flex: 1 1 92px; min-height: 44px; cursor: pointer; }
 .lic-shot { display: flex; gap: 11px; align-items: center; margin-bottom: 9px; }
+
+/* Correcting a licence from the console. The two actions in the row's last
+   cell stack rather than run together — "צפייה" and "✎ תיקון" side by side
+   read as one sentence and get mis-tapped. */
+.lic-acts { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.licedit-shot {
+  margin: 9px 0 3px;
+  padding: 9px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.licedit-shot .lic-thumb { margin: 7px 0; }
+.licedit-shot .lic-actions { margin-top: 7px; }
+/* Inside a table cell these are already narrow; let them use the width. */
+.licedit-shot .lic-pick { flex: 1 1 108px; }
 .lic-thumb {
   width: 86px; height: 64px;
   object-fit: cover;

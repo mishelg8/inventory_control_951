@@ -266,6 +266,10 @@ const S = {
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
 
+  // correcting a licence from the console: which row is open, and its draft
+  licEdit: '',                  // rid, '' when nothing is being corrected
+  licDraft: null,               // { civil, no, exp, military, pic: {kind -> obj|null} }
+
   // admin
   adminView: 'login',           // 'setup' | 'login' | 'console'
   role: 'admin',                // 'admin' | 'viewer' — viewer cannot write
@@ -3499,6 +3503,118 @@ function licenceRows(approved, filtered = true) {
   });
 }
 
+/* ── Correcting a licence from the console ─────────────────────────────
+   A licence is photographed on a phone, at night, by someone who is being
+   waited for, and the result is found to be out of focus — or missing
+   altogether — days later, once the record is already approved. `POST /docs`
+   refuses an approved record on purpose, which is the right rule for a soldier
+   and the wrong one for the office, so the correction lives here.
+
+   Nothing is written until save. A replacement photograph is held in the draft
+   and uploaded only when the correction is committed, so closing the editor
+   leaves neither an orphan image in the vault nor a record pointing at one
+   that is not there.
+
+   The personal number is not offered. It is what the record's id was derived
+   from, and correcting it belongs with the rest of the identity in the record
+   drawer, where the note about that already lives. */
+
+// The link sits with the row's other actions; the form needs the full width of
+// the table, so they are separate pieces — same split as the report editor.
+const licEditLink = (r) =>
+  `<button class="linkbtn" data-act="${S.licEdit === r.rid ? 'lic-cancel' : 'lic-edit'}"
+           data-rid="${esc(r.rid)}">${S.licEdit === r.rid ? 'סגירה' : '✎ תיקון'}</button>`;
+
+function licEditor(r) {
+  if (S.licEdit !== r.rid) return '';
+  const d = S.licDraft || {};
+  const pic = d.pic || {};
+  const st = licState(d.exp);
+
+  // What the photo column will look like after saving: a fresh pick, an
+  // explicit removal, or whatever is on file now.
+  const shotState = (kindId) => {
+    if (pic[kindId]) return 'new';
+    if (pic[kindId] === null) return 'gone';
+    return (kindId === 'civil' ? r.doc : r.milDoc) ? 'kept' : 'none';
+  };
+
+  const shotBlock = (k) => {
+    const state = shotState(k.id);
+    const label = { new: '✓ צילום חדש ממתין לשמירה', kept: '✓ יש צילום', gone: 'הצילום יימחק בשמירה', none: 'אין צילום' }[state];
+    return `
+      <div class="licedit-shot">
+        <span class="field-label">${esc(k.short)}</span>
+        <span class="field-hint mb0 ${state === 'gone' ? 'bad-hint' : ''}">${label}</span>
+        ${pic[k.id]
+          ? `<img class="lic-thumb" src="${pic[k.id].preview}" alt="הצילום החדש של ${esc(k.short)}">`
+          : ''}
+        <div class="lic-actions">
+          <label class="btn ghost small lic-pick">
+            <span>📷 צילום</span>
+            <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                   data-act="lic-ed-file" data-rid="${esc(r.rid)}" data-kind="${k.id}">
+          </label>
+          <label class="btn ghost small lic-pick">
+            <span>🖼 מהגלריה</span>
+            <input class="vis-hidden" type="file" accept="image/*"
+                   data-act="lic-ed-file" data-rid="${esc(r.rid)}" data-kind="${k.id}">
+          </label>
+          ${state === 'kept' || state === 'new'
+            ? `<button type="button" class="btn ghost small" data-act="lic-ed-nopic" data-kind="${k.id}">הסרת צילום</button>`
+            : ''}
+          ${state === 'gone'
+            ? `<button type="button" class="btn ghost small" data-act="lic-ed-keep" data-kind="${k.id}">ביטול המחיקה</button>`
+            : ''}
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div class="receditor">
+      <p class="field-hint">${esc(r.name)} · מ״א ${esc(r.pn)}. שם, מספר אישי ומחלקה מתקנים בכרטיס הרשומה.</p>
+
+      <label class="check">
+        <input type="checkbox" data-act="lic-ed-has" data-kind="civil" ${d.civil ? 'checked' : ''}>
+        <span>רישיון נהיגה אזרחי בתוקף</span>
+      </label>
+      ${d.civil
+        ? `<div class="fuel-entry">
+             <label class="field mb0">
+               <span class="field-label">מספר רישיון <span class="req" aria-hidden="true">*</span></span>
+               <input class="input mini num" type="text" inputmode="numeric" maxlength="20"
+                      value="${esc(d.no || '')}" data-act="lic-ed-no" aria-label="מספר רישיון">
+             </label>
+             <label class="field mb0">
+               <span class="field-label">בתוקף עד <span class="req" aria-hidden="true">*</span></span>
+               <input class="input mini" type="date" value="${esc(d.exp || '')}"
+                      min="${DATE_MIN}" max="${DATE_MAX}" data-act="lic-ed-exp" aria-label="בתוקף עד">
+             </label>
+           </div>
+           ${d.exp && !inDateRange(d.exp)
+             ? '<p class="field-hint bad-hint">⚠ התאריך אינו תקין — בדקו את השנה.</p>'
+             : d.exp && st === 'expired'
+               ? '<p class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</p>'
+               : d.exp && st === 'soon'
+                 ? '<p class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</p>'
+                 : ''}
+           ${shotBlock(LIC_KINDS.find((k) => k.id === 'civil'))}`
+        : ''}
+
+      <label class="check">
+        <input type="checkbox" data-act="lic-ed-has" data-kind="military" ${d.military ? 'checked' : ''}>
+        <span>רישיון נהיגה צבאי בתוקף</span>
+      </label>
+      ${d.military ? shotBlock(LIC_KINDS.find((k) => k.id === 'military')) : ''}
+
+      <p class="field-hint">הסרת הסימון מוחקת גם את הצילום של אותו רישיון.</p>
+      <div class="rec-actions">
+        <button class="btn primary small" data-act="lic-save" data-rid="${esc(r.rid)}">שמירת התיקון</button>
+        <button class="btn ghost small" data-act="lic-cancel">ביטול</button>
+      </div>
+    </div>`;
+}
+
 const LIC_RANK = { expired: 0, none: 1, nodate: 2, soon: 3, valid: 4 };
 
 /* How many licences need attention: expired, missing, or with no date on them
@@ -3552,12 +3668,15 @@ function licencePanel(approved) {
             alarm ? '⚠ ' : r.st === 'valid' ? '✓ ' : ''
           }${LIC_LABEL[r.st]}</td>
           <td>${r.mil ? '✓' : '—'}</td>
-          <td>${shots.length
+          <td class="lic-acts">${shots.length
             ? `<button class="linkbtn" data-act="lic-docs" data-rid="${esc(r.rid)}">${
                 open.length ? 'הסתרה' : shots.length > 1 ? 'צפייה בשניים' : 'צפייה'
               }</button>`
-            : '—'}</td>
+            : ''}${licEditLink(r)}</td>
         </tr>
+        ${S.licEdit === r.rid
+          ? `<tr class="sub"><td colspan="8">${licEditor(r)}</td></tr>`
+          : ''}
         ${open.length
           ? `<tr class="lic-shots"><td colspan="8"><div class="licshots">${open
               .map(({ k, key, src }) => `
@@ -8328,6 +8447,120 @@ const recSave = (rid) =>
     toast(warns.length ? `נשמר · ${warns[0]}` : 'הפרטים עודכנו');
   });
 
+/* A replacement licence photograph, chosen in the console. Compressed here and
+   held in the draft — it does not reach the vault until the correction is
+   saved, so an admin who changes their mind leaves nothing behind. */
+const licEdFile = (kind, input) =>
+  withBusy(async () => {
+    const file = input.files && input.files[0];
+    input.value = '';                        // let the same file be picked again
+    if (!file || !S.licDraft) return;
+    if (notAnImage(file)) { toast('יש לבחור קובץ תמונה', true); return; }
+    const { bytes, size } = await compressImage(file);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    S.licDraft.pic[kind] = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
+    renderConsole();
+    toast('הצילום מוכן — לחצו על שמירת התיקון');
+  });
+
+/* Committing the correction.
+   The photographs go up first and the record last, because the record is what
+   claims a photograph exists. In the other order a failed upload would leave a
+   row saying there is a licence photo and a vault with nothing to show. */
+const licSave = (rid) =>
+  withBusy(async () => {
+    const rec = findRec(rid);
+    if (!rec || !rec.data || !S.licDraft) return;
+    const d = S.licDraft;
+
+    if (d.civil) {
+      if (!/^\d+$/.test(String(d.no || '').trim())) {
+        toast('רישיון אזרחי: מספר רישיון — ספרות בלבד', true);
+        return;
+      }
+      if (!d.exp) { toast('רישיון אזרחי: יש למלא תאריך תוקף', true); return; }
+      if (!inDateRange(d.exp)) { toast('תאריך התוקף אינו תקין — בדקו את השנה', true); return; }
+    }
+
+    /* Unticking a licence takes its photograph with it: the picture is of that
+       licence, and keeping it would leave the vault holding a document for
+       something the record says the soldier does not have. */
+    const wanted = { civil: d.civil, military: d.military };
+    const touched = [];
+    for (const k of LIC_KINDS) {
+      const had = !!((rec.data.lic || {})[k.id] || {}).doc;
+      const pick = d.pic[k.id];
+      if (!wanted[k.id]) { if (had) touched.push([k.id, null]); continue; }
+      if (pick) touched.push([k.id, pick.bytes]);
+      else if (pick === null && had) touched.push([k.id, null]);
+    }
+
+    const done = [];
+    const added = [];                        // uploads that created a doc from nothing
+    try {
+      for (const [kind, bytes] of touched) {
+        if (bytes) {
+          const had = !!((rec.data.lic || {})[kind] || {}).doc;
+          await api(`/admin/docs/${rid}/${kind}`, { method: 'PUT', body: await sealBytes(S.pubKey, bytes) });
+          if (!had) added.push(kind);
+        } else {
+          await api(`/admin/docs/${rid}/${kind}`, { method: 'DELETE' });
+        }
+        done.push(kind);
+      }
+    } catch {
+      toast('העלאת הצילום נכשלה — לא בוצע שינוי ברשומה', true);
+      return;
+    }
+
+    const lic = {};
+    for (const k of LIC_KINDS) {
+      if (!wanted[k.id]) continue;
+      const pick = d.pic[k.id];
+      const had = !!((rec.data.lic || {})[k.id] || {}).doc;
+      lic[k.id] = { has: true, doc: pick ? true : pick === null ? false : had };
+      if (k.id === 'civil') {
+        lic.civil.no = String(d.no).trim();
+        lic.civil.exp = d.exp;
+      }
+    }
+
+    const prev = rec.data;
+    rec.data = { ...rec.data };
+    if (Object.keys(lic).length) rec.data.lic = lic;
+    else delete rec.data.lic;
+
+    try {
+      await saveRec(rec);
+    } catch {
+      rec.data = prev;                       // the server refused; the screen must not lie
+      /* The photographs went up first, and the record that would have pointed
+         at them did not. One that was added where there was none before is now
+         a licence sitting in the vault under nobody's name, so it goes back.
+         A replacement cannot be undone — the picture it overwrote is gone —
+         and the message says as much rather than pretending otherwise. */
+      for (const kind of added) {
+        await api(`/admin/docs/${rid}/${kind}`, { method: 'DELETE' }).catch(() => {});
+      }
+      toast(
+        done.length > added.length
+          ? 'השמירה נכשלה — הרשומה לא שונתה, אך צילום שהוחלף אינו ניתן לשחזור'
+          : 'השמירה נכשלה — הרשומה לא שונתה',
+        true
+      );
+      return;
+    }
+
+    // The thumbnails on this screen are cached by rid and kind, and every one
+    // that was replaced or removed is now a picture of the past.
+    for (const kind of done) docForget(`${rid}:${kind}`);
+    S.licEdit = '';
+    S.licDraft = null;
+    renderConsole();
+    toast('הרישיון עודכן');
+  });
+
 // Approving one record. Split out of the click handler so a bulk run can call
 // it repeatedly without nesting withBusy or firing a toast per soldier.
 // Returns a short outcome the caller turns into a message.
@@ -8868,6 +9101,7 @@ $app.addEventListener('input', (e) => {
     case 'arm-e-owner':  S.inv[regOf(el).key][+el.dataset.i].owner = el.value; break;
     case 'ammo-name':    S.inv.ammo[+el.dataset.i].name = el.value; break;
     case 'rec-f':        if (S.recDraft) S.recDraft[el.dataset.k] = el.value; break;
+    case 'lic-ed-no':    if (S.licDraft) S.licDraft.no = el.value.trim(); break;
     case 'rep-f':        if (S.repDraft) S.repDraft[el.dataset.k] = el.value; break;
     case 'ammo-open':
       S.inv.ammo[+el.dataset.i].open =
@@ -8911,6 +9145,17 @@ $app.addEventListener('change', (e) => {
     renderConsole();
     return;
   }
+  // The licence editor re-renders on these: the date drives its own validity
+  // hint, and the ticks decide which half of the form is on screen at all.
+  if (el.dataset.act === 'lic-ed-exp') {
+    if (S.licDraft) { S.licDraft.exp = el.value; renderConsole(); }
+    return;
+  }
+  if (el.dataset.act === 'lic-ed-has') {
+    if (S.licDraft) { S.licDraft[el.dataset.kind] = el.checked; renderConsole(); }
+    return;
+  }
+  if (el.dataset.act === 'lic-ed-file') { licEdFile(el.dataset.kind, el); return; }
   if (el.dataset.act === 'rec-f-dept') {
     if (S.recDraft) S.recDraft.dept = el.value;
     return;
@@ -9095,6 +9340,25 @@ function dispatch(act, el) {
       break;
     }
     case 'rec-cancel': S.recEdit = ''; S.recDraft = null; renderConsole(); break;
+    case 'lic-edit': {
+      const rec = findRec(el.dataset.rid);
+      if (!rec || !rec.data) break;
+      const lic = rec.data.lic || {};
+      S.licEdit = el.dataset.rid;
+      S.licDraft = {
+        civil: !!(lic.civil && lic.civil.has),
+        no: (lic.civil && lic.civil.no) || '',
+        exp: (lic.civil && lic.civil.exp) || '',
+        military: !!(lic.military && lic.military.has),
+        pic: {},
+      };
+      renderConsole();
+      break;
+    }
+    case 'lic-cancel': S.licEdit = ''; S.licDraft = null; renderConsole(); break;
+    case 'lic-ed-nopic': if (S.licDraft) { S.licDraft.pic[el.dataset.kind] = null; renderConsole(); } break;
+    case 'lic-ed-keep': if (S.licDraft) { delete S.licDraft.pic[el.dataset.kind]; renderConsole(); } break;
+    case 'lic-save': licSave(el.dataset.rid); break;
     case 'rec-save': recSave(el.dataset.rid); break;
     // correcting a shortage request, a deposit or a building fault
     case 'rep-edit': {
