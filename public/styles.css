@@ -1821,8 +1821,11 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic.on { border-color: var(--pine); background: var(--surface); box-shadow: 0 0 0 1px var(--pine-ring); }
 .lic-head { margin: 0; font-weight: 600; font-size: var(--t-md); }
 .lic-body { margin-top: 11px; animation: rise 0.25s var(--ease) both; }
-.lic-actions { display: flex; gap: 7px; }
-.lic-pick { flex: 1; cursor: pointer; }
+/* Camera, photos, files — three doors, because Android decides which app each
+   one opens and no two phones agree. They wrap rather than squash: three of
+   these side by side at 375px would clip their own labels. */
+.lic-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.lic-pick { flex: 1 1 92px; min-height: 44px; cursor: pointer; }
 .lic-shot { display: flex; gap: 11px; align-items: center; margin-bottom: 9px; }
 .lic-thumb {
   width: 86px; height: 64px;
