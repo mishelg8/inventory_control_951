@@ -6,3 +6,17 @@ pages_build_output_dir = "public"
 binding = "DB"
 database_name = "tzayad"
 database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
+
+# Where the WhatsApp gateway answers. Public knowledge — it is a hostname, and
+# the gateway refuses every request that is not HMAC-signed, so nothing here is
+# a secret. The matching WA_GATEWAY_SECRET is set as an encrypted secret in the
+# dashboard and must never appear in this file.
+#
+# This is a Cloudflare quick tunnel and the hostname it hands out changes on
+# every restart of cloudflared. When the WhatsApp screen says the gateway is
+# unreachable, that is the first thing to check:
+#   ssh -i ~/.ssh/tzayad_gateway tzayad@34.27.111.27 tzayad-url
+# Put the new address here and deploy. A named tunnel on a domain of our own
+# would end this; until there is one, this line is the moving part.
+[vars]
+WA_GATEWAY_URL = "https://closed-waiting-libraries-differential.trycloudflare.com"
