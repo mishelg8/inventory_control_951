@@ -1682,12 +1682,12 @@ function licBlock(kind) {
     body = `
       <div class="lic-body">
         <label class="field">
-          <span class="field-label">מספר רישיון</span>
+          <span class="field-label">מספר רישיון <span class="req" aria-hidden="true">*</span></span>
           <input class="input num" data-act="lic-no" inputmode="numeric" autocomplete="off"
                  maxlength="20" value="${esc(S.licNo)}" placeholder="12345678">
         </label>
         <label class="field">
-          <span class="field-label">בתוקף עד</span>
+          <span class="field-label">בתוקף עד <span class="req" aria-hidden="true">*</span></span>
           <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}"
                  min="${DATE_MIN}" max="${DATE_MAX}">
           ${S.licExp && !inDateRange(S.licExp)
@@ -7762,6 +7762,19 @@ async function soldierIdentSubmit(form) {
   if (!identOk(form, pn, name)) return;
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
   if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  /* Ticking the civilian box is a claim about a licence with a number and an
+     expiry, and a claim with neither is not worth filing: the office cannot
+     chase a renewal it has no date for, and cannot match a photo to a licence
+     it has no number for. The military box asks for no fields, so it is not
+     held to this. */
+  if (S.lic.civil) {
+    if (!/^\d+$/.test(S.licNo.trim())) {
+      return setFormErr(form, 'רישיון נהיגה אזרחי: יש למלא מספר רישיון (ספרות בלבד)');
+    }
+    if (!S.licExp) {
+      return setFormErr(form, 'רישיון נהיגה אזרחי: יש למלא תאריך תוקף');
+    }
+  }
   /* Sent rather than dropped: a nonsense expiry is worth stopping on, because
      silently discarding it would file the licence as having no expiry at all. */
   if (S.licExp && !inDateRange(S.licExp)) {
