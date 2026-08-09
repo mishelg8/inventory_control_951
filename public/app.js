@@ -269,6 +269,8 @@ const S = {
         qr: null, err: null, to: '', body: '', busy: false },
 
   creditAsk: '',                // rid whose "credit everything" question is open
+  gearAdd: '',                  // rid whose "add kit" editor is open
+  gearDraft: {},                // itemId -> how many to add, until saved
 
   // correcting a licence from the console: which row is open, and its draft
   licEdit: '',                  // rid, '' when nothing is being corrected
@@ -2934,6 +2936,11 @@ const SIGN_BODY = {
 const waSignMsg = (d) =>
   waMsg(SIGN_BODY[d.kind] ? d.kind : 'full', d.name, SIGN_BODY[d.kind] || SIGN_BODY.full);
 
+// Kit added from the console after the soldier has left. He is not standing
+// there to see it written down, which is exactly why he is told.
+const waGearAddMsg = (d) =>
+  waMsg('gear', d.name, 'נוסף ציוד לרישום שלך. לפירוט פנו למנהל הציוד');
+
 // The weapon reached the armoury and is no longer the soldier's responsibility.
 const waDepositMsg = (d) =>
   waMsg('deposit', d.name, 'הנשק שאפסנת נקלט בארמון ורשום שם על שמך');
@@ -3272,7 +3279,8 @@ function renderTrackTab() {
     const st = gearState(d);
     const open = S.expanded.has(rec.rid);
     return `
-      <tr class="${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}">
+      <tr class="rowopen ${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}"
+          data-act="expand" data-rid="${esc(rec.rid)}">
         <td class="lg-name">
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
             ${avatar(d.name)}<span class="rowlink-n">${esc(d.name)}</span><span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
@@ -3314,7 +3322,7 @@ function renderTrackTab() {
     ${broken}
     <section class="panel">
       <h2 class="panel-title">מעקב ציוד</h2>
-      <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו, · = טרם חתם על ציוד כלל. לחיצה על השם פותחת את הזיכוי פריט־פריט.</p>
+      <p class="panel-sub">שורה לכל חייל. עמודת הציוד מראה כמה עדיין אצלו מתוך מה שהוחתם; ✓ = הוחזר במלואו, · = טרם חתם על ציוד כלל. לחיצה על השורה פותחת את הכרטיסייה — זיכוי פריט־פריט, הוספת ציוד ושליחת הודעה.</p>
       ${p.slice.length
         ? `<div class="tbl-scroll">
              <table class="tbl roster" data-phone="0,4,-1">
@@ -3378,6 +3386,14 @@ function trackDetail(rec) {
   if (S.licEdit === rec.rid) {
     return `<div class="rowdetail">${licEditor(licRow(rec))}${fpStrip(rec.rid)}</div>`;
   }
+  /* Kit handed over after the fact. The soldier signed on a phone before he
+     left, then took a magazine pouch on his way out of the gate and is now in
+     the field — and the console could raise a count it already had but could
+     not add an item that was never on the form. So the whole drawer, same as
+     the other two editors, and the same catalogue the soldier signed from. */
+  if (S.gearAdd === rec.rid) {
+    return `<div class="rowdetail">${gearAddEditor(rec)}${fpStrip(rec.rid)}</div>`;
+  }
 
   const personal = [
     dfield('שם מלא', esc(d.name)),
@@ -3414,6 +3430,8 @@ function trackDetail(rec) {
            ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}${
              waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`
       : ''}
+    <button class="dact" data-act="gear-add" data-rid="${esc(rec.rid)}">
+      ${DICO.box}<span>הוספת ציוד</span></button>
     ${outstanding(d) > 0
       ? `<button class="dact" data-act="creditall" data-rid="${esc(rec.rid)}">
            ${DICO.check}<span>זיכוי מלא</span></button>`
@@ -8790,6 +8808,79 @@ const adminCredit = (rid, itemId, delta) =>
     renderConsole();
   });
 
+/* Kit signed for after the soldier has already gone. The catalogue in full,
+   because the point is to add something that was never on his form; what he
+   already holds is shown beside each line so nobody adds a second helmet to a
+   man who has one. Nothing is written until save — a stepper here is a draft,
+   not a change to the record. */
+function gearAddEditor(rec) {
+  const d = rec.data;
+  const draft = S.gearDraft;
+  const rows = ITEMS.map((item) => {
+    const have = d.items[item.id];
+    const add = draft[item.id] || 0;
+    const max = item.max || 99;
+    const room = max - ((have && have.t) || 0);
+    return `<li class="kit-row">
+        <span class="row-ico" aria-hidden="true">${item.icon}</span>
+        <span class="kit-name">${esc(item.name)}${
+          have ? ` <small class="kit-have">כבר ${have.t}</small>` : ''}</span>
+        <span class="kit-count num${add ? ' is-add' : ''}">${add ? `+${add}` : '—'}</span>
+        <span class="rec-row-tools step">
+          <button type="button" class="step-btn" data-act="gear-draft" data-item="${item.id}"
+                  data-d="-1" aria-label="פחות — ${esc(item.name)}" ${add <= 0 ? 'disabled' : ''}>−</button>
+          <button type="button" class="step-btn" data-act="gear-draft" data-item="${item.id}"
+                  data-d="1" aria-label="עוד — ${esc(item.name)}" ${add >= room ? 'disabled' : ''}>+</button>
+        </span>
+      </li>`;
+  }).join('');
+  const total = Object.values(draft).reduce((a, b) => a + b, 0);
+  return `
+    <div class="recedit">
+      <h3 class="recedit-t">הוספת ציוד — ${esc(d.name)}</h3>
+      <p class="field-hint">להחתמה מרחוק: הפריטים נוספים למה שכבר רשום על החייל, והפעולה נרשמת ביומן הרשומה.</p>
+      <ul class="dkit">${rows}</ul>
+      <div class="rec-actions">
+        <button class="btn primary" type="button" data-act="gear-add-save"
+                data-rid="${esc(rec.rid)}" ${total ? '' : 'disabled'}>
+          ${total ? `הוספת ${total} פריטים` : 'בחרו פריטים'}</button>
+        <button class="btn ghost" type="button" data-act="gear-add-cancel">ביטול</button>
+      </div>
+    </div>`;
+}
+
+const gearAddSave = (rid) =>
+  withBusy(async () => {
+    const rec = findRec(rid);
+    if (!rec || rec.damaged) return;
+    const draft = { ...S.gearDraft };
+    const added = Object.entries(draft).filter(([, q]) => q > 0);
+    if (!added.length) return;
+    const before = JSON.stringify(rec.data.items);
+    for (const [id, q] of added) {
+      const item = itemById(id);
+      if (!item) continue;
+      const it = rec.data.items[id];
+      const max = item.max || 99;
+      if (it) it.t = Math.min(max, it.t + q);
+      else rec.data.items[id] = { t: Math.min(max, q), r: 0 };
+    }
+    rec.data.log.push({ a: 'gear-add', t: Date.now() });
+    try {
+      await saveRec(rec);
+    } catch (e) {
+      rec.data.items = JSON.parse(before);      // the record is left as it was
+      rec.data.log.pop();
+      renderConsole();
+      throw e;
+    }
+    S.gearAdd = '';
+    S.gearDraft = {};
+    renderConsole();
+    const w = await waNotify(rec.data.phone, waGearAddMsg(rec.data));
+    toast(`נוסף ציוד ל${rec.data.name}${waNote(w)}`);
+  });
+
 /* "זיכוי מלא" writes off every item a soldier is holding in one press, and it
    is next to the delete button on a phone. The row's arm-then-confirm was not
    enough: it asks in a strip the width of a table cell and it does not say
@@ -9460,6 +9551,21 @@ function dispatch(act, el) {
     case 'credit': adminCredit(rid, item, d); break;
     case 'creditall': S.askDel = ''; S.creditAsk = rid; renderConsole(); break;
     case 'credit-cancel': S.creditAsk = ''; renderConsole(); break;
+    case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
+    case 'gear-add-cancel': S.gearAdd = ''; S.gearDraft = {}; renderConsole(); break;
+    case 'gear-add-save': gearAddSave(rid); break;
+    case 'gear-draft': {
+      const id = el.dataset.item;
+      const item = itemById(id);
+      if (!item) break;
+      const rec = findRec(S.gearAdd);
+      const have = rec && rec.data.items[id];
+      const room = (item.max || 99) - ((have && have.t) || 0);
+      const next = (S.gearDraft[id] || 0) + Number(el.dataset.d || 0);
+      S.gearDraft[id] = Math.max(0, Math.min(room, next));
+      renderConsole();
+      break;
+    }
     case 'credit-ok': S.creditAsk = ''; adminCreditAll(rid); break;
     case 'del': adminDelete(rid); break;
     case 'wipe': adminWipe(); break;

@@ -644,6 +644,14 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .kit-row.is-back .kit-count { color: var(--ok-ink); }
 .kit-row .rec-row-tools { flex: none; }
+.kit-have { font-weight: 600; color: var(--muted); font-size: var(--t-2xs); }
+.kit-count.is-add { color: var(--pine-deep); }
+
+/* The whole row opens the card, not just the name. A name is a small target on
+   a phone and the rest of the row was dead space; the buttons at the end still
+   win, because they are nearer to the press than the row is. */
+.tbl tbody tr.rowopen { cursor: pointer; }
+.tbl tbody tr.rowopen .rowacts { cursor: default; }
 
 /* The one question in this console that has to be read before it is answered.
    It takes the middle of the screen because a strip inside a table row is
