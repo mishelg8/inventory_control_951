@@ -1,0 +1,28 @@
+services:
+  gateway:
+    build: .
+    image: tzayad-whatsapp-gateway
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Bound to loopback. Put a tunnel or a reverse proxy in front of it —
+      # this service should not be the thing facing the internet.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # The WhatsApp session and the queue. Lose this and the number has to be
+      # scanned again, so it is a named volume, not a container layer.
+      - gateway-data:/data
+    # Chromium spawns its renderer in a sandbox that needs this; without it
+    # the browser dies on start with an error that names nothing useful.
+    security_opt:
+      - seccomp:unconfined
+    # Chromium's default /dev/shm is 64 MB in Docker and it will crash on it.
+    shm_size: "512mb"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  gateway-data:

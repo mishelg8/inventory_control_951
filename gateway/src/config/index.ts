@@ -44,6 +44,12 @@ const schema = z.object({
 
   IDEMPOTENCY_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
+  /* The gateway is a queue, not an archive. A delivered message's text is the
+     most sensitive thing on this disk and the least useful to keep, so it is
+     blanked long before the row itself is dropped. */
+  BODY_RETENTION_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  MESSAGE_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+
   DEFAULT_COUNTRY_CODE: z.string().regex(/^\d{1,4}$/).default('972'),
 
   ALLOWED_ORIGINS: z.string().default('').transform(csv),
