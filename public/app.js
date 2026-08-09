@@ -6828,7 +6828,7 @@ const fltSetState = (id, next) =>
     // message. Reopening is an internal move and nobody is waiting to hear it.
     const w = (next === 'done' || next === 'partial')
       ? await waNotify(rec.data && rec.data.phone, waFaultMsg(rec.data || {}, next))
-      : { sent: false, why: 'off' };
+      : { sent: false, why: 'skip' };
     toast((next === 'done' ? 'התקלה סומנה כטופלה'
       : next === 'partial' ? 'סומן כהועבר לטיפול'
       : 'הוחזר למצב פתוח') + waNote(w));
@@ -7260,7 +7260,14 @@ async function waProbe() {
    with no phone number on file — is not an error in the approval. It reports
    what happened and returns; the manual button is still there. */
 async function waNotify(phone, message) {
-  if (!waAuto()) return { sent: false, why: 'off' };
+  /* Why it did not send matters as much as that it did not. "שלחו הודעה
+     במעקב ציוד" was the whole answer whatever the reason, so an approval that
+     silently skipped the message looked identical to one that never had a
+     line to send on — and the person approving had no way to tell that the
+     line had dropped an hour ago. */
+  if (!waAuto()) {
+    return { sent: false, why: S.wa.loaded && S.wa.enabled ? 'noline' : 'unconfigured' };
+  }
   const to = String(phone || '').trim();
   if (!to) return { sent: false, why: 'nophone' };
   try {
@@ -7276,9 +7283,11 @@ async function waNotify(phone, message) {
    approval is noise. A failure while a line is up is worth the interruption. */
 const waNote = (r) =>
   r.sent ? ' · הודעה נשלחה'
-    : r.why === 'nophone' ? ' · אין טלפון ברשומה'
+    : r.why === 'nophone' ? ' · אין טלפון ברשומה — לא נשלחה הודעה'
       : r.why === 'failed' ? ` · ההודעה לא נשלחה (${r.err})`
-        : '';
+        : r.why === 'noline' ? ' · הקו אינו מחובר — ההודעה לא נשלחה'
+          : r.why === 'unconfigured' ? ' — שלחו הודעה ידנית'
+            : '';                      // 'skip': nothing was meant to be sent
 
 /* One soldier's message, out over the unit's line. The record is marked sent
    only after the provider has accepted it — a message that failed must not
@@ -7534,14 +7543,12 @@ const repSetState = (id, next) =>
     }
     const w = (next === 'done' || next === 'partial')
       ? await waNotify(rec.data && rec.data.phone, waReportMsg(rec.data || {}, next))
-      : { sent: false, why: 'off' };
+      : { sent: false, why: 'skip' };
     if (w.sent) repMarkSent(id);
     const head = next === 'done' ? 'סומן כטופל'
       : next === 'partial' ? 'סומן כטופל חלקית'
         : 'הוחזר לטיפול';
-    toast(head + (waAuto() || next === 'open'
-      ? waNote(w)
-      : (rec.data && rec.data.phone ? ' — אפשר לעדכן את החייל' : '')));
+    toast(head + (next === 'open' ? '' : waNote(w)));
   });
 
 // Records that the admin actually opened the reply link.
@@ -8697,12 +8704,12 @@ const adminApprove = (rid) =>
     // The approval is saved; the message is a consequence of it, not a
     // condition for it. Sent from the copy taken before approval, because
     // approveCore may have merged the submission away.
-    const w = d ? await waNotify(d.phone, waSignMsg(d)) : { sent: false, why: 'off' };
+    const w = d ? await waNotify(d.phone, waSignMsg(d)) : { sent: false, why: 'skip' };
     if (w.sent) markSent(rid, 'notified', 'auto');
     renderConsole();
     toast((r.merged
       ? `ההשלמה מוזגה לרישום של ${r.name}`
-      : `אושר: ${r.name}`) + (waAuto() ? waNote(w) : ' — שלחו הודעה במעקב ציוד'));
+      : `אושר: ${r.name}`) + waNote(w));
   });
 
 // Bulk approval. Each record is saved on its own, so a failure part-way leaves
