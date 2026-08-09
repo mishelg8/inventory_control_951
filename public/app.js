@@ -145,14 +145,24 @@ const fmtDay = (iso) => {
 
 const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
 
-// What the "from the gallery" buttons accept. Not `image/*` on purpose: Android
-// turns a bare wildcard into the media intent, which Google Photos owns, so the
-// soldier lands in a cloud album instead of the pictures on the phone. Spelling
-// the types out makes Chrome open the document picker, where the gallery, DCIM
-// and Downloads are all reachable. HEIC/HEIF are listed because without them an
-// iPhone greys out every photo it took. compressImage() re-encodes whatever
-// arrives to JPEG through a canvas, so the list costs nothing.
-const GALLERY_ACCEPT = 'image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,image/gif,image/bmp';
+// The "from the gallery" buttons carry no `accept` at all, and that is the
+// whole trick. Chrome on Android asks one question of the accept list — are
+// these all image types? — and if the answer is yes it fires the media intent,
+// which Google Photos owns, so the soldier lands in a cloud album instead of
+// the pictures on the phone. Naming the types explicitly does not help: an
+// explicit list of image types is still an image-only list. Dropping `accept`
+// makes Chrome open the document picker instead, where the gallery, DCIM and
+// Downloads are all reachable. The camera buttons keep `image/*` + `capture`,
+// which is a different intent and behaves correctly.
+//
+// The cost is that the picker will also show PDFs and the rest, so the choice
+// is checked here rather than by the OS.
+//
+// Only a positively non-image type is refused. Files handed over by the Android
+// document picker often arrive with an empty `type`, and rejecting those would
+// throw away real photos; compressImage() decodes them and fails loudly if they
+// turn out not to be pictures.
+const notAnImage = (file) => !!file.type && !/^image\//.test(file.type);
 
 // Downscale and re-encode a camera photo until it fits, keeping the licence
 // text legible. Runs entirely on the soldier's device — the original file is
@@ -1277,7 +1287,7 @@ function renderRefuel() {
               <input class="vis-hidden" type="file" accept="image/*" capture="environment"
                      data-act="rf-photo"></label>
             <label class="btn ghost small">🖼 בחירה מהגלריה
-              <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}" data-act="rf-photo"></label>
+              <input class="vis-hidden" type="file" data-act="rf-photo"></label>
           </div>
           ${S.rfPhoto
             ? `<div class="fp">
@@ -1637,7 +1647,7 @@ function licCapture(kind) {
       </label>
       <label class="btn ghost lic-pick">
         <span>🖼 מהגלריה</span>
-        <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}"
+        <input class="vis-hidden" type="file"
                data-act="lic-file" data-kind="${kind.id}">
       </label>
     </div>
@@ -5823,7 +5833,7 @@ function fuelDetail(card, i) {
         <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
                data-act="fuel-file" data-i="${i}"></label>
       <label class="btn ghost small">🖼 בחירה מהגלריה
-        <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}" multiple
+        <input class="vis-hidden" type="file" multiple
                data-act="fuel-file" data-i="${i}"></label>
       ${card.receipts.length
         ? `<button class="btn ghost small" data-act="fuel-dl-all" data-i="${i}">הורדת כל הקבלות</button>`
@@ -5901,7 +5911,7 @@ const fuelDelete = (i) =>
 const fuelFile = (i, input) =>
   withBusy(async () => {
     const card = (S.inv.fuel || [])[i];
-    const files = [...(input.files || [])].filter((f) => /^image\//.test(f.type));
+    const files = [...(input.files || [])].filter((f) => !notAnImage(f));
     const rejected = (input.files || []).length - files.length;
     input.value = '';                       // let the same files be picked again
     if (!card) return;
@@ -7895,7 +7905,7 @@ async function licFile(kind, input) {
   const file = input.files && input.files[0];
   if (!file) return;
   captureIdentForm();
-  if (!/^image\//.test(file.type)) {
+  if (notAnImage(file)) {
     toast('יש לבחור קובץ תמונה', true);
     return;
   }
@@ -7935,7 +7945,7 @@ async function refuelPhoto(input) {
   const file = input.files && input.files[0];
   if (!file) return;
   captureRefuelForm();
-  if (!/^image\//.test(file.type)) { toast('יש לבחור קובץ תמונה', true); return; }
+  if (notAnImage(file)) { toast('יש לבחור קובץ תמונה', true); return; }
   toast('מעבד את התמונה…');
   try {
     const { bytes, size } = await compressImage(file);
