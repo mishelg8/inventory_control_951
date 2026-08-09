@@ -99,37 +99,6 @@ async function allow(db, key, limit, windowMs, now) {
   return !row || row.hits <= limit;
 }
 
-// The console's WhatsApp panel, mapped onto the gateway's own API. A closed
-// list rather than a path pass-through: the console can reach exactly these
-// seven things, and a new endpoint on the gateway is not reachable from the
-// internet until it is written down here.
-const WA_ROUTES = {
-  'GET status': { path: '/api/status' },
-  'GET qr': { path: '/api/qr' },
-  'GET messages': { path: '/api/messages' },
-  'POST connect': { path: '/api/connect', audit: 'wa-connect' },
-  'POST reconnect': { path: '/api/reconnect', audit: 'wa-reconnect' },
-  'POST logout': { path: '/api/logout', audit: 'wa-logout' },
-  'POST send': { path: '/api/messages', audit: 'wa-send' },
-};
-
-const hex32 = (buf) =>
-  [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-// The gateway trusts a request because of this signature and nothing else, so
-// what goes into it matters: the timestamp bounds a replay, the method and
-// path stop a captured call being pointed at /logout, and the body hash stops
-// it being edited. The secret is a Pages binding and never reaches a browser.
-async function waSign(secret, ts, method, path, body) {
-  const enc = new TextEncoder();
-  const bodyHash = hex32(await crypto.subtle.digest('SHA-256', enc.encode(body)));
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const msg = [ts, method.toUpperCase(), path, bodyHash].join('\n');
-  return hex32(await crypto.subtle.sign('HMAC', key, enc.encode(msg)));
-}
-
 // The throttle table is write-heavy and nothing ever removed lapsed rows.
 // Swept opportunistically so it cannot grow without bound.
 async function sweepThrottle(db, now) {
@@ -260,7 +229,6 @@ const TAB_NEEDS = {
   // Neither screen reads a soldier's data: one is the gateway's own state,
   // the other is users and the audit trail. Both are administrator-only, and
   // that is enforced above rather than through a scope.
-  wa: [],
   sec: [],
 };
 
@@ -723,7 +691,7 @@ export async function onRequest(context) {
         // the wipe stay with the administrator whatever screens were granted.
         // Sending on the unit's WhatsApp line is the same kind of authority:
         // it goes out under the unit's name and it can get the number banned.
-        if (['users', 'audit', 'trash', 'rotate', 'wipe', 'wa'].includes(seg[1])) {
+        if (['users', 'audit', 'trash', 'rotate', 'wipe'].includes(seg[1])) {
           return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
         }
       }
@@ -1275,63 +1243,6 @@ export async function onRequest(context) {
           .prepare('SELECT at, username, action, target, detail FROM audit ORDER BY at DESC LIMIT 500')
           .all();
         return json({ audit: results });
-      }
-
-      // ── /api/admin/wa/* — the WhatsApp gateway, proxied ───────────
-      // The gateway lives on a machine that can hold a browser open; this is
-      // the hop that gets there. Two things it deliberately does not do:
-      // it does not store the message or the number anywhere — not in D1, not
-      // in a log line — and it does not let the browser hold the gateway's
-      // secret. The console composes (it is the only place that can decrypt a
-      // soldier's telephone number), this signs, the gateway sends.
-      if (seg[1] === 'wa' && seg.length === 3) {
-        const route = WA_ROUTES[`${method} ${seg[2]}`];
-        if (!route) return err(404, 'נתיב לא קיים');
-
-        const base = (env.WA_GATEWAY_URL || '').replace(/\/+$/, '');
-        if (!base || !env.WA_GATEWAY_SECRET) {
-          // Not configured is a normal state, not a fault: without it the
-          // console simply keeps using the wa.me links it always had.
-          if (method === 'GET') return json({ enabled: false });
-          return err(503, 'שער הוואטסאפ אינו מוגדר');
-        }
-
-        const body = method === 'GET' ? '' : JSON.stringify((await readBody(request)) || {});
-        // Query string included, and included in the signature too: it is part
-        // of what was asked for, so it is part of what was signed.
-        const signedPath = `${route.path}${method === 'GET' ? url.search : ''}`;
-        const target = `${base}${signedPath}`;
-        const ts = Math.floor(now / 1000).toString();
-        const sig = await waSign(env.WA_GATEWAY_SECRET, ts, method, signedPath, body);
-
-        let res;
-        try {
-          res = await fetch(target, {
-            method,
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Timestamp': ts,
-              'X-Signature': sig,
-            },
-            ...(method === 'GET' ? {} : { body }),
-            signal: AbortSignal.timeout(20000),
-          });
-        } catch {
-          // The gateway being down must read as the gateway being down, not
-          // as a broken console.
-          return json({ enabled: true, reachable: false, error: 'השער אינו מגיב' }, 502);
-        }
-
-        if (route.audit) await audit(db, now, session, route.audit, null, route.detail || null);
-
-        const text = await res.text();
-        let payload;
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          return json({ enabled: true, reachable: false, error: 'תשובה לא תקינה מהשער' }, 502);
-        }
-        return json({ enabled: true, reachable: true, ...payload }, res.status);
       }
 
       // POST /api/admin/rotate

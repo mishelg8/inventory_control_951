@@ -346,10 +346,6 @@ const S = {
   busy: false,
 };
 
-/* One poll, owned by the screen that wants it. Left running it would keep
-   waking a locked console up. */
-let waPoll = null;
-
 const IDLE_MS = 10 * 60 * 1000;
 let idleTimer = null;
 
@@ -396,13 +392,6 @@ function lock() {
   S.picked.clear();
   clearTimeout(idleTimer);
   stopPulse();
-  stopWaPoll();
-  S.wa = {
-    loaded: false, enabled: false, reachable: false,
-    state: 'stopped', qr: null, me: null, lastError: null,
-    queue: null, events: [], messages: [], counts: null,
-    testTo: '', testBody: '', busy: false,
-  };
   api('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
   if (S.route === 'admin') {
     S.adminView = S.config && S.config.ready ? 'login' : 'setup';
@@ -2249,7 +2238,6 @@ const TABS = [
   { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
   { id: 'lic',     name: 'רישיונות נהיגה', needs: ['records'] },
   { id: 'sum',     name: 'דוחות',        needs: ['records'] },
-  { id: 'wa',      name: 'וואטסאפ',      needs: [], adminOnly: true },
   { id: 'sec',     name: 'אבטחה',        needs: [], adminOnly: true },
 ];
 
@@ -2307,7 +2295,6 @@ function renderConsole() {
     ['veh',     'רכבים',        (openRefuels() + vehAlerts()) || null, openRefuels() > 0],
     ['lic',     'רישיונות',     licAlerts() || null, licAlerts() > 0],
     ['sum',     'דוחות',        null],
-    ['wa',      'וואטסאפ',      waBadge(), S.wa.enabled && S.wa.state !== 'ready'],
     ['sec',     'אבטחה',        null],
   ];
 
@@ -2336,11 +2323,9 @@ function renderConsole() {
   else if (S.tab === 'veh') body = renderVehTab();
   else if (S.tab === 'lic') body = renderLicTab();
   else if (S.tab === 'sum') body = renderSummaryTab();
-  else if (S.tab === 'wa') body = renderWaTab();
   else body = renderSecurityTab();
 
   // The gateway is only worth polling while somebody is looking at it.
-  if (S.tab === 'wa') startWaPoll(); else stopWaPoll();
 
   render(`
     <div class="conbar">
@@ -7066,279 +7051,6 @@ function auditPanel() {
     </section>`;
 }
 
-/* ── שער וואטסאפ ───────────────────────────────────────────────────── */
-
-/* The panel for the gateway service: is it linked, what is the queue doing,
-   and the QR code that links it in the first place.
- *
- * Everything here is a view over a poll. The console cannot send on its own
- * and does not hold the gateway's secret — it asks the Worker, the Worker
- * signs, the gateway acts. And none of it is load-bearing: with no gateway
- * configured this screen says so plainly and the wa.me buttons elsewhere carry
- * on exactly as they always have. */
-
-const WA_STATE = {
-  stopped:       { label: 'כבוי',        tone: 'off',  hint: 'השער מוגדר אך אינו מחובר. לחצו "חיבור" כדי לקבל קוד QR.' },
-  starting:      { label: 'מתחבר…',      tone: 'warn', hint: 'הדפדפן של השער עולה. זה לוקח כמה עשרות שניות.' },
-  qr:            { label: 'ממתין לסריקה', tone: 'warn', hint: 'סרקו את הקוד מהטלפון שישמש כקו השליחה.' },
-  authenticated: { label: 'מאומת, נטען…', tone: 'warn', hint: 'הסריקה הצליחה. ממתינים שהחיבור יסתיים.' },
-  ready:         { label: 'מחובר',       tone: 'ok',   hint: 'השער מחובר ויכול לשלוח.' },
-  disconnected:  { label: 'מנותק',       tone: 'bad',  hint: 'החיבור נפל. השער מנסה להתחבר מחדש בעצמו.' },
-  auth_failure:  { label: 'נדרשת סריקה מחדש', tone: 'bad', hint: 'הקישור לטלפון בוטל. יש להתחבר ולסרוק QR חדש.' },
-};
-
-const waState = () => WA_STATE[S.wa.state] || WA_STATE.stopped;
-
-// The tab's badge: pending messages when it is working, an alarm when it is not.
-function waBadge() {
-  if (!S.wa.enabled || !S.wa.loaded) return null;
-  if (S.wa.state !== 'ready') return '!';
-  const n = (S.wa.queue && S.wa.queue.pending) || 0;
-  return n || null;
-}
-
-function stopWaPoll() {
-  if (waPoll) { clearInterval(waPoll); waPoll = null; }
-}
-
-function startWaPoll() {
-  if (waPoll) return;
-  if (!S.wa.loaded) waRefresh();
-  /* Four seconds. A QR is refreshed by WhatsApp every twenty or so, and an
-     admin standing there with a phone should not be shown a dead code. */
-  waPoll = setInterval(() => {
-    if (S.tab !== 'wa' || !S.priv) { stopWaPoll(); return; }
-    waRefresh({ quiet: true });
-  }, 4000);
-}
-
-async function waRefresh({ quiet = false } = {}) {
-  try {
-    const r = await api('/admin/wa/status');
-    S.wa.loaded = true;
-    S.wa.enabled = r.enabled !== false;
-    S.wa.reachable = r.reachable !== false;
-    if (r.whatsapp) {
-      S.wa.state = r.whatsapp.state;
-      S.wa.qr = r.whatsapp.qr;
-      S.wa.me = r.whatsapp.me;
-      S.wa.lastError = r.whatsapp.lastError;
-    }
-    S.wa.queue = r.queue || null;
-    S.wa.events = r.events || [];
-    if (r.error) S.wa.lastError = r.error;
-  } catch (e) {
-    S.wa.loaded = true;
-    S.wa.reachable = false;
-    S.wa.lastError = e && e.message ? e.message : 'השער אינו מגיב';
-  }
-  /* A poll every four seconds must not yank the caret out of the box someone
-     is typing in. The state is already updated; the screen catches up on the
-     next tick, or the moment they leave the field. */
-  const typing = document.activeElement && /^wa-test/.test(document.activeElement.dataset?.act || '');
-  if (quiet && typing) return;
-  renderConsole();
-}
-
-async function waMessages() {
-  try {
-    const r = await api('/admin/wa/messages?limit=25');
-    S.wa.messages = r.messages || [];
-    S.wa.counts = r.counts || null;
-  } catch {
-    S.wa.messages = [];
-  }
-  renderConsole();
-}
-
-async function waAction(what) {
-  if (S.wa.busy) return;
-  S.wa.busy = true;
-  renderConsole();
-  try {
-    await api(`/admin/wa/${what}`, { method: 'POST', body: {} });
-    toast(what === 'logout' ? 'השער נותק והסשן נמחק' : 'הבקשה נשלחה לשער');
-  } catch (e) {
-    toast(e && e.message ? e.message : 'הפעולה נכשלה', true);
-  }
-  S.wa.busy = false;
-  await waRefresh();
-}
-
-async function waTestSend() {
-  const to = (S.wa.testTo || '').trim();
-  const body = (S.wa.testBody || '').trim();
-  if (!/^\d{9,12}$/.test(to.replace(/\D/g, ''))) return toast('מספר טלפון לא תקין', true);
-  if (!body) return toast('נא לכתוב טקסט לבדיקה', true);
-  S.wa.busy = true;
-  renderConsole();
-  try {
-    await api('/admin/wa/send', {
-      method: 'POST',
-      body: { to, message: body, idempotencyKey: `test-${Date.now()}-${rndId()}` },
-    });
-    S.wa.testBody = '';
-    toast('ההודעה נכנסה לתור');
-  } catch (e) {
-    toast(e && e.message ? e.message : 'השליחה נכשלה', true);
-  }
-  S.wa.busy = false;
-  await waMessages();
-}
-
-const WA_MSG_STATE = {
-  queued: ['בתור', 'warn'], sending: ['נשלחת', 'warn'],
-  sent: ['נשלחה', 'ok'], failed: ['נכשלה', 'bad'],
-};
-
-/* The gateway speaks in identifiers, because that is what a machine should
-   store. The screen is read by a person, so the identifiers are turned back
-   into words here — with the raw value as the fallback, so a template added
-   on the gateway and not yet named here shows up rather than disappearing. */
-const WA_TEMPLATE = {
-  signature_request: 'בקשת חתימה',
-  return_request: 'בקשת החזרה',
-  reminder: 'תזכורת',
-  registration_approved: 'אישור רישום',
-  custom: 'טקסט חופשי',
-};
-
-const WA_DETAIL = {
-  'new code': 'קוד חדש',
-  'initialize failed': 'העלאת הדפדפן נכשלה',
-  'stored session rejected': 'הסשן השמור נדחה',
-  'unlinked from the phone': 'הקישור בוטל מהטלפון',
-  'logged out': 'נותק ידנית',
-};
-
-const waDetail = (d) => (d ? WA_DETAIL[d] || d : '');
-
-function renderWaTab() {
-  if (!S.wa.loaded) return '<p class="empty">טוען את מצב השער…</p>';
-
-  if (!S.wa.enabled) {
-    return `
-      <div class="callout">
-        <p class="callout-title">שער הוואטסאפ אינו מוגדר</p>
-        <p>שליחה אוטומטית דורשת שירות נפרד שמחזיק חיבור חי לוואטסאפ. הוא אינו רץ על קלאודפלייר — הוא צריך מכונה שמריצה דפדפן ברקע.</p>
-        <p class="mb0">עד שיוגדר, כפתורי הוואטסאפ במסכים האחרים ממשיכים לעבוד בדיוק כרגיל: הם פותחים צ'אט מהמכשיר שלכם, בלי שאף פרט עובר בשרת.</p>
-      </div>
-      <div class="callout">
-        <p class="callout-title">מה צריך כדי להפעיל</p>
-        <p class="mb0">מכונה עם <code>docker compose up</code> על תיקיית <code>gateway/</code>, ושני משתנים בהגדרות הפרויקט בקלאודפלייר — <code>WA_GATEWAY_URL</code> ו-<code>WA_GATEWAY_SECRET</code>. ההוראות המלאות ב-<code>gateway/README.md</code>.</p>
-      </div>`;
-  }
-
-  const st = waState();
-  const q = S.wa.queue;
-
-  return `
-    <section class="panel">
-      <h3 class="sec-title">מצב החיבור</h3>
-      <div class="wa-status">
-        <span class="wa-dot ${st.tone}"></span>
-        <div class="wa-status-text">
-          <strong>${esc(st.label)}</strong>
-          <span class="muted">${esc(st.hint)}</span>
-          ${S.wa.me
-            ? `<span class="muted">הקו המקושר: <span class="num">${esc(S.wa.me.phone)}</span>${
-                S.wa.me.name ? ` · ${esc(S.wa.me.name)}` : ''}</span>`
-            : ''}
-          ${!S.wa.reachable ? '<span class="bad-hint">השער אינו מגיב — בדקו שהשירות רץ.</span>' : ''}
-          ${S.wa.lastError && S.wa.state !== 'ready'
-            ? `<span class="muted">${esc(String(S.wa.lastError).slice(0, 140))}</span>` : ''}
-        </div>
-      </div>
-
-      ${S.wa.state === 'qr' && S.wa.qr
-        ? `<div class="wa-qr">
-             <img class="wa-qr-img" src="${esc(S.wa.qr.dataUrl)}" alt="קוד QR לקישור וואטסאפ">
-             <p class="muted mb0">בטלפון: וואטסאפ ← הגדרות ← מכשירים מקושרים ← קישור מכשיר.<br>
-             הקוד מתחלף כל כמה שניות; המסך מתעדכן לבד.</p>
-           </div>`
-        : ''}
-
-      <div class="rowacts wa-acts">
-        ${S.wa.state === 'ready'
-          ? `<button class="btn ghost small" data-act="wa-reconnect" ${S.wa.busy ? 'disabled' : ''}>חיבור מחדש</button>`
-          : `<button class="btn small" data-act="wa-connect" ${S.wa.busy ? 'disabled' : ''}>חיבור</button>`}
-        <button class="btn ghost small" data-act="wa-refresh">רענון</button>
-        ${askBtn('wa-logout', 'wa-logout', 'ניתוק ומחיקת הסשן',
-                 'הניתוק מוחק את הסשן — יידרש QR חדש. להמשיך?',
-                 { yes: 'כן, לנתק', tone: 'danger', cls: 'btn ghost small danger' })}
-      </div>
-    </section>
-
-    ${q ? `
-      <section class="panel">
-        <h3 class="sec-title">התור</h3>
-        <div class="kpis">
-          <div class="kpi"><span class="kpi-n num">${q.pending}</span><span class="kpi-l">ממתינות</span></div>
-          <div class="kpi"><span class="kpi-n num">${q.counts.sent}</span><span class="kpi-l">נשלחו</span></div>
-          <div class="kpi"><span class="kpi-n num">${q.counts.failed}</span><span class="kpi-l">נכשלו</span></div>
-        </div>
-        <p class="muted mb0">השער שולח לאט בכוונה — הודעה כל כמה שניות, בהפרשים משתנים. זה מה שמפחית את הסיכוי שהחשבון ייחסם.</p>
-      </section>` : ''}
-
-    <section class="panel">
-      <h3 class="sec-title">הודעת בדיקה</h3>
-      <p class="muted">הדרך לוודא שהקו עובד, לפני ששולחים למישהו אמיתי.</p>
-      <label class="field">
-        <span class="field-label">אל מספר</span>
-        <input class="input num" data-act="wa-test-to" inputmode="numeric" maxlength="15"
-               value="${esc(S.wa.testTo)}" placeholder="0501234567">
-      </label>
-      <label class="field">
-        <span class="field-label">טקסט</span>
-        <textarea class="input area" data-act="wa-test-body" maxlength="600"
-                  placeholder="בדיקה מהמסייעת">${esc(S.wa.testBody)}</textarea>
-      </label>
-      <button class="btn wide" data-act="wa-test-send"
-              ${S.wa.busy || S.wa.state !== 'ready' ? 'disabled' : ''}>
-        ${S.wa.state === 'ready' ? 'שליחה' : 'נדרש חיבור לפני שליחה'}
-      </button>
-    </section>
-
-    <section class="panel">
-      <h3 class="sec-title">הודעות אחרונות</h3>
-      <p class="muted">השער מחזיר מזהה, מצב וזמן בלבד — לא את תוכן ההודעה ולא את המספר.</p>
-      ${S.wa.messages.length
-        ? `<div class="tblwrap"><table class="tbl">
-             <thead><tr><th>מתי</th><th>תבנית</th><th>מצב</th></tr></thead>
-             <tbody>${S.wa.messages.map((m) => {
-               const [label, tone] = WA_MSG_STATE[m.status] || [m.status, 'off'];
-               return `<tr>
-                 <td>${esc(fmtDate(m.createdAt))}</td>
-                 <td>${esc(WA_TEMPLATE[m.template] || m.template || '—')}</td>
-                 <td><span class="state ${tone}">${esc(label)}</span>${
-                   // The attempt count is only worth the space when it is not 1.
-                   m.attempts > 1 ? ` <span class="muted">ניסיון <span class="num">${m.attempts}</span></span>` : ''}${
-                   m.error ? `<br><span class="muted">${esc(m.error.message)}</span>` : ''}</td>
-               </tr>`;
-             }).join('')}</tbody>
-           </table></div>`
-        : '<p class="empty">אין הודעות עדיין.</p>'}
-      <button class="btn ghost wide mt" data-act="wa-messages">טעינת ההודעות</button>
-    </section>
-
-    ${S.wa.events.length ? `
-      <section class="panel">
-        <h3 class="sec-title">יומן החיבור</h3>
-        <div class="tblwrap"><table class="tbl">
-          <thead><tr><th>מתי</th><th>מצב</th><th>פירוט</th></tr></thead>
-          <tbody>${S.wa.events.map((e) => `
-            <tr><td>${esc(fmtDate(e.at))}</td>
-                <td>${esc((WA_STATE[e.state] || { label: e.state }).label)}</td>
-                <td>${esc(waDetail(e.detail))}</td></tr>`).join('')}</tbody>
-        </table></div>
-      </section>` : ''}
-
-    <div class="callout risk">
-      <p class="callout-title">אזהרה שצריכה להיאמר</p>
-      <p class="mb0">שליחה דרך וואטסאפ־ווב אינה שירות רשמי והיא מנוגדת לתנאי השימוש. חשבון ששולח כך עלול להיחסם, לפעמים לצמיתות. מומלץ קו ייעודי — לא מספר אישי — ורק הודעות שירות לחיילי המסייעת.</p>
-    </div>`;
-}
-
 function renderSecurityTab() {
   return `
     <div class="callout">
@@ -9129,8 +8841,6 @@ $app.addEventListener('input', (e) => {
     case 'lic-exp': S.licExp = el.value; break;   // re-render happens on 'change'
     // The test-message box. Held in state so the four-second poll's re-render
     // does not wipe what is being typed.
-    case 'wa-test-to': S.wa.testTo = el.value; break;
-    case 'wa-test-body': S.wa.testBody = el.value; break;
   }
 });
 
@@ -9540,12 +9250,6 @@ function dispatch(act, el) {
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;
     // the WhatsApp gateway
-    case 'wa-refresh': waRefresh(); break;
-    case 'wa-messages': waMessages(); break;
-    case 'wa-connect': waAction('connect'); break;
-    case 'wa-reconnect': waAction('reconnect'); break;
-    case 'wa-logout': S.askDel = ''; waAction('logout'); break;
-    case 'wa-test-send': waTestSend(); break;
     case 'user-del': userDelete(el.dataset.u); break;
     case 'uedit-open': {
       const name = el.dataset.u;
