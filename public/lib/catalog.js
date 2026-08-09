@@ -30,6 +30,19 @@ const ITEMS = [
     id: 'mags', name: 'מחסניות', qty: true, min: 1, max: 20,
     icon: `${SVG_OPEN}<path d="M9 3h7c-.5 6-1.5 11-3.5 17H7C7.5 14 8.5 9 9 3z"/><path d="M9.5 7h6"/></svg>`,
   },
+  // Lifesaving kit. A soldier carries these and is expected to be able to
+  // account for them, so they are signed for like everything else — and unlike
+  // everything else, one that has gone missing is worth noticing quickly.
+  {
+    // The strap, with the windlass across it.
+    id: 'cat', name: 'חסם עורקים (CAT)', qty: true, min: 1, max: 10,
+    icon: `${SVG_OPEN}<rect x="2.5" y="8.5" width="19" height="7" rx="2"/><path d="M8.5 5.2l7 13.6"/></svg>`,
+  },
+  {
+    // A dressing pad, with the cross that says what it is for.
+    id: 'dressing', name: 'תחבושת אישית (ת״א)', qty: true, min: 1, max: 10,
+    icon: `${SVG_OPEN}<rect x="3.5" y="7" width="17" height="10" rx="2.5"/><path d="M12 9.8v4.4"/><path d="M9.8 12h4.4"/></svg>`,
+  },
 ];
 
 const itemById = (id) => ITEMS.find((i) => i.id === id);

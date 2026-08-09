@@ -3329,6 +3329,12 @@ function trackDetail(rec) {
   if (S.recEdit === rec.rid) {
     return `<div class="rowdetail">${recEditor(rec)}${fpStrip(rec.rid)}</div>`;
   }
+  /* The licence correction takes the drawer for the same reason, and it is the
+     same editor the licences screen opens. One soldier is reached from either
+     side, and two ways to replace a blurred photograph would drift apart. */
+  if (S.licEdit === rec.rid) {
+    return `<div class="rowdetail">${licEditor(licRow(rec))}${fpStrip(rec.rid)}</div>`;
+  }
 
   const personal = [
     dfield('שם מלא', esc(d.name)),
@@ -3369,6 +3375,8 @@ function trackDetail(rec) {
       : ''}
     <button class="dact" data-act="rec-edit" data-rid="${esc(rec.rid)}">
       ${DICO.pen}<span>עריכת פרטים</span></button>
+    <button class="dact" data-act="lic-edit" data-rid="${esc(rec.rid)}">
+      ${DICO.folder}<span>תיקון רישיונות וצילומים</span></button>
     <div class="dact-del">${
       delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקת הרשומה', 'מחיקת הרשומה')
     }</div>`;
@@ -3480,27 +3488,31 @@ const LIC_LABEL = {
 
 // The overview has no search box of its own, so it must not inherit the search
 // and department filter left behind on another tab — it passes `false`.
+/* One record reduced to what a licence screen needs. Split out of
+   licenceRows() because the equipment drawer offers the same correction and
+   needs the same shape for one soldier rather than a filtered list. */
+function licRow(rec) {
+  const d = rec.data;
+  const civ = (d.lic || {}).civil;
+  return {
+    rid: rec.rid,
+    name: d.name,
+    pn: d.pn,
+    dept: deptName(d.dept),
+    no: (civ && civ.no) || '',
+    exp: (civ && civ.exp) || '',
+    st: civ && civ.has ? licState(civ.exp) : 'none',
+    doc: !!(civ && civ.doc),
+    mil: !!((d.lic || {}).military && d.lic.military.has),
+    // The military licence is a photograph and nothing else — there is no
+    // number and no expiry to type — so whether one was attached is the only
+    // thing the screen can say about it.
+    milDoc: !!((d.lic || {}).military && d.lic.military.doc),
+  };
+}
+
 function licenceRows(approved, filtered = true) {
-  return (filtered ? applyFilters(approved) : approved).map((rec) => {
-    const d = rec.data;
-    const civ = (d.lic || {}).civil;
-    const st = civ && civ.has ? licState(civ.exp) : 'none';
-    return {
-      rid: rec.rid,
-      name: d.name,
-      pn: d.pn,
-      dept: deptName(d.dept),
-      no: (civ && civ.no) || '',
-      exp: (civ && civ.exp) || '',
-      st,
-      doc: !!(civ && civ.doc),
-      mil: !!((d.lic || {}).military && d.lic.military.has),
-      // The military licence is a photograph and nothing else — there is no
-      // number and no expiry to type — so whether one was attached is the only
-      // thing the screen can say about it.
-      milDoc: !!((d.lic || {}).military && d.lic.military.doc),
-    };
-  });
+  return (filtered ? applyFilters(approved) : approved).map(licRow);
 }
 
 /* ── Correcting a licence from the console ─────────────────────────────
