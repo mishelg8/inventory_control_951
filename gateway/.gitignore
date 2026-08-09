@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+
+# WhatsApp Web credentials. Scanning the QR writes a real, reusable login for
+# the account here — treat this directory exactly as you would a password.
+.wwebjs_auth/
+.wwebjs_cache/
+data/
+session/
+
+# Real configuration. .env.example is the one that is committed.
+.env
+.env.*
+!.env.example
