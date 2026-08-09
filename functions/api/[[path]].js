@@ -1262,8 +1262,15 @@ export async function onRequest(context) {
         const id = env.GREEN_ID || '';
         const token = env.GREEN_TOKEN || '';
         if (!base || !id || !token) {
-          // Not configured is a normal state: the wa.me links carry on.
-          if (method === 'GET') return json({ enabled: false });
+          /* Not configured is a normal state: the wa.me links carry on. Which
+             of the three is missing is the whole diagnosis, though — saying
+             "one of these three" sends someone to check all three, and two of
+             them live in wrangler.toml while the third is a Pages secret, set
+             a different way. Names only; a value never leaves this side. */
+          const missing = [
+            !base && 'GREEN_API_URL', !id && 'GREEN_ID', !token && 'GREEN_TOKEN',
+          ].filter(Boolean);
+          if (method === 'GET') return json({ enabled: false, missing });
           return err(503, 'שירות הוואטסאפ אינו מוגדר');
         }
         const call = async (path, init) => {

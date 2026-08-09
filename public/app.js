@@ -265,8 +265,8 @@ const S = {
   licExp: '',                   // civilian licence expiry, ISO yyyy-mm-dd
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
-  wa: { loaded: false, enabled: false, reachable: false, state: '', qr: null,
-        err: null, to: '', body: '', busy: false },
+  wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
+        qr: null, err: null, to: '', body: '', busy: false },
 
   // correcting a licence from the console: which row is open, and its draft
   licEdit: '',                  // rid, '' when nothing is being corrected
@@ -7127,6 +7127,7 @@ async function waRefresh() {
     const r = await api('/admin/wa/status');
     S.wa.loaded = true;
     S.wa.enabled = r.enabled !== false;
+    S.wa.missing = Array.isArray(r.missing) ? r.missing : [];
     S.wa.reachable = r.reachable !== false;
     S.wa.state = r.state || '';
     S.wa.err = r.error || null;
@@ -7171,7 +7172,11 @@ function renderWaTab() {
         <h2 class="panel-title">וואטסאפ</h2>
         <div class="callout">
           <p class="callout-title">אינו מוגדר</p>
-          <p class="mb0">חסרים <code>GREEN_API_URL</code>, <code>GREEN_ID</code> ו-<code>GREEN_TOKEN</code> בהגדרות הפרויקט בקלאודפלייר. עד שיוגדרו, כפתורי הוואטסאפ במסכים האחרים עובדים כרגיל.</p>
+          <p class="mb0">${S.wa.missing && S.wa.missing.length
+            ? `${S.wa.missing.length === 1 ? 'חסר' : 'חסרים'} ${S.wa.missing
+                .map((k) => `<code>${esc(k)}</code>`).join(', ')} בהגדרות הפרויקט בקלאודפלייר.`
+            : 'שירות הוואטסאפ אינו מוגדר בהגדרות הפרויקט בקלאודפלייר.'
+          } עד שיוגדר, כפתורי הוואטסאפ במסכים האחרים עובדים כרגיל.</p>
         </div>
       </section>`;
   }
