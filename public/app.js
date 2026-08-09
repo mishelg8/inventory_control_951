@@ -268,6 +268,8 @@ const S = {
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
         qr: null, err: null, to: '', body: '', busy: false },
 
+  creditAsk: '',                // rid whose "credit everything" question is open
+
   // correcting a licence from the console: which row is open, and its draft
   licEdit: '',                  // rid, '' when nothing is being corrected
   licDraft: null,               // { civil, no, exp, military, pic: {kind -> obj|null} }
@@ -2375,7 +2377,8 @@ function renderConsole() {
         <div class="navlist" role="tablist">${nav}</div>
       </aside>
       <div class="cmain">${body}</div>
-    </div>`);
+    </div>
+    ${creditDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -3341,19 +3344,20 @@ function trackDetail(rec) {
     const it = d.items[item.id];
     const r = it.r || 0;
     const returned = r >= it.t;
-    return `<li class="rec-row">
-        <span class="rec-row-main">
-          <span class="row-ico" aria-hidden="true">${item.icon}</span>
-          <span>
-            <span class="tagi${returned ? ' done' : ''}">${esc(item.name)}</span>
-            <span class="rec-row-sub">הוחזרו <span class="num">${r}</span> מתוך <span class="num">${it.t}</span></span>
-          </span>
-        </span>
+    /* One line per item. It used to be three — a pill for the name, which wrapped
+       to three more lines on a narrow drawer for anything called "חסם עורקים
+       (CAT)", and "הוחזרו 1 מתוך 1" spelled out underneath it. A soldier with
+       eight items filled the screen twice over for a fact that is two numbers.
+       The steppers keep their size: they are what a thumb has to hit. */
+    return `<li class="kit-row${returned ? ' is-back' : ''}">
+        <span class="row-ico" aria-hidden="true">${item.icon}</span>
+        <span class="kit-name">${returned ? '✓ ' : ''}${esc(item.name)}</span>
+        <span class="kit-count num" aria-label="הוחזרו ${r} מתוך ${it.t}">${r}/${it.t}</span>
         <span class="rec-row-tools step">
           <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
-                  data-item="${item.id}" data-d="-1" aria-label="ביטול החזרה" ${r <= 0 ? 'disabled' : ''}>−</button>
+                  data-item="${item.id}" data-d="-1" aria-label="ביטול החזרה — ${esc(item.name)}" ${r <= 0 ? 'disabled' : ''}>−</button>
           <button type="button" class="step-btn" data-act="credit" data-rid="${esc(rec.rid)}"
-                  data-item="${item.id}" data-d="1" aria-label="החזרה" ${r >= it.t ? 'disabled' : ''}>+</button>
+                  data-item="${item.id}" data-d="1" aria-label="החזרה — ${esc(item.name)}" ${r >= it.t ? 'disabled' : ''}>+</button>
         </span>
       </li>`;
   }).join('');
@@ -8779,6 +8783,47 @@ const adminCredit = (rid, itemId, delta) =>
     renderConsole();
   });
 
+/* "זיכוי מלא" writes off every item a soldier is holding in one press, and it
+   is next to the delete button on a phone. The row's arm-then-confirm was not
+   enough: it asks in a strip the width of a table cell and it does not say
+   what is about to be written off. This is the one action in the console that
+   has to be read before it is answered, so it takes the middle of the screen
+   and puts the list in front of the person pressing it. */
+function creditDialog() {
+  if (!S.creditAsk) return '';
+  const rec = findRec(S.creditAsk);
+  if (!rec || rec.damaged) return '';
+  const d = rec.data;
+  const held = ITEMS.filter((i) => d.items[i.id])
+    .map((i) => ({ i, out: d.items[i.id].t - (d.items[i.id].r || 0) }))
+    .filter((x) => x.out > 0);
+  const done = ITEMS.filter((i) => d.items[i.id]).length - held.length;
+  return `
+    <div class="modal-back" data-act="credit-cancel">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="creditq">
+        <h2 class="modal-title" id="creditq">האם ${esc(d.name)} החזיר את כל הציוד?</h2>
+        <p class="modal-sub">אישור מזכה את כל הפריטים שלמטה בבת אחת. הפעולה נרשמת ביומן הרשומה, ומבטלים אותה רק פריט־פריט.</p>
+        ${held.length
+          ? `<ul class="modal-list">${held.map(({ i, out }) => `
+              <li class="kit-row">
+                <span class="row-ico" aria-hidden="true">${i.icon}</span>
+                <span class="kit-name">${esc(i.name)}</span>
+                <span class="kit-count num">${out}</span>
+              </li>`).join('')}</ul>
+             <p class="modal-note"><span class="num">${held.length}</span> פריטים ייסגרו${
+               done ? ` · <span class="num">${done}</span> כבר הוחזרו` : ''}</p>`
+          : '<p class="modal-note">אין פריטים פתוחים — הכל כבר מזוכה.</p>'}
+        <div class="modal-acts">
+          <button class="btn ghost" type="button" data-act="credit-cancel">ביטול</button>
+          ${held.length
+            ? `<button class="btn primary" type="button" data-act="credit-ok"
+                       data-rid="${esc(rec.rid)}">כן, החזיר הכל</button>`
+            : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
 const adminCreditAll = (rid) =>
   withBusy(async () => {
     const rec = findRec(rid);
@@ -9078,6 +9123,10 @@ $app.addEventListener('click', (e) => {
   const act = el.dataset.act;
   // toggling an equipment row shouldn't fire when a stepper button inside it was hit
   if (act === 's-toggle' && e.target.closest('.step-btn')) return;
+  /* The backdrop closes the question; the card standing on it does not. Both
+     carry the same action because the backdrop wraps the card, so the press
+     has to have landed on the backdrop itself. */
+  if (act === 'credit-cancel' && el.classList.contains('modal-back') && e.target !== el) return;
   /* The two message buttons stay anchors carrying a wa.me address, and that
      address is still what happens when there is no line to send on. When there
      is one, the navigation is cancelled here and the message goes out over it
@@ -9097,6 +9146,14 @@ $app.addEventListener('click', (e) => {
     if (act === 'ask-cancel') return;
   }
   dispatch(act, el);
+});
+
+// Escape answers "no" to the credit question, which is the safe answer.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && S.creditAsk) {
+    S.creditAsk = '';
+    renderConsole();
+  }
 });
 
 $app.addEventListener('keydown', (e) => {
@@ -9394,7 +9451,9 @@ function dispatch(act, el) {
     case 'adj': adminAdjust(rid, item, d); break;
     case 'approve': adminApprove(rid); break;
     case 'credit': adminCredit(rid, item, d); break;
-    case 'creditall': adminCreditAll(rid); break;
+    case 'creditall': S.askDel = ''; S.creditAsk = rid; renderConsole(); break;
+    case 'credit-cancel': S.creditAsk = ''; renderConsole(); break;
+    case 'credit-ok': S.creditAsk = ''; adminCreditAll(rid); break;
     case 'del': adminDelete(rid); break;
     case 'wipe': adminWipe(); break;
     // search & grouping
