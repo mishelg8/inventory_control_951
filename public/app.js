@@ -145,30 +145,32 @@ const fmtDay = (iso) => {
 
 const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
 
-// Three upload buttons, not two, because a web page cannot choose which app
-// Android opens. `accept` and `capture` are the only levers HTML has, and the
-// OS decides the rest — so the soldier gets every door instead of the one door
-// we guessed at:
+// The gallery button keeps `accept="image/*"`, and three attempts to improve on
+// that are recorded here so nobody spends the afternoon a fourth time.
 //
-//   accept="image/*" + capture   → the camera
-//   accept="image/*"             → Android's photo picker (the phone's photos,
-//                                  plus cloud albums when a cloud media
-//                                  provider is configured — which is why it
-//                                  can look like Google Photos)
-//   no accept                    → the file browser: DCIM, Downloads, and the
-//                                  gallery reachable from the side list
+// A web page cannot choose which app Android opens: `accept` and `capture` are
+// the only levers HTML has, and the OS resolves the intent. What `accept` does
+// control is the intent's MIME type, and that decides which apps are even
+// offered — `image/*` is what a gallery registers for. Samsung Gallery is not
+// in the list for anything else.
 //
-// Two earlier attempts to force the gallery failed and are recorded so nobody
-// tries them a third time. Naming the image types explicitly changed nothing:
-// Chrome only asks whether the list is image-only, and an explicit list of
-// image types still is. Dropping `accept` altogether moved the button to the
-// file browser, which is a different wrong place.
+//   naming the image types explicitly   no change. Chrome asks only whether the
+//                                       list is image-only, and it still was.
+//   dropping `accept` altogether        intent becomes */*, so the chooser
+//                                       offered Camera, My Files and Files —
+//                                       no gallery, because a gallery does not
+//                                       claim */*. Verified on a Samsung.
+//   offering both as two buttons        the second button could not reach the
+//                                       gallery, so it was only clutter.
 //
-// The file browser also offers PDFs and the rest, so the choice is checked here
-// rather than by the OS. Only a positively non-image type is refused: files
-// handed over by the Android document picker often arrive with an empty `type`,
-// and rejecting those would throw away real photos. compressImage() decodes
-// whatever gets through and fails loudly if it is not a picture.
+// When `image/*` opens Google Photos rather than the gallery, that is the
+// phone's default handler for image picking, and it is cleared in Android
+// settings — not from here.
+//
+// notAnImage() stays because it is the better guard regardless: files can
+// arrive with an empty `type`, and rejecting those would throw away real
+// photos. Only a type the browser positively reports as something else is
+// refused, and compressImage() fails loudly on the rest.
 const notAnImage = (file) => !!file.type && !/^image\//.test(file.type);
 
 // Downscale and re-encode a camera photo until it fits, keeping the licence
@@ -1293,10 +1295,8 @@ function renderRefuel() {
             <label class="btn ghost small">📷 צילום הקבלה
               <input class="vis-hidden" type="file" accept="image/*" capture="environment"
                      data-act="rf-photo"></label>
-            <label class="btn ghost small">🖼 תמונות
+            <label class="btn ghost small">🖼 בחירה מהגלריה
               <input class="vis-hidden" type="file" accept="image/*" data-act="rf-photo"></label>
-            <label class="btn ghost small">📁 קבצים
-              <input class="vis-hidden" type="file" data-act="rf-photo"></label>
           </div>
           ${S.rfPhoto
             ? `<div class="fp">
@@ -1655,18 +1655,12 @@ function licCapture(kind) {
                data-act="lic-file" data-kind="${kind.id}">
       </label>
       <label class="btn ghost lic-pick">
-        <span>🖼 תמונות</span>
+        <span>🖼 מהגלריה</span>
         <input class="vis-hidden" type="file" accept="image/*"
                data-act="lic-file" data-kind="${kind.id}">
       </label>
-      <label class="btn ghost lic-pick">
-        <span>📁 קבצים</span>
-        <input class="vis-hidden" type="file"
-               data-act="lic-file" data-kind="${kind.id}">
-      </label>
     </div>
-    ${shot ? '' : `<p class="field-hint center">נפתח לכם המקום הלא נכון? נסו כפתור אחר — כל מכשיר פותח אפליקציה אחרת.</p>
-         <p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>`}`;
+    ${shot ? '' : '<p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>'}`;
 }
 
 // Checkbox, then the fields that licence needs. The civilian one also takes
@@ -5847,11 +5841,8 @@ function fuelDetail(card, i) {
       <label class="btn ghost small">📷 צילום קבלה
         <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
                data-act="fuel-file" data-i="${i}"></label>
-      <label class="btn ghost small">🖼 תמונות
+      <label class="btn ghost small">🖼 בחירה מהגלריה
         <input class="vis-hidden" type="file" accept="image/*" multiple
-               data-act="fuel-file" data-i="${i}"></label>
-      <label class="btn ghost small">📁 קבצים
-        <input class="vis-hidden" type="file" multiple
                data-act="fuel-file" data-i="${i}"></label>
       ${card.receipts.length
         ? `<button class="btn ghost small" data-act="fuel-dl-all" data-i="${i}">הורדת כל הקבלות</button>`
