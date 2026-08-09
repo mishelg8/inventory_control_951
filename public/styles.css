@@ -1673,6 +1673,11 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   border-radius: var(--r-md);
   padding: 9px 12px;
 }
+/* Four stats will not fit across a phone at the 118px floor, so they break
+   3 + 1 and the last one reads as an afterthought. Two by two until there is
+   real room for four. */
+.stat-row.quad .stat { flex: 1 1 calc(50% - 5px); }
+@media (min-width: 640px) { .stat-row.quad .stat { flex: 1 1 0; } }
 .stat-n { display: block; font-size: var(--t-2xl); font-weight: 700; line-height: 1.15; }
 .stat-l { display: block; font-size: var(--t-2xs); color: var(--muted); font-weight: 600; }
 

@@ -3624,12 +3624,26 @@ function licEditor(r) {
 
 const LIC_RANK = { expired: 0, none: 1, nodate: 2, soon: 3, valid: 4 };
 
+/* "לא בתוקף" says one thing and one thing only: the date written on the licence
+   has already passed. A soldier who never had a licence has nothing that could
+   expire, and counting the two together made the console announce people as
+   "רישיון לא בתוקף" who simply never held one — a different problem, chased in
+   a different way. Both are still forbidden to drive, so both rows stay red;
+   they are counted and named apart.
+
+   A licence marked as held with no expiry date on it is neither: nothing
+   expired, but there is no valid licence on file either. It sits with the
+   missing ones, under a name that fits both — "חסר". */
+const licExpired = (r) => r.st === 'expired';
+const licMissing = (r) => r.st === 'none' || r.st === 'nodate';
+const licBlocked = (r) => licExpired(r) || licMissing(r);
+
 /* How many licences need attention: expired, missing, or with no date on them
    at all. Drives the count on the tab, so the sidebar says there is something
    here without anyone having to open the screen. */
 function licAlerts() {
   return licenceRows(S.recs.filter((r) => r.status === 'approved' && !r.damaged), false)
-    .filter((r) => r.st === 'none' || r.st === 'expired' || r.st === 'nodate').length;
+    .filter(licBlocked).length;
 }
 
 /* Driving licences, on a screen of their own.
@@ -3647,7 +3661,9 @@ function renderLicTab() {
 
 function licencePanel(approved) {
   const rows = licenceRows(approved);
-  const bad = rows.filter((r) => r.st === 'none' || r.st === 'expired' || r.st === 'nodate');
+  const gone = rows.filter(licExpired);
+  const missing = rows.filter(licMissing);
+  const bad = rows.filter(licBlocked);
   const soon = rows.filter((r) => r.st === 'soon');
   const ok = rows.filter((r) => r.st === 'valid');
 
@@ -3655,7 +3671,7 @@ function licencePanel(approved) {
     .slice()
     .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'))
     .map((r) => {
-      const alarm = r.st === 'expired' || r.st === 'none' || r.st === 'nodate';
+      const alarm = licBlocked(r);
       /* Holding the civilian licence and not the military one is not a fault —
          the soldier may drive, just not the unit's vehicles — so it cannot be
          red. It is still the thing a מפל״ג needs to see at a glance when
@@ -3710,14 +3726,20 @@ function licencePanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רישיונות נהיגה</h2>
-      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. פג תוקף או חסר — מסומן באדום. אזרחי בלבד, בלי רישיון צבאי — מסומן בצהוב. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
-      <div class="stat-row">
+      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. ״פג תוקף״ הוא רישיון שהתאריך שלו כבר עבר; מי שאין לו רישיון כלל מסומן ״אין רישיון״ — שניהם באדום, ושניהם אסורים בנהיגה. אזרחי בלבד, בלי רישיון צבאי — מסומן בצהוב. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
+      <div class="stat-row quad">
         <div class="stat"><span class="stat-n num">${ok.length}</span><span class="stat-l">✓ בתוקף</span></div>
         <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
-        <div class="stat"><span class="stat-n num">${bad.length}</span><span class="stat-l">⚠ לא בתוקף</span></div>
+        <div class="stat"><span class="stat-n num">${gone.length}</span><span class="stat-l">⚠ פג תוקף</span></div>
+        <div class="stat"><span class="stat-n num">${missing.length}</span><span class="stat-l">⚠ אין רישיון</span></div>
       </div>
       ${bad.length
-        ? `<div class="callout alert"><p class="mb0"><strong class="num">${bad.length}</strong> חיילים ללא רישיון אזרחי בתוקף — ראו את השורות האדומות.</p></div>`
+        ? `<div class="callout alert"><p class="mb0">${[
+            gone.length ? `<strong class="num">${gone.length}</strong> ${
+              gone.length === 1 ? 'רישיון שפג תוקפו' : 'רישיונות שפג תוקפם'}` : '',
+            missing.length ? `<strong class="num">${missing.length}</strong> ${
+              missing.length === 1 ? 'חייל ללא רישיון רשום' : 'חיילים ללא רישיון רשום'}` : '',
+          ].filter(Boolean).join(' · ')} — ראו את השורות האדומות. אסור שינהגו.</p></div>`
         : ''}
       ${rows.length
         ? `<div class="tbl-scroll">
@@ -3923,7 +3945,8 @@ const REPORTS = {
         ]),
         summary: `${rows.filter((r) => r.st === 'valid').length} בתוקף · ` +
           `${rows.filter((r) => r.st === 'soon').length} פגים בקרוב · ` +
-          `${rows.filter((r) => r.st !== 'valid' && r.st !== 'soon').length} לא בתוקף`,
+          `${rows.filter(licExpired).length} פג תוקף · ` +
+          `${rows.filter(licMissing).length} אין רישיון`,
       };
     },
   },
@@ -4543,7 +4566,9 @@ function renderOverviewTab() {
   // licences are their own subject — kept apart from the weapon count
   const licRows = licenceRows(approved, false);
   const licOk = licRows.filter((r) => r.st === 'valid').length;
-  const licBad = licRows.filter((r) => r.st !== 'valid' && r.st !== 'soon').length;
+  const licGone = licRows.filter(licExpired).length;
+  const licNone = licRows.filter(licMissing).length;
+  const licBad = licGone + licNone;
   const licSoon = licRows.filter((r) => r.st === 'soon').length;
 
   const tiles = [
@@ -4554,8 +4579,13 @@ function renderOverviewTab() {
         shortItems.length ? shortItems.map((i) => i.name).join(', ') : 'המלאי מכסה'),
     kpi(openReps, 'בקשות חוסר פתוחות', openReps ? 'warn' : 'ok'),
     kpi(armed, 'נשקים משויכים', null, `${approved.length - armed} ללא נשק רשום`),
-    kpi(licBad, 'רישיונות לא בתוקף', licBad ? 'bad' : 'ok',
-        `${licOk} בתוקף${licSoon ? ` · ${licSoon} פגים בקרוב` : ''}`),
+    /* One tile, because the answer a מפל״ג wants at a glance is "how many may
+       not drive" — but the reason is spelled out underneath, so the number
+       never claims a licence expired when there was never a licence. */
+    kpi(licBad, 'חיילים שאסור שינהגו', licBad ? 'bad' : 'ok',
+        [licGone ? `${licGone} פג תוקף` : '', licNone ? `${licNone} אין רישיון` : '',
+         licSoon ? `${licSoon} פגים בקרוב` : ''].filter(Boolean).join(' · ')
+        || `${licOk} בתוקף`),
   ].join('');
 
   // Everything the armoury, ammunition, vehicle and fuel registers know, in the
@@ -4601,8 +4631,10 @@ function renderOverviewTab() {
       t: 'פריטים בחוסר', s: shortItems.map((i) => i.name).join(', ') },
     // Licences have a screen of their own now; these two still sent you to the
     // reports tab, where the table they were pointing at no longer is.
-    licBad && { n: licBad, tone: 'bad', tab: 'lic',
-      t: 'רישיונות לא בתוקף', s: 'חיילים שאסור שינהגו' },
+    licGone && { n: licGone, tone: 'bad', tab: 'lic',
+      t: 'רישיונות שפג תוקפם', s: 'התאריך עבר — אסור שינהגו עד חידוש' },
+    licNone && { n: licNone, tone: 'bad', tab: 'lic',
+      t: 'חיילים ללא רישיון רשום', s: 'לא הוגש רישיון אזרחי — אסור שינהגו' },
     licSoon && { n: licSoon, tone: 'warn', tab: 'lic',
       t: 'רישיונות פגים בקרוב', s: 'כדאי לחדש לפני שיפוג' },
     vehLate.length && { n: vehLate.length, tone: 'bad', tab: 'veh',
@@ -4725,7 +4757,7 @@ function renderOverviewTab() {
       }
     }
     const armedN = recs.filter((x) => x.data.weapon).length;
-    const badLic = licRows.filter((l) => l.dept === dp.name && l.st !== 'valid' && l.st !== 'soon').length;
+    const badLic = licRows.filter((l) => l.dept === dp.name && licBlocked(l)).length;
     return { ...dp, n: recs.length, t, r, out: t - r, pct: pct(r, t), armedN, badLic };
   }).filter((d) => d.n);
 
@@ -4837,7 +4869,7 @@ function renderOverviewTab() {
                <thead><tr>
                  <th>מחלקה</th><th class="num">חיילים</th><th class="num">הוחתם</th>
                  <th class="num">הוחזר</th><th class="num">בחוץ</th>
-                 <th class="num">נשקים</th><th class="num">רישיון לא תקף</th><th>% הוחזר</th>
+                 <th class="num">נשקים</th><th class="num">פג תוקף / אין רישיון</th><th>% הוחזר</th>
                </tr></thead>
                <tbody>${deptTable}</tbody>
              </table>
