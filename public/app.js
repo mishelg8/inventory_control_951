@@ -115,9 +115,21 @@ async function api(path, opts = {}) {
 
 
 
+/* The bounds of a date anybody could mean. A native date field will happily
+   hold the year 62, and a mistyped year is the single most common way to get
+   one — so the field is told to refuse it, and so is everything downstream. */
+const DATE_MIN = '1990-01-01';
+const DATE_MAX = '2099-12-31';
+
+const inDateRange = (iso) => typeof iso === 'string' && iso >= DATE_MIN && iso <= DATE_MAX;
+
 // 'valid' | 'soon' | 'expired' | 'nodate' — drives the red/amber/green states.
 function licState(expiry) {
   if (!expiry) return 'nodate';
+  /* A year outside the range is not an expired licence, it is a typo. Calling
+     it 'expired' put a red "the licence has expired" under a field the soldier
+     was still in the middle of filling in. */
+  if (!inDateRange(expiry)) return 'nodate';
   const t = Date.parse(`${expiry}T23:59:59`);
   if (Number.isNaN(t)) return 'nodate';
   const days = Math.floor((t - Date.now()) / DAY_MS);
@@ -1618,12 +1630,15 @@ function licBlock(kind) {
         </label>
         <label class="field">
           <span class="field-label">בתוקף עד</span>
-          <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}">
-          ${S.licExp && st === 'expired'
-            ? '<span class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</span>'
-            : S.licExp && st === 'soon'
-              ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
-              : ''}
+          <input class="input" type="date" data-act="lic-exp" value="${esc(S.licExp)}"
+                 min="${DATE_MIN}" max="${DATE_MAX}">
+          ${S.licExp && !inDateRange(S.licExp)
+            ? '<span class="field-hint bad-hint">⚠ התאריך אינו תקין — בדקו את השנה.</span>'
+            : S.licExp && st === 'expired'
+              ? '<span class="field-hint bad-hint">⚠ התאריך שהוזן כבר עבר — הרישיון אינו בתוקף.</span>'
+              : S.licExp && st === 'soon'
+                ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
+                : ''}
         </label>
         <span class="field-label">צילום הרישיון</span>
         ${licCapture(kind)}
@@ -5419,7 +5434,7 @@ function renderVehTab() {
                  data-act="veh-company" data-i="${i}" aria-label="חברת השכרה" placeholder="חברה"></td>
       <td><input class="input mini num" type="text" inputmode="numeric" maxlength="7" value="${x.km}"
                  data-act="veh-km" data-i="${i}" aria-label="ק״מ עדכני"></td>
-      <td><input class="input mini" type="date" value="${esc(x.service)}"
+      <td><input class="input mini" type="date" value="${esc(x.service)}" min="${DATE_MIN}" max="${DATE_MAX}"
                  data-act="veh-service" data-i="${i}" aria-label="מועד טיפול"></td>
       <td><input class="input mini num" type="text" maxlength="12" value="${esc(x.code)}"
                  data-act="veh-code" data-i="${i}" aria-label="קוד קודן" placeholder="קודן"></td>
@@ -7410,6 +7425,11 @@ async function soldierIdentSubmit(form) {
   if (!identOk(form, pn, name)) return;
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
   if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  /* Sent rather than dropped: a nonsense expiry is worth stopping on, because
+     silently discarding it would file the licence as having no expiry at all. */
+  if (S.licExp && !inDateRange(S.licExp)) {
+    return setFormErr(form, 'תאריך תוקף הרישיון אינו תקין — בדקו את השנה');
+  }
   setFormErr(form, '');
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;

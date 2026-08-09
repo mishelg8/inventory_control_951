@@ -802,7 +802,18 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
    Turning the appearance off is what puts it back under our width. The inner
    value is a shadow element of its own and stays centred with a margin unless
    it is told otherwise, which is the rest of the drift. Harmless everywhere
-   else — on a desktop these rules describe what already happens. */
+   else — on a desktop these rules describe what already happens.
+
+   And a date is not a sentence, so it must not be laid out like one. Day,
+   month and year are one unit with a fixed internal order, and inside an RTL
+   page Safari lays that unit out right-to-left like any other run of text. The
+   visible damage is in the typing: a year entered as 2026 lands as 0062, the
+   field decides the licence expired in the first century, and the form
+   dutifully warns that it has expired. Chrome never shows this — its own
+   stylesheet pins date inputs to ltr and ignores the page — so the fix is to
+   say out loud what one engine already assumed, and the two then agree. The
+   value still sits against the right edge, where every other field on the card
+   keeps its content. */
 .input[type="date"] {
   appearance: none;
   -webkit-appearance: none;
@@ -810,9 +821,17 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
   width: 100%;
   min-width: 0;
   max-width: 100%;
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: right;
+}
+.input[type="date"]::-webkit-datetime-edit,
+.input[type="date"]::-webkit-datetime-edit-fields-wrapper {
+  direction: ltr;
+  text-align: right;
 }
 .input[type="date"]::-webkit-date-and-time-value {
-  text-align: start;
+  text-align: right;
   margin: 0;
 }
 .input[type="date"]::-webkit-calendar-picker-indicator { margin-inline-start: 0; }
