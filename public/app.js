@@ -145,6 +145,15 @@ const fmtDay = (iso) => {
 
 const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
 
+// What the "from the gallery" buttons accept. Not `image/*` on purpose: Android
+// turns a bare wildcard into the media intent, which Google Photos owns, so the
+// soldier lands in a cloud album instead of the pictures on the phone. Spelling
+// the types out makes Chrome open the document picker, where the gallery, DCIM
+// and Downloads are all reachable. HEIC/HEIF are listed because without them an
+// iPhone greys out every photo it took. compressImage() re-encodes whatever
+// arrives to JPEG through a canvas, so the list costs nothing.
+const GALLERY_ACCEPT = 'image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,image/gif,image/bmp';
+
 // Downscale and re-encode a camera photo until it fits, keeping the licence
 // text legible. Runs entirely on the soldier's device — the original file is
 // never uploaded, only the compressed result, and only after encryption.
@@ -1268,7 +1277,7 @@ function renderRefuel() {
               <input class="vis-hidden" type="file" accept="image/*" capture="environment"
                      data-act="rf-photo"></label>
             <label class="btn ghost small">🖼 בחירה מהגלריה
-              <input class="vis-hidden" type="file" accept="image/*" data-act="rf-photo"></label>
+              <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}" data-act="rf-photo"></label>
           </div>
           ${S.rfPhoto
             ? `<div class="fp">
@@ -1628,7 +1637,7 @@ function licCapture(kind) {
       </label>
       <label class="btn ghost lic-pick">
         <span>🖼 מהגלריה</span>
-        <input class="vis-hidden" type="file" accept="image/*"
+        <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}"
                data-act="lic-file" data-kind="${kind.id}">
       </label>
     </div>
@@ -5814,7 +5823,7 @@ function fuelDetail(card, i) {
         <input class="vis-hidden" type="file" accept="image/*" capture="environment" multiple
                data-act="fuel-file" data-i="${i}"></label>
       <label class="btn ghost small">🖼 בחירה מהגלריה
-        <input class="vis-hidden" type="file" accept="image/*" multiple
+        <input class="vis-hidden" type="file" accept="${GALLERY_ACCEPT}" multiple
                data-act="fuel-file" data-i="${i}"></label>
       ${card.receipts.length
         ? `<button class="btn ghost small" data-act="fuel-dl-all" data-i="${i}">הורדת כל הקבלות</button>`
