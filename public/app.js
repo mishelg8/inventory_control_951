@@ -2331,13 +2331,19 @@ function renderConsole() {
   else if (S.tab === 'wa') body = renderWaTab();
   else body = renderSecurityTab();
 
-  // Asked for when the screen opens, and then kept asking while a line is
-  // still being linked — see waPollStart(). Only while this tab is open.
+  /* Asked afresh every time the screen is opened, then kept asking while a
+     line is still being linked — see waPollStart(). Asking only once meant a
+     line that had dropped since sign-in went on being reported as connected
+     for as long as the console stayed open, and the row buttons went on
+     claiming they would send. */
   if (S.tab === 'wa') {
-    if (!S.wa.loaded) waRefresh();
+    if (!waTabOpen) { waTabOpen = true; waRefresh(); }
     else if (S.wa.enabled && S.wa.state !== 'authorized') waPollStart();
     else waPollStop();
-  } else waPollStop();
+  } else {
+    waTabOpen = false;
+    waPollStop();
+  }
 
   render(`
     <div class="conbar">
@@ -2884,7 +2890,11 @@ function waPhone(raw) {
 // then apologised for it on screen. It was also the one place where a name, a
 // phone number and an equipment list left the browser in the clear. Removing
 // it means nothing readable leaves this system at all.
-function waLink(d, rid) {
+/* The text and the way it travels are two different things. The same message
+   either opens in the sender's own WhatsApp (wa.me) or goes out over the
+   unit's linked line (GREEN-API) — so it is built once, here, and the caller
+   decides how it leaves. */
+function waSignMsg(d, rid) {
   const lines = ITEMS.filter((i) => d.items[i.id])
     .map((i) => `• ${i.name}${i.qty ? ` ×${d.items[i.id].t}` : ''}`)
     .join('\n');
@@ -2901,11 +2911,14 @@ function waLink(d, rid) {
     (serials ? `*מספרים סידוריים:*\n${serials}\n\n` : '') +
     `מס' רישום: ${rid.slice(0, 8)}\n` +
     'נא לשמור הודעה זו לצורך החזרת הציוד.';
-  return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
+  return msg;
 }
 
+const waLink = (d, rid) =>
+  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waSignMsg(d, rid))}`;
+
 // Return receipt — what came back, and what is still outstanding.
-function returnWaLink(d, rid) {
+function waReturnMsg(d, rid) {
   const back = ITEMS.filter((i) => d.items[i.id] && (d.items[i.id].r || 0) > 0)
     .map((i) => `• ${i.name} ×${d.items[i.id].r}`)
     .join('\n');
@@ -2921,8 +2934,11 @@ function returnWaLink(d, rid) {
       ? `*עדיין רשום עליך:*\n${left}\n\n`
       : '*אין ציוד נוסף הרשום על שמך — החשבון סגור.*\n\n') +
     `מס' רישום: ${rid.slice(0, 8)}`;
-  return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
+  return msg;
 }
+
+const returnWaLink = (d, rid) =>
+  `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waReturnMsg(d, rid))}`;
 
 function damagedCard(rec) {
   return `
@@ -3254,7 +3270,8 @@ function renderTrackTab() {
               : ''}
             <a class="iconbtn wa" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
                data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer"
-               title="שליחת וואטסאפ" aria-label="שליחת וואטסאפ ל${esc(d.name)}">${DICO.wa}</a>
+               title="${waAuto() ? 'שליחת וואטסאפ מהקו — יוצא מיד' : 'שליחת וואטסאפ'}"
+               aria-label="שליחת וואטסאפ ל${esc(d.name)}">${DICO.wa}</a>
             ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, '✕', 'מחיקת הרשומה',
                       'למחוק את הרשומה?')}
           </span>
@@ -3360,11 +3377,13 @@ function trackDetail(rec) {
   const actions = `
     <a class="dact" href="${esc(waLink(d, rec.rid))}" data-act="wa-sign"
        data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
-      ${DICO.wa}<span>${d.notified ? 'הודעת רישום — שליחה חוזרת' : 'שליחת הודעת רישום'}</span></a>
+      ${DICO.wa}<span>${d.notified ? 'הודעת רישום — שליחה חוזרת' : 'שליחת הודעת רישום'}${
+        waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>
     ${anyBack
       ? `<a class="dact" href="${esc(returnWaLink(d, rec.rid))}" data-act="wa-ret"
             data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
-           ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}</span></a>`
+           ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}${
+             waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`
       : ''}
     ${outstanding(d) > 0
       ? `<button class="dact" data-act="creditall" data-rid="${esc(rec.rid)}">
@@ -6938,7 +6957,7 @@ const AUDIT_LABEL = {
   // often. The trail recorded everything an account did except how it got in.
   login: 'כניסה', 'login-fail': 'כניסה נכשלה', 'login-lock': 'נעילה זמנית',
   logout: 'יציאה', 'sessions-revoke': 'ניתוק כל המכשירים',
-  wipe: 'מחיקת כל הנתונים',
+  wipe: 'מחיקת כל הנתונים', 'wa-send': 'שליחת וואטסאפ מהקו',
 };
 
 // Users. Every account carries its own copy of the private key, wrapped under
@@ -7132,6 +7151,7 @@ const waState = () => WA_STATE[S.wa.state] || WA_STATE.unknown;
    gone. */
 const WA_POLL_MS = 5000;
 let waPoll = null;
+let waTabOpen = false;   // the wa screen is showing, so its state was asked for
 
 function waPollStop() {
   if (waPoll) { clearInterval(waPoll); waPoll = null; }
@@ -7174,6 +7194,56 @@ async function waQr() {
     S.wa.qr = r && r.type === 'qrCode' && r.message ? `data:image/png;base64,${r.message}` : null;
   } catch { S.wa.qr = null; }
 }
+
+/* Whether the row buttons send by themselves or hand the message to the
+   sender's own WhatsApp. Only an administrator can send on the line — the
+   server refuses everyone else — and only when a line is actually linked, so
+   anyone else, or any hitch, still gets the wa.me behaviour that has always
+   been there rather than a button that does nothing. */
+const waAuto = () =>
+  S.role === 'admin' && S.wa.loaded && S.wa.enabled && S.wa.reachable
+  && S.wa.state === 'authorized';
+
+/* Asked once at sign-in so the buttons know which of the two they are before
+   anybody presses one. Quiet on failure: not having an answer is the same as
+   "no automatic line", which is the safe direction to be wrong in. */
+async function waProbe() {
+  if (S.role !== 'admin') return;
+  try {
+    const r = await api('/admin/wa/status');
+    S.wa.loaded = true;
+    S.wa.enabled = r.enabled !== false;
+    S.wa.missing = Array.isArray(r.missing) ? r.missing : [];
+    S.wa.reachable = r.reachable !== false;
+    S.wa.state = r.state || '';
+  } catch { /* leaves waAuto() false, which is the wa.me path */ }
+}
+
+/* One soldier's message, out over the unit's line. The record is marked sent
+   only after the provider has accepted it — a message that failed must not
+   leave a ✓ behind, because the next person to look at the row would believe
+   it and never send. */
+const waSendRec = (rid, kind) =>
+  withBusy(async () => {
+    const rec = findRec(rid);
+    if (!rec || rec.damaged) return;
+    const d = rec.data;
+    const phone = String(d.phone || '').trim();
+    if (!phone) { toast('אין מספר טלפון ברשומה', true); return; }
+    const message = kind === 'notified' ? waSignMsg(d, rec.rid) : waReturnMsg(d, rec.rid);
+    try {
+      await api('/admin/wa/send', { method: 'POST', body: { phone, message } });
+    } catch (e) {
+      // The line can drop between the probe and the press. Say so plainly and
+      // leave the record untouched.
+      await waProbe();
+      renderConsole();
+      toast((e && e.message) || 'השליחה נכשלה', true);
+      return;
+    }
+    markSent(rid, kind, 'auto');
+    toast('ההודעה נשלחה');
+  });
 
 const waTestSend = () =>
   withBusy(async () => {
@@ -7253,7 +7323,9 @@ function renderWaTab() {
     <div class="callout risk">
       <p class="callout-title">שתי אזהרות</p>
       <p>שליחה כזאת אינה שירות רשמי של וואטסאפ והיא מנוגדת לתנאי השימוש. חשבון ששולח כך עלול להיחסם, לפעמים לצמיתות. השתמשו בקו ייעודי — לא במספר אישי.</p>
-      <p class="mb0">טקסט ההודעה ומספר הנמען עוברים דרך שרתי הספק. כפתורי ה-wa.me במסכים האחרים אינם עושים זאת — הם פותחים צ'אט מהמכשיר שלכם. למידע רגיש, העדיפו אותם.</p>
+      <p class="mb0">טקסט ההודעה ומספר הנמען עוברים דרך שרתי הספק. ${S.wa.state === 'authorized'
+        ? 'כל עוד הקו מקושר, גם כפתורי ההודעות במסך מעקב הציוד שולחים דרכו — שם החייל ופירוט הציוד בכלל זה. ניתוק הקו מחזיר אותם לפתוח צ\'אט מהמכשיר שלכם.'
+        : 'כל עוד אין קו מקושר, כפתורי ההודעות במסכים האחרים פותחים צ\'אט מהמכשיר שלכם ואינם עוברים כאן.'}</p>
     </div>`;
 }
 
@@ -7266,7 +7338,9 @@ function renderSecurityTab() {
     </div>
     <div class="callout">
       <p class="callout-title">הודעות לחיילים</p>
-      <p class="mb0">כפתורי הוואטסאפ פותחים צ'אט <strong>מהמכשיר שלכם</strong> עם הודעה מוכנה. שום שרת לא מעורב ושום פרט לא עובר לצד שלישי. השליחה האוטומטית דרך Meta הוסרה — היא דרשה רישום עסקי, ובדרך היא הייתה מוציאה שם, טלפון ופירוט ציוד בטקסט גלוי.</p>
+      ${waAuto()
+        ? `<p class="mb0">קו וואטסאפ מקושר, ולכן כפתורי ההודעות <strong>שולחים מהקו של המסייעת</strong> בלחיצה אחת. <strong>שם החייל, הטלפון ופירוט הציוד עוברים דרך שרתי הספק</strong> — הם רואים למי נשלח ומה נכתב. זה המסלול היחיד שבו פרטים יוצאים מהמערכת בטקסט גלוי. לניתוק: קונסולה ← וואטסאפ, ואז הכפתורים חוזרים לפתוח צ'אט מהמכשיר שלכם בלבד.</p>`
+        : `<p class="mb0">כפתורי הוואטסאפ פותחים צ'אט <strong>מהמכשיר שלכם</strong> עם הודעה מוכנה. שום שרת לא מעורב ושום פרט לא עובר לצד שלישי. אם יקושר קו בלשונית וואטסאפ, הם יעברו לשלוח דרכו — והפרטים יעברו אצל הספק.</p>`}
     </div>
     <div class="callout risk">
       <p class="callout-title">אין שחזור סיסמה</p>
@@ -8230,6 +8304,9 @@ async function loginSubmit(form) {
       if (scopes.has('vault')) await loadInv();
       if (scopes.has('reports')) await loadReports();
       if (S.role === 'admin') await loadUsers();
+      // Not awaited: the console must not wait on a third party to open, and
+      // until the answer lands the buttons behave exactly as they always did.
+      waProbe().then(() => renderConsole());
       S.tab = allowedTabs()[0] || 'over';
       armIdle();
       startPulse();
@@ -8930,6 +9007,16 @@ $app.addEventListener('click', (e) => {
   const act = el.dataset.act;
   // toggling an equipment row shouldn't fire when a stepper button inside it was hit
   if (act === 's-toggle' && e.target.closest('.step-btn')) return;
+  /* The two message buttons stay anchors carrying a wa.me address, and that
+     address is still what happens when there is no line to send on. When there
+     is one, the navigation is cancelled here and the message goes out over it
+     instead. Deciding at the click, from state already in hand, is what keeps
+     the fallback a plain link the browser opens itself. */
+  if ((act === 'wa-sign' || act === 'wa-ret') && waAuto()) {
+    e.preventDefault();
+    waSendRec(el.dataset.rid, act === 'wa-sign' ? 'notified' : 'returnNotified');
+    return;
+  }
   // An armed row stays armed only for the press that answers it. Anything
   // else the user does is an answer of "no", which is the safe default and
   // saves every delete handler from having to remember to disarm.
@@ -9537,12 +9624,18 @@ function dispatch(act, el) {
   }
 }
 
-// Marks a manual WhatsApp send on the record so the card reflects it.
-function markSent(rid, field) {
+/* Marks a WhatsApp send on the record so the card reflects it. The log keeps
+   the two apart: a message the console sent on the unit's line is a different
+   fact from one somebody typed out of their own WhatsApp, and only one of them
+   can be proven from here. */
+function markSent(rid, field, via = 'manual') {
   const rec = findRec(rid);
   if (!rec || rec.damaged || rec.data[field]) return;
   const now = Date.now();
-  const entry = { a: field === 'notified' ? 'notify-manual' : 'return-notify', t: now };
+  const entry = {
+    a: field === 'notified' ? `notify-${via}` : `return-notify${via === 'auto' ? '-auto' : ''}`,
+    t: now,
+  };
   rec.data[field] = now;
   rec.data.log.push(entry);
   saveRec(rec)

@@ -636,6 +636,10 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .dact:hover { background: var(--surface-2); }
 .dact svg { width: 16px; height: 16px; flex: none; color: var(--pine); }
+/* How the message will travel, said on the button that sends it — a press
+   that goes out over the unit's line is not the same press as one that opens
+   a chat for you to review first. */
+.dact-via { display: block; font-size: var(--t-2xs); font-weight: 600; color: var(--warn-ink); }
 .dact-del { margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--line-soft); }
 .dact-del .btn { width: 100%; min-height: 40px; }
 
