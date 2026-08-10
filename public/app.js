@@ -338,11 +338,11 @@ const S = {
   invVer: {},                   // part -> updated_at at load, for conflict detection
   invBase: {},                  // part -> its content when loaded, for the dirty check
   invBytes: 0,                  // sealed size of the largest part, for the headroom gauge
-  /* The WhatsApp gateway, as far as this browser knows it. Everything here
-     comes from a poll of /admin/wa/status and is display-only — the console
-     never holds the gateway's secret, and the gateway never holds the key to
-     anything in the vault. `enabled: false` is the normal state of a site that
-     has not set one up, and it must look like a setting, not a failure. */
+  /* The WhatsApp line, as far as this browser knows it. Everything here comes
+     from /admin/wa/status and is display-only — the console never holds the
+     provider's token, and the provider never holds the key to anything in the
+     vault. `enabled: false` is the normal state of a site that has not set one
+     up, and it must look like a setting, not a failure. */
   wa: {
     loaded: false, enabled: false, reachable: false,
     state: 'stopped', qr: null, me: null, lastError: null,
@@ -10088,7 +10088,6 @@ function dispatch(act, el) {
     case 'trash-load': loadTrash(); break;
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;
-    // the WhatsApp gateway
     case 'user-del': userDelete(el.dataset.u); break;
     case 'uedit-open': {
       const name = el.dataset.u;

@@ -233,9 +233,9 @@ const TAB_NEEDS = {
   veh: ['vault'],
   lic: ['records'],
   sum: ['records'],
-  // Neither screen reads a soldier's data: one is the gateway's own state,
-  // the other is users and the audit trail. Both are administrator-only, and
-  // that is enforced above rather than through a scope.
+  // Neither screen reads a soldier's data: one is the WhatsApp line's own
+  // state, the other is users and the audit trail. Both are administrator-only,
+  // and that is enforced above rather than through a scope.
   wa: [],
   sec: [],
 };
