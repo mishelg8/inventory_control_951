@@ -1676,7 +1676,8 @@ function licCapture(kind) {
            </button>`
         : ''}
     </div>
-    ${shot ? '' : `<p class="field-hint center">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
+    ${shot ? '' : `<p class="field-hint center">חובה לצרף צילום — בלעדיו לא ניתן לשלוח את הטופס.</p>
+         <p class="field-hint center">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
          <p class="field-hint center mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק מנהל הציוד יוכל לפתוח אותה.</p>`}`;
 }
 
@@ -1707,11 +1708,15 @@ function licBlock(kind) {
                 ? '<span class="field-hint warn-hint">הרישיון פג בקרוב — כדאי לחדש.</span>'
                 : ''}
         </label>
-        <span class="field-label">צילום הרישיון</span>
+        <span class="field-label">צילום הרישיון <span class="req" aria-hidden="true">*</span></span>
         ${licCapture(kind)}
       </div>`;
   } else if (on) {
-    body = `<div class="lic-body">${licCapture(kind)}</div>`;
+    body = `
+      <div class="lic-body">
+        <span class="field-label">צילום הרישיון <span class="req" aria-hidden="true">*</span></span>
+        ${licCapture(kind)}
+      </div>`;
   }
 
   return `
@@ -8158,6 +8163,16 @@ async function soldierIdentSubmit(form) {
     }
     if (!S.licExp) {
       return setFormErr(form, 'רישיון נהיגה אזרחי: יש למלא תאריך תוקף');
+    }
+  }
+  /* A ticked box with no photo is a claim with nothing behind it. A number and
+     a date are what the soldier says he holds; the photo is the only thing on
+     the slip the office can check that claim against, and chasing it after the
+     fact means a phone call per soldier. So the tick and the picture arrive
+     together or not at all. */
+  for (const k of LIC_KINDS) {
+    if (S.lic[k.id] && !S.licPhoto[k.id]) {
+      return setFormErr(form, `${k.short}: יש לצרף צילום של הרישיון`);
     }
   }
   /* Sent rather than dropped: a nonsense expiry is worth stopping on, because
