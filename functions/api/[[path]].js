@@ -16,7 +16,9 @@ const LOGIN_WINDOW_MS = 10 * 60 * 1000;   // ...per 10-minute lockout window
 // while still stopping a scripted flood.
 const SUB_LIMIT = 400;                    // submissions per IP...
 const SUB_WINDOW_MS = 60 * 60 * 1000;     // ...per hour
-const DOC_LIMIT = 120;                    // licence photos per IP per hour (heavier rows)
+// Two licences each, so 120 was sixty soldiers an hour — the same shared
+// address, and the same day that stops halfway through.
+const DOC_LIMIT = 400;                    // licence photos per IP per hour (heavier rows)
 
 // ~400 KB of base64 ≈ 300 KB of JPEG. The client compresses well below this;
 // the cap is a backstop so a single row can never bloat the database.
@@ -117,7 +119,12 @@ const getConfig = (db) => db.prepare('SELECT * FROM config WHERE id = 1').first(
 
 const TRASH_MS = 30 * 24 * 60 * 60 * 1000;   // deleted rows stay recoverable for 30 days
 const TICKET_MS = 30 * 60 * 1000;         // a ticket is good for half an hour
-const TICKET_LIMIT = 60;                  // tickets per IP per hour
+/* A whole company signs up on the same day, from the same base, over the same
+   Wi-Fi — which is one public address as far as this counter is concerned. At
+   60 the sixty-first soldier of the hour was refused, and the day stopped. The
+   submission cap beside it was raised to 400 for exactly this reason and this
+   one was left behind, so it became the narrower gate of the two. */
+const TICKET_LIMIT = 400;                 // tickets per IP per hour
 
 // A submission ticket. The public key is public by design, so anyone could
 // craft a valid encrypted payload; requiring a ticket means a writer must

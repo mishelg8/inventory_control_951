@@ -8981,7 +8981,12 @@ function bulkApproveNote() {
   const head = flagged.length
     ? `⚠ ${flagged.length} מתוך ${rids.length} עם בעיה במספרים סידוריים — ${flagged.slice(0, 3).join(' · ')}${flagged.length > 3 ? ' ועוד' : ''}. `
     : '';
-  return `${head}לאשר ${rids.length} רישומים? ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.`;
+  // What happens next depends on whether there is a line: saying "messages go
+  // out separately" while every one of them is about to be sent is the kind of
+  // sentence somebody presses a button on and then regrets.
+  return `${head}לאשר ${rids.length} רישומים? ${waAuto()
+    ? `הודעה תישלח לכל אחד מהם מהקו של המסייעת, מיד עם האישור.`
+    : 'ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.'}`;
 }
 
 const bulkApprove = () =>
@@ -8990,14 +8995,26 @@ const bulkApprove = () =>
     if (!rids.length) return;
     S.askDel = '';
     let ok = 0;
+    let sent = 0;
+    let unsent = 0;
     const failedRids = [];
     for (const rid of rids) {
       toast(`מאשר ${ok + failedRids.length + 1} מתוך ${rids.length}…`);
       try {
+        /* The same message a single approval sends. Approving one soldier told
+           him and approving twenty told nobody, which made the message depend
+           on which button the approver happened to use. Taken before the
+           approval, because a supplement is merged away by it. */
+        const rec = findRec(rid);
+        const d = rec && rec.data ? { ...rec.data } : null;
         const r = await approveCore(rid);
         if (r.skipped) continue;
         ok++;
         S.picked.delete(rid);
+        if (d && waAuto()) {
+          const w = await waNotify(d.phone, waSignMsg(d));
+          if (w.sent) { sent++; markSent(rid, 'notified', 'auto'); } else { unsent++; }
+        }
       } catch {
         failedRids.push(rid);
       }
@@ -9005,6 +9022,8 @@ const bulkApprove = () =>
     renderConsole();
     toast(
       `${ok} רישומים אושרו` +
+        (sent ? ` · ${sent} הודעות נשלחו` : '') +
+        (unsent ? ` · ${unsent} ללא הודעה` : '') +
         (failedRids.length ? ` · ${failedRids.length} נכשלו ונשארו מסומנים` : ''),
       failedRids.length > 0
     );
