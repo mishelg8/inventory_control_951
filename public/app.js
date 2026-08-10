@@ -818,6 +818,7 @@ const KIND_TAG = {
 const KIND_NOTE = {
   weapon: 'רישום נשק — באישור, המספרים יתווספו לרישום הקיים של החייל.',
   gear: 'חתימה על ציוד — באישור, הפריטים יתווספו לרישום הקיים של החייל.',
+  details: 'עדכון פרטים אישיים — החייל כבר רשום ומילא שוב, למשל כדי להוסיף רישיון שנשכח. באישור, מה שמילא הפעם יתווסף לרישום הקיים; מה שהשאיר ריק לא יימחק.',
 };
 
 const ROUTE_TITLE = {
@@ -7990,11 +7991,29 @@ async function soldierIdentSubmit(form) {
   btn.textContent = 'שולח…';
   await withBusy(async () => {
     const now = Date.now();
-    const rid = await deriveRid(pn, S.config.idSalt);
+    /* Signing in again — because the licence was forgotten the first time, or
+       photographed badly — must not replace what is already on file.
+
+       It used to write straight over the record at the id derived from the
+       personal number, so a second submission restated the whole slip and
+       anything the soldier did not retype was gone; and once the record had
+       been approved the server refused the write outright, which left "I
+       forgot my licence" with no way through the app at all.
+
+       So a soldier who already has a record files a supplement instead, under
+       an id of its own, and the console merges only what he filled in. The
+       flag is the merge — the same one the weapon and kit pages have always
+       used. He cannot merge it himself: the record is sealed to the console's
+       key and he cannot read his own slip. */
+    const mainRid = await deriveRid(pn, S.config.idSalt);
+    const known = await api(`/status/${mainRid}`).catch(() => ({ exists: false }));
+    const supp = !!known.exists;
+    const rid = supp ? await deriveRid(`${pn}:details`, S.config.idSalt) : mainRid;
     S.ident = { pn, name, phone, dept };
     S.rid = rid;
     const payload = {
       kind: 'details', pn, name, phone, dept,
+      ...(supp ? { supp: true } : {}),
       createdAt: now, log: [{ a: 'submit', t: now }],
     };
     const lic = {};
@@ -8666,14 +8685,52 @@ async function approveCore(rid) {
           if (parent.data.items[id]) parent.data.items[id].t += it.t;
           else parent.data.items[id] = { t: it.t, r: 0 };
         }
-        parent.data.name = rec.data.name;
-        parent.data.phone = rec.data.phone;
+        /* Only what the supplement actually carries. An empty field on the
+           second slip is a field the soldier did not fill in again — not an
+           instruction to erase what is on file. */
+        if (rec.data.name) parent.data.name = rec.data.name;
+        if (rec.data.phone) parent.data.phone = rec.data.phone;
         if (rec.data.dept) parent.data.dept = rec.data.dept;
         if (rec.data.weapon) parent.data.weapon = rec.data.weapon;
         if (rec.data.amral) parent.data.amral = rec.data.amral;
         if (rec.data.scope) parent.data.scope = rec.data.scope;
+        /* The licence, which the merge never carried — so a soldier who came
+           back precisely because he had forgotten it handed it in and watched
+           it be deleted with the supplement. A licence ticked on the second
+           slip is added; one that is not mentioned there is left alone. */
+        if (rec.data.lic) {
+          parent.data.lic = parent.data.lic || {};
+          for (const k of LIC_KINDS) {
+            const add = rec.data.lic[k.id];
+            if (!add || !add.has) continue;
+            const have = parent.data.lic[k.id] || {};
+            const merged = { ...have, has: true, doc: !!(add.doc || have.doc) };
+            if (add.no) merged.no = add.no;
+            if (add.exp) merged.exp = add.exp;
+            parent.data.lic[k.id] = merged;
+          }
+        }
+        /* The photographs live under the supplement's own id and would go into
+           the bin with it. They are sealed to the console's key rather than to
+           any record, so the envelope moves across untouched — nothing is
+           decrypted here. Moved before the parent is saved and long before the
+           supplement is deleted: a failure must not lose a picture. */
+        const moved = [];
+        try {
+          const { docs } = await api(`/admin/docs/${rec.rid}`);
+          for (const doc of docs || []) {
+            if (!LIC_KINDS.some((k) => k.id === doc.kind)) continue;
+            await api(`/admin/docs/${parent.rid}/${doc.kind}`, {
+              method: 'PUT', body: { ek: doc.ek, iv: doc.iv, ct: doc.ct },
+            });
+            moved.push(doc.kind);
+          }
+        } catch (e) {
+          throw new Error('העברת צילומי הרישיון נכשלה — ההשלמה לא מוזגה ולא נמחקה');
+        }
         parent.data.log.push({ a: 'supplement', t: now });
         await saveRec(parent);
+        for (const kind of moved) docForget(`${parent.rid}:${kind}`);
         await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
         S.recs = S.recs.filter((r) => r.rid !== rec.rid);
         return { name: parent.data.name, merged: true };
