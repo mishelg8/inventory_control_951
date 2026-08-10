@@ -5270,7 +5270,7 @@ function loanPanel(reg) {
           </label>
           <label class="field">
             <span class="field-label">לאן <span class="req" aria-hidden="true">*</span></span>
-            <select class="input select" name="loc" required>
+            <select class="input select" name="loc" data-act="loan-loc" required>
               ${reg.locs.filter((l) => LOAN_LOCS.has(l.id)).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
             </select>
           </label>
@@ -6421,45 +6421,98 @@ const rosterFor = () => S.recs
   .map((r) => ({ pn: r.data.pn, name: r.data.name, dept: deptName(r.data.dept) }))
   .sort((a, b) => a.name.localeCompare(b.name, 'he'));
 
-/* One field, not a dropdown. A company's worth of names in a <select> is a
-   scroll nobody can find anybody in, and on a phone it is a spinning wheel.
-   A datalist gives the browser's own filtering for free — type three letters
-   of a name and the list is three names long — and if what you need is not a
-   soldier at all you simply keep typing, which is the same field. */
+/* A search box, not a list.
+
+   This was a <datalist> first, on the theory that the browser's own filtering
+   was free. It is — but the browser also drops the entire roster on screen the
+   moment the field is focused, which with a company's worth of soldiers is a
+   black wall over the page. A <select> is worse: on a phone it is a spinning
+   wheel of a hundred names.
+
+   So: type, and only what matches comes back. Name or personal number, because
+   the number is what a מפל״ג has in front of him half the time. The results
+   are built straight into the DOM rather than through a re-render — the form
+   is uncontrolled, and redrawing the console on every keystroke would empty
+   the fields beside this one and take the focus with it. */
+const WHO_MAX = 8;
+
 function whoPicker(label, nameField, ph) {
-  const roster = rosterFor();
-  const listId = `roster-${nameField}`;
   return `
     <label class="field span2">
       <span class="field-label">${esc(label)} <span class="req" aria-hidden="true">*</span></span>
-      <input class="input" name="${nameField}" maxlength="60" placeholder="${esc(ph)}"
-             ${roster.length ? `list="${listId}"` : ''} autocomplete="off"
-             data-act="who-typed" required>
-      ${roster.length
-        ? `<datalist id="${listId}">${roster
-            .map((s) => `<option value="${esc(s.name)} · ${esc(s.pn)}">${esc(s.dept)}</option>`)
-            .join('')}</datalist>`
-        : ''}
+      <span class="who-box">
+        <input class="input" name="${nameField}" maxlength="60" placeholder="${esc(ph)}"
+               autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"
+               data-act="who-typed" required>
+        <span class="who-res" data-who-res hidden></span>
+      </span>
       <input type="hidden" name="${nameField}Pn" value="">
-      <span class="field-hint">הקלידו כמה אותיות מהשם ובחרו מהרשימה — כך הפריט יופיע בכרטיסייה שלו. אפשר גם להקליד שם חופשי או שם משימה.</span>
+      <span class="field-hint">הקלידו שם או מספר אישי ובחרו מהתוצאות — כך הפריט יופיע בכרטיסייה של החייל. אפשר גם להשאיר שם חופשי או שם משימה.</span>
     </label>`;
 }
 
-/* Turns "אורי לוי · 123456" back into a name and a number. Anything that does
-   not end in a personal number this roster knows is left exactly as typed and
-   linked to nobody, which is what a mission name is. */
-function whoResolve(el) {
+// Anything the box is not currently showing a match for is linked to nobody,
+// which is exactly what a mission name is.
+function whoUnlink(el) {
   const form = el.closest('form');
   const hidden = form && form.querySelector(`[name="${el.name}Pn"]`);
-  if (!hidden) return;
-  const m = /^(.*?)\s*·\s*(\d{4,12})$/.exec(el.value.trim());
-  const hit = m && rosterFor().find((s) => s.pn === m[2] && nrm(s.name) === nrm(m[1]));
-  if (hit) {
-    el.value = hit.name;
-    hidden.value = hit.pn;
-  } else {
-    hidden.value = '';
-  }
+  if (hidden) hidden.value = '';
+}
+
+function whoClose(box) {
+  const res = box && box.querySelector('[data-who-res]');
+  if (!res) return;
+  res.hidden = true;
+  res.innerHTML = '';
+  const input = box.querySelector('[data-act="who-typed"]');
+  if (input) input.setAttribute('aria-expanded', 'false');
+}
+
+/* Only when the thing at the other end is a person. "לאן: משימה" means the
+   field holds the name of an operation, and offering a list of soldiers there
+   is offering the wrong answer to the question actually being asked. */
+function whoIsPerson(el) {
+  const form = el.closest('form');
+  const loc = form && form.querySelector('[name="loc"]');
+  return !loc || loc.value === 'soldier';
+}
+
+function whoSearch(el) {
+  const box = el.closest('.who-box');
+  const res = box && box.querySelector('[data-who-res]');
+  if (!res) return;
+  if (!whoIsPerson(el)) { whoClose(box); whoUnlink(el); return; }
+  const q = nrm(el.value).toLowerCase();
+  if (q.length < 1) { whoClose(box); return; }
+  const all = rosterFor();
+  const hits = all.filter(
+    (s) => s.name.toLowerCase().includes(q) || s.pn.startsWith(q)
+  );
+  if (!hits.length) { whoClose(box); return; }
+  res.innerHTML = hits.slice(0, WHO_MAX).map((s) => `
+      <button type="button" class="who-opt" data-act="who-opt"
+              data-pn="${esc(s.pn)}" data-name="${esc(s.name)}">
+        <span class="who-opt-n">${esc(s.name)}</span>
+        <span class="who-opt-m num">${esc(s.pn)}</span>
+        <span class="who-opt-d">${esc(s.dept)}</span>
+      </button>`).join('')
+    + (hits.length > WHO_MAX
+      ? `<span class="who-more">ועוד ${hits.length - WHO_MAX} — הוסיפו אותיות לצמצום</span>`
+      : '');
+  res.hidden = false;
+  el.setAttribute('aria-expanded', 'true');
+}
+
+function whoPick(btn) {
+  const box = btn.closest('.who-box');
+  const input = box && box.querySelector('[data-act="who-typed"]');
+  if (!input) return;
+  const form = input.closest('form');
+  input.value = btn.dataset.name;
+  const hidden = form && form.querySelector(`[name="${input.name}Pn"]`);
+  if (hidden) hidden.value = btn.dataset.pn;
+  whoClose(box);
+  input.focus();
 }
 
 function armAdd(form) {
@@ -9418,6 +9471,7 @@ $app.addEventListener('click', (e) => {
      carries a do-nothing action of its own so that a press inside it stops
      there instead of finding the backdrop underneath. */
   if (act === 'modal-keep') return;
+  if (act === 'who-opt') { whoPick(el); return; }
   /* The two message buttons stay anchors carrying a wa.me address, and that
      address is still what happens when there is no line to send on. When there
      is one, the navigation is cancelled here and the message goes out over it
@@ -9484,12 +9538,19 @@ function rerenderKeepFocus(el) {
   }
 }
 
-/* Picking from the list fires input, not change, in every browser that matters
-   — and typing over a name afterwards has to break the link, because a number
-   must never outlive the name it was chosen with. Both are the same rule. */
+/* Typing searches, and it also breaks any link already made: a number must
+   never outlive the name it was chosen with. Picking from the results is what
+   puts one back. */
 $app.addEventListener('input', (e) => {
   const t = e.target;
-  if (t && t.dataset && t.dataset.act === 'who-typed') whoResolve(t);
+  if (t && t.dataset && t.dataset.act === 'who-typed') { whoUnlink(t); whoSearch(t); }
+}, true);
+
+// A press anywhere else is an answer of "none of these".
+document.addEventListener('click', (e) => {
+  for (const box of $app.querySelectorAll('.who-box')) {
+    if (!box.contains(e.target)) whoClose(box);
+  }
 }, true);
 
 $app.addEventListener('input', (e) => {
@@ -9592,8 +9653,15 @@ $app.addEventListener('change', (e) => {
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
-  // Committing the name field: keep the number if a roster entry was picked.
-  if (el.dataset.act === 'who-typed') { whoResolve(el); return; }
+  /* Switching to a mission takes the soldier list away and, with it, any link
+     that was made while the destination was still a person. */
+  if (el.dataset.act === 'loan-loc') {
+    const form = el.closest('form');
+    const box = form && form.querySelector('.who-box');
+    const input = box && box.querySelector('[data-act="who-typed"]');
+    if (input && !whoIsPerson(input)) { whoClose(box); whoUnlink(input); }
+    return;
+  }
   if (el.dataset.act === 'rf-pick') {
     S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
     renderConsole();

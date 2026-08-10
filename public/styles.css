@@ -656,6 +656,44 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 }
 .dsub:first-child { margin-top: 0; }
 .reg-where { flex: none; font-size: var(--t-2xs); font-weight: 600; color: var(--muted); }
+
+/* The soldier search. Results hang under the field rather than pushing the
+   form down — a form that grows and shrinks under your thumb while you type
+   moves the button you were reaching for. */
+.who-box { position: relative; display: block; }
+.who-res {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(100% + 3px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  max-height: 264px;
+  overflow-y: auto;
+  border: 1px solid var(--line-hard);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(28, 25, 23, 0.16);
+}
+.who-opt {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  min-height: 44px;
+  padding: var(--s-3) var(--s-5);
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: none;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.who-opt:last-child { border-bottom: 0; }
+.who-opt:hover, .who-opt:focus-visible { background: var(--pine-tint); }
+.who-opt-n { flex: 1 1 auto; font-weight: 600; font-size: var(--t-sm); }
+.who-opt-m { flex: none; font-size: var(--t-xs); color: var(--ink-2); }
+.who-opt-d { flex: none; font-size: var(--t-2xs); color: var(--muted); }
+.who-more { padding: var(--s-3) var(--s-5); font-size: var(--t-2xs); color: var(--muted); }
 .kit-count.is-add { color: var(--pine-deep); }
 
 /* The whole row opens the card, not just the name. A name is a small target on
