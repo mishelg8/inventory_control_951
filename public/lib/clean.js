@@ -134,6 +134,14 @@ const cleanRegItem = (reg) => (x) => {
     name: asText(x && x.name, 60),
     serial: asText(x && x.serial, 40),
     owner: asText(x && x.owner, 60),
+    /* Whose the item is, and who is holding it — as personal numbers rather
+       than as names. A name typed twice is two different strings as often as
+       it is one, and matching a register row to a soldier's record on spelling
+       puts an item on the wrong card or on no card at all. Empty on everything
+       filed before this existed and on anyone who is not in the records; for
+       those a name is still all there is. */
+    ownerPn: asText(x && x.ownerPn, 12),
+    holderPn: asText(x && x.holderPn, 12),
     loc: allowed.includes(raw) ? raw : (raw && raw !== reg.home ? 'soldier' : reg.home),
     // Whose name the current location carries: the soldier holding it, the
     // operation it went out on, or the vehicle it is fitted in. One field,

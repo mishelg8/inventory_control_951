@@ -3357,6 +3357,50 @@ function renderTrackTab() {
     </section>`;
 }
 
+/* Everything the two serial-numbered registers know about one soldier.
+
+   His weapon, his אקילה, the night sight he took on Tuesday and the radio
+   fitted in his vehicle all lived in the armoury and signals screens, and his
+   own card said nothing about any of it — so "what is this man holding" was a
+   question you answered by opening three screens and remembering.
+
+   Matched on the personal number where there is one. Where there is not — a
+   row filed before the picker existed, or somebody from outside the unit — the
+   name is compared with the spacing normalised, and the row is marked, because
+   a match on a typed name is a guess and should not read as a fact. */
+const nrm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+function regHoldings(d) {
+  const out = [];
+  for (const reg of [REGISTERS.armon, REGISTERS.comms]) {
+    for (const x of (S.inv && S.inv[reg.key]) || []) {
+      const ownedPn = x.ownerPn && x.ownerPn === d.pn;
+      const heldPn = x.holderPn && x.holderPn === d.pn;
+      const ownedName = !x.ownerPn && nrm(x.owner) && nrm(x.owner) === nrm(d.name);
+      const heldName = !x.holderPn && nrm(x.mission) && nrm(x.mission) === nrm(d.name);
+      if (!ownedPn && !heldPn && !ownedName && !heldName) continue;
+      out.push({
+        x, reg,
+        // With him now, as opposed to registered to him and sitting elsewhere.
+        withHim: heldPn || heldName || x.loc === 'soldier',
+        byName: !ownedPn && !heldPn,
+        why: (ownedPn || ownedName) ? 'רשום עליו' : 'לקח',
+      });
+    }
+  }
+  return out;
+}
+
+function regHoldingRows(list) {
+  return list.map(({ x, reg, byName, why }) => `
+    <li class="kit-row">
+      <span class="kit-name">${esc(nameOf(reg.kinds, x.kind))} · ${esc(x.name)}${
+        byName ? ' <small class="kit-have">התאמה לפי שם</small>' : ''}</span>
+      <span class="kit-count num wpn">${esc(x.serial)}</span>
+      <span class="reg-where">${esc(nameOf(reg.locs, x.loc))} · ${esc(why)}</span>
+    </li>`).join('');
+}
+
 // The expanded row: the per-item return steppers and the messaging actions,
 // which need more room than a table cell has.
 function trackDetail(rec) {
@@ -3460,6 +3504,19 @@ function trackDetail(rec) {
       <div class="dgrid">
         ${dcard('פרטים אישיים', DICO.person, personal + notes)}
         ${dcard('ציוד — אצלו / הוחתם', DICO.box, kit)}
+        ${(() => {
+          const held = regHoldings(d);
+          if (!held.length) return '';
+          const now = held.filter((h) => h.withHim);
+          const elsewhere = held.filter((h) => !h.withHim);
+          return dcard('ארמון וקשר — רשום על שמו', DICO.box, `
+            ${now.length
+              ? `<p class="dsub">אצלו עכשיו</p><ul class="dkit">${regHoldingRows(now)}</ul>`
+              : ''}
+            ${elsewhere.length
+              ? `<p class="dsub">רשום עליו, לא אצלו</p><ul class="dkit">${regHoldingRows(elsewhere)}</ul>`
+              : ''}`);
+        })()}
         ${dcard('מסמכים ורישיונות', DICO.folder, docsRow(rec) || '<p class="dempty">לא צורפו רישיונות או צילומים.</p>')}
         ${dcard('פעולות', DICO.bolt, actions, 'is-acts')}
       </div>
@@ -5067,7 +5124,10 @@ const depApprove = (id) =>
     const note = `אפסון עצמי · מ״א ${d.pn}`;
     const added = [];
     const stage = (kind, name, serial) => {
-      added.push({ id: rndId(), kind, name, serial, owner: d.name, loc: 'armon', note, addedAt: now });
+      // A deposit already knows exactly whose it is — the slip carries the
+      // personal number — so this one never had to be matched on a name.
+      added.push({ id: rndId(), kind, name, serial, owner: d.name, ownerPn: d.pn,
+                   loc: 'armon', note, addedAt: now });
     };
     stage('weapon', 'נשק אישי', d.weapon);
     // The soldier's own device files as אקילה, not as the unit's אמר״ל. The
@@ -5214,10 +5274,7 @@ function loanPanel(reg) {
               ${reg.locs.filter((l) => LOAN_LOCS.has(l.id)).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
             </select>
           </label>
-          <label class="field span2">
-            <span class="field-label">אצל מי / איזו משימה <span class="req" aria-hidden="true">*</span></span>
-            <input class="input" name="who" maxlength="60" placeholder="ישראל ישראלי" required>
-          </label>
+          ${whoPicker('אצל מי / איזו משימה', 'who', 'ישראל ישראלי')}
         </div>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit"${shelf.length ? '' : ' disabled'}>
@@ -5381,10 +5438,7 @@ function renderRegisterTab(reg) {
             <span class="field-label">מספר סידורי / מק״ט <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" name="serial" maxlength="40" placeholder="${esc(reg.serialPh)}" required>
           </label>
-          <label class="field">
-            <span class="field-label">שם מלא של בעל הפריט <span class="req" aria-hidden="true">*</span></span>
-            <input class="input" name="owner" maxlength="60" placeholder="ישראל ישראלי" required>
-          </label>
+          ${whoPicker('בעל הפריט', 'owner', 'ישראל ישראלי')}
         </div>
         <p class="form-err" data-err></p>
         <button class="btn primary wide" type="submit">הוספה ${esc(reg.placeTo)}</button>
@@ -6351,6 +6405,63 @@ const logPush = (key, entry) => {
 // a privilege decision.
 const regOf = (el) => REGISTERS[(el && el.dataset && el.dataset.reg) || ''] || REGISTERS.armon;
 
+/* Who is taking it, chosen rather than typed.
+
+   The field was free text, so a register row and a soldier's record were tied
+   together by nothing but two strings happening to match — which is why the
+   armoury has a standing warning about items out "בלי שם", and why an item
+   could never be shown on the card of the man holding it. Picking from the
+   roster stores his personal number alongside the name, and the link is then
+   exact.
+
+   The box underneath stays, and stays writable: this field is also "איזו
+   משימה", and equipment goes to people who were never in these records. */
+const rosterFor = () => S.recs
+  .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.name && r.data.pn)
+  .map((r) => ({ pn: r.data.pn, name: r.data.name, dept: deptName(r.data.dept) }))
+  .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+
+/* One field, not a dropdown. A company's worth of names in a <select> is a
+   scroll nobody can find anybody in, and on a phone it is a spinning wheel.
+   A datalist gives the browser's own filtering for free — type three letters
+   of a name and the list is three names long — and if what you need is not a
+   soldier at all you simply keep typing, which is the same field. */
+function whoPicker(label, nameField, ph) {
+  const roster = rosterFor();
+  const listId = `roster-${nameField}`;
+  return `
+    <label class="field span2">
+      <span class="field-label">${esc(label)} <span class="req" aria-hidden="true">*</span></span>
+      <input class="input" name="${nameField}" maxlength="60" placeholder="${esc(ph)}"
+             ${roster.length ? `list="${listId}"` : ''} autocomplete="off"
+             data-act="who-typed" required>
+      ${roster.length
+        ? `<datalist id="${listId}">${roster
+            .map((s) => `<option value="${esc(s.name)} · ${esc(s.pn)}">${esc(s.dept)}</option>`)
+            .join('')}</datalist>`
+        : ''}
+      <input type="hidden" name="${nameField}Pn" value="">
+      <span class="field-hint">הקלידו כמה אותיות מהשם ובחרו מהרשימה — כך הפריט יופיע בכרטיסייה שלו. אפשר גם להקליד שם חופשי או שם משימה.</span>
+    </label>`;
+}
+
+/* Turns "אורי לוי · 123456" back into a name and a number. Anything that does
+   not end in a personal number this roster knows is left exactly as typed and
+   linked to nobody, which is what a mission name is. */
+function whoResolve(el) {
+  const form = el.closest('form');
+  const hidden = form && form.querySelector(`[name="${el.name}Pn"]`);
+  if (!hidden) return;
+  const m = /^(.*?)\s*·\s*(\d{4,12})$/.exec(el.value.trim());
+  const hit = m && rosterFor().find((s) => s.pn === m[2] && nrm(s.name) === nrm(m[1]));
+  if (hit) {
+    el.value = hit.name;
+    hidden.value = hit.pn;
+  } else {
+    hidden.value = '';
+  }
+}
+
 function armAdd(form) {
   const reg = regOf(form);
   const kind = form.kind.value;
@@ -6369,7 +6480,9 @@ function armAdd(form) {
   if (taken) return setFormErr(form, taken);
   setFormErr(form, '');
   const now = Date.now();
-  S.inv[reg.key] = [...(S.inv[reg.key] || []), { id: rndId(), kind, name, serial, owner, loc: reg.home, note: '', addedAt: now }];
+  const ownerPn = (form.ownerPn && form.ownerPn.value) || '';
+  S.inv[reg.key] = [...(S.inv[reg.key] || []),
+    { id: rndId(), kind, name, serial, owner, ownerPn, loc: reg.home, note: '', addedAt: now }];
   logPush(reg.logKey, { t: now, action: 'add', kind, name, serial, owner, dest: '', note: '' });
   invSave();
 }
@@ -6421,6 +6534,7 @@ function armLoan(form) {
   setFormErr(form, '');
   it.loc = loc;
   it.mission = who;
+  it.holderPn = (form.whoPn && form.whoPn.value) || '';
   it.since = Date.now();
   invSave();
 }
@@ -6434,6 +6548,7 @@ function armReturn(reg, i) {
   S.askDel = '';
   it.loc = reg.home;
   it.mission = '';
+  it.holderPn = '';   // it is back on the shelf; nobody is holding it
   invSave();          // logMoves writes the return, and how long it was gone
 }
 
@@ -9369,6 +9484,14 @@ function rerenderKeepFocus(el) {
   }
 }
 
+/* Picking from the list fires input, not change, in every browser that matters
+   — and typing over a name afterwards has to break the link, because a number
+   must never outlive the name it was chosen with. Both are the same rule. */
+$app.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t && t.dataset && t.dataset.act === 'who-typed') whoResolve(t);
+}, true);
+
 $app.addEventListener('input', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !$app.contains(el)) return;
@@ -9469,6 +9592,8 @@ $app.addEventListener('change', (e) => {
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
+  // Committing the name field: keep the number if a roster entry was picked.
+  if (el.dataset.act === 'who-typed') { whoResolve(el); return; }
   if (el.dataset.act === 'rf-pick') {
     S.rfPick = { ...S.rfPick, [el.dataset.id]: el.value };
     renderConsole();

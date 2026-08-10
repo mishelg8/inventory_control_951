@@ -645,6 +645,17 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .kit-row.is-back .kit-count { color: var(--ok-ink); }
 .kit-row .rec-row-tools { flex: none; }
 .kit-have { font-weight: 600; color: var(--muted); font-size: var(--t-2xs); }
+/* The register card: two short lists under their own headings, because "with
+   him" and "registered to him" are different answers to different questions. */
+.dsub {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.dsub:first-child { margin-top: 0; }
+.reg-where { flex: none; font-size: var(--t-2xs); font-weight: 600; color: var(--muted); }
 .kit-count.is-add { color: var(--pine-deep); }
 
 /* The whole row opens the card, not just the name. A name is a small target on
