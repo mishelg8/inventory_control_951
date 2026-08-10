@@ -815,6 +815,15 @@ const KIND_TAG = {
   gear: 'חתימה על ציוד',
 };
 
+/* A second slip is not the same thing as a first one, and on the details form
+   they would otherwise carry the same word. "פרטים אישיים" on a row that is
+   about to be merged into an existing record reads as a new registration.
+   The weapon and kit pages need no such distinction — "רישום נשק" says what
+   it is whether it is the first one or the fourth. */
+const SUPP_TAG = { details: 'עדכון פרטים' };
+
+const kindTag = (d) => (d.supp && SUPP_TAG[d.kind]) || KIND_TAG[d.kind] || '';
+
 const KIND_NOTE = {
   weapon: 'רישום נשק — באישור, המספרים יתווספו לרישום הקיים של החייל.',
   gear: 'חתימה על ציוד — באישור, הפריטים יתווספו לרישום הקיים של החייל.',
@@ -3021,7 +3030,7 @@ function pendingCard(rec) {
           <div class="rec-meta">מ״א <span class="num">${esc(d.pn)}</span> · ${esc(deptName(d.dept))}</div>
           <div class="rec-meta">נשלח ${esc(fmtDate(d.createdAt))}</div>
         </div>
-        <span class="state wait">${esc(KIND_TAG[d.kind] || (d.supp ? 'השלמה' : 'ממתין'))}</span>
+        <span class="state wait">${esc(kindTag(d) || (d.supp ? 'השלמה' : 'ממתין'))}</span>
       </header>
       ${d.supp
         ? `<p class="muted-txt">${esc(KIND_NOTE[d.kind] || 'השלמת ציוד — באישור, הפריטים יתווספו לרישום המאושר הקיים של החייל.')}</p>`
@@ -3111,7 +3120,7 @@ function renderPendingTab() {
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
             ${avatar(d.name)}<span class="rowlink-n">${esc(d.name)}</span><span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
           </button>
-          ${d.supp ? `<span class="tagi supp">${esc(KIND_TAG[d.kind] || 'השלמה')}</span>` : ''}
+          ${d.supp ? `<span class="tagi supp">${esc(kindTag(d) || 'השלמה')}</span>` : ''}
         </td>
         <td class="num">${esc(d.pn)}</td>
         <td>${esc(deptName(d.dept))}</td>
@@ -3231,8 +3240,11 @@ function pendingDetail(rec) {
   return `
     <div class="rowdetail">
       ${d.kind && d.kind !== 'full'
-        ? `<p class="dkind">${esc(KIND_TAG[d.kind] || '')}${
-            KIND_NOTE[d.kind] ? ` · ${esc(KIND_NOTE[d.kind].split(' — ')[1] || '')}` : ''
+        ? `<p class="dkind">${esc(kindTag(d))}${
+            /* The note explains a merge, so only a submission that merges gets
+               it. A soldier's first registration is also kind 'details', and
+               it was being told it would be added to a record it *is*. */
+            d.supp && KIND_NOTE[d.kind] ? ` · ${esc(KIND_NOTE[d.kind].split(' — ')[1] || '')}` : ''
           }</p>`
         : ''}
       ${d.supp && !KIND_NOTE[d.kind]
@@ -8007,7 +8019,12 @@ async function soldierIdentSubmit(form) {
        key and he cannot read his own slip. */
     const mainRid = await deriveRid(pn, S.config.idSalt);
     const known = await api(`/status/${mainRid}`).catch(() => ({ exists: false }));
-    const supp = !!known.exists;
+    /* Only once the record has been approved. While it is still waiting, the
+       slip is the soldier's own and sending it again is him correcting it —
+       it should replace itself, the way it always has, and leave the approver
+       one row to read. Splitting that into a second row put the same soldier
+       on the screen twice and asked for two approvals to file one form. */
+    const supp = known.exists && known.status === 'approved';
     const rid = supp ? await deriveRid(`${pn}:details`, S.config.idSalt) : mainRid;
     S.ident = { pn, name, phone, dept };
     S.rid = rid;
