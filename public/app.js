@@ -5,7 +5,7 @@
    ════════════════════════════════════════════════════════════════════ */
 
 import {
-  SVG_OPEN, ITEMS, itemById, DEPTS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
+  SVG_OPEN, ITEMS, itemById, DEPTS, DIETS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
   COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
   nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
   DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS, canLoan,
@@ -136,6 +136,9 @@ function licState(expiry) {
   if (days < 0) return 'expired';
   return days <= EXPIRING_SOON_DAYS ? 'soon' : 'valid';
 }
+
+// The kitchen answer, or nothing. Nothing is a real state — see DIETS.
+const dietName = (id) => (DIETS.find((d) => d.id === id) || {}).name || '';
 
 const fmtDay = (iso) => {
   if (!iso) return '';
@@ -1729,8 +1732,46 @@ function licBlock(kind) {
     </div>`;
 }
 
+/* Diet and allergies. Two questions the kitchen asks and nobody had a list
+   for, so they are asked once, here, on the form every soldier already fills
+   in — rather than on a WhatsApp thread that gets scrolled past.
+
+   Neither one re-renders the page. The licence boxes have to, because a photo
+   changes what the block contains; these only need to show or hide a text box,
+   and CSS does that from the tick itself. A re-render here would throw away
+   whatever the soldier had already typed into that very box. */
+function dietBlock(v) {
+  return `
+    <fieldset class="lic-set">
+      <legend class="field-label">תזונה <span class="req" aria-hidden="true">*</span></legend>
+      <div class="lic diet">
+        ${DIETS.map((d) => `
+          <label class="check diet-opt">
+            <input type="radio" name="diet" value="${d.id}"${v.diet === d.id ? ' checked' : ''}>
+            <span>${esc(d.name)}</span>
+          </label>`).join('')}
+      </div>
+      <div class="lic">
+        <label class="check lic-head">
+          <input class="alg-tick" type="checkbox" name="allergy"${v.allergy ? ' checked' : ''}>
+          <span>יש לי אלרגיה</span>
+        </label>
+        <div class="alg-body">
+          <label class="field mb0">
+            <span class="field-label">פירוט האלרגיה <span class="req" aria-hidden="true">*</span></span>
+            <textarea class="input area" name="allergyTxt" rows="3" maxlength="300"
+                      placeholder="לדוגמה: אלרגיה לבוטנים ולשומשום — גם במגע. נושא מזרק אפיפן.">${esc(v.allergyTxt || '')}</textarea>
+          </label>
+        </div>
+      </div>
+    </fieldset>`;
+}
+
 function renderSoldierStep1() {
-  const v = S.ident || { pn: '', name: '', phone: '', dept: '', weapon: '', amral: '', scope: '' };
+  const v = S.ident || {
+    pn: '', name: '', phone: '', dept: '', weapon: '', amral: '', scope: '',
+    diet: '', allergy: false, allergyTxt: '',
+  };
   const deptOpts = DEPTS.map(
     (d) => `<option value="${d.id}"${v.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`
   ).join('');
@@ -1767,6 +1808,7 @@ function renderSoldierStep1() {
             ${deptOpts}
           </select>
         </label>
+        ${dietBlock(v)}
         <fieldset class="lic-set">
           <legend class="field-label">רישיונות נהיגה</legend>
           ${LIC_KINDS.map(licBlock).join('')}
@@ -2510,6 +2552,26 @@ const dcard = (title, icon, body, cls = '') => `
 const dfield = (label, value) =>
   `<div class="dfield"><span class="dfield-l">${esc(label)}</span><span class="dfield-v">${value}</span></div>`;
 
+/* Diet and allergy, on whichever card is printing the soldier's details.
+   An allergy is shown whenever there is one, and the diet only once somebody
+   has answered — a record from before the question existed says nothing here
+   rather than claiming the soldier eats everything. */
+/* The row tint that goes with them. Red for an allergy, amber for a diet that
+   is not the default — and red wins when a soldier is both, because a colour
+   says one thing and that is the thing worth saying.
+
+   Vegan is tinted alongside vegetarian. It was not named in the ask, but the
+   tint exists so the kitchen can count trays at a glance, and a vegan who
+   reads as 'רגיל' from across the room is the exact mistake it is there to
+   prevent. */
+const dietRowCls = (d) =>
+  (d.allergy ? ' row-alg' : d.diet && d.diet !== 'regular' ? ' row-diet' : '');
+
+const dietFields = (d) => [
+  d.diet ? dfield('תזונה', esc(dietName(d.diet))) : '',
+  d.allergy ? dfield('אלרגיה', `<span class="alg-flag">⚠ ${esc(d.allergy)}</span>`) : '',
+].filter(Boolean);
+
 // Weapon serial + licence chips, with an on-demand viewer for the photos.
 // Images are fetched and decrypted only when the admin asks for one.
 function extrasRow(rec) {
@@ -2641,6 +2703,29 @@ function recEditor(rec) {
         ${f('amral', 'מק״ט אקילה', d.amral, 'num')}
         ${f('scope', 'מק״ט כוונת', d.scope, 'num')}
       </div>
+      ${/* Most of the unit registered before the form asked either question,
+            and the answers reach the office by other means — a soldier says it
+            at the counter, or a commander already knows. Filling it in here
+            beats asking a hundred people to submit the form again.
+
+            "טרם נמסר" is a real option and it is the one an old record starts
+            on: an admin who does not know must be able to leave it unanswered
+            rather than pick one to make the field go away. */''}
+      <div class="fuel-entry">
+        <label class="field mb0">
+          <span class="field-label">תזונה</span>
+          <select class="input mini select-mini" data-act="rec-f-diet" aria-label="תזונה">
+            <option value="">— טרם נמסר —</option>
+            ${DIETS.map((x) => `<option value="${x.id}"${d.diet === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <label class="field">
+        <span class="field-label">אלרגיה — מלל חופשי, ריק אם אין</span>
+        <textarea class="input area" rows="2" maxlength="300"
+                  data-act="rec-f" data-k="allergy"
+                  placeholder="לדוגמה: אלרגיה לבוטנים ולשומשום — גם במגע. נושא מזרק אפיפן.">${esc(d.allergy || '')}</textarea>
+      </label>
       <p class="field-hint">המספר האישי מזהה את הרשומה במערכת. תיקון שלו משנה את מה שמוצג ומיוצא לדוחות, אך הרשומה נשארת תחת המזהה שנוצר בהרשמה.</p>
       <div class="rec-actions">
         <button class="btn primary small" data-act="rec-save" data-rid="${esc(rec.rid)}">שמירת התיקון</button>
@@ -3225,6 +3310,7 @@ function pendingDetail(rec) {
     d.dept && dfield('מחלקה', esc(deptName(d.dept))),
     d.phone && dfield('טלפון', `<span class="num">${esc(shown ? d.phone : maskPhone(d.phone))}</span>
       <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>`),
+    ...dietFields(d),
     dfield('נשלח', esc(fmtDate(d.createdAt))),
   ].filter(Boolean).join('');
 
@@ -3297,7 +3383,7 @@ function renderTrackTab() {
     const st = gearState(d);
     const open = S.expanded.has(rec.rid);
     return `
-      <tr class="rowopen ${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}"
+      <tr class="rowopen ${open ? 'is-open' : ''}${st === 'done' ? ' row-done' : st === 'none' ? ' row-nokit' : ''}${dietRowCls(d)}"
           data-act="expand" data-rid="${esc(rec.rid)}">
         <td class="lg-name">
           <button class="rowlink" data-act="expand" data-rid="${esc(rec.rid)}">
@@ -3455,6 +3541,7 @@ function trackDetail(rec) {
     dfield('מחלקה', esc(deptName(d.dept))),
     dfield('טלפון', `<span class="num">${esc(shown ? d.phone : maskPhone(d.phone))}</span>
       <button class="linkbtn" data-act="reveal" data-rid="${esc(rec.rid)}">${shown ? 'הסתרה' : 'הצגה'}</button>`),
+    ...dietFields(d),
     dfield('תאריך אישור', esc(fmtDate(d.approvedAt))),
     ...serials.map(([k, v]) => dfield(k, `<span class="num">${esc(v)}</span>`)),
   ].join('');
@@ -8149,9 +8236,19 @@ async function soldierIdentSubmit(form) {
   const name = form.name.value.trim();
   const phone = form.phone.value.trim();
   const dept = form.dept.value;
+  const diet = form.diet.value;
+  const hasAllergy = form.allergy.checked;
+  const allergy = hasAllergy ? form.allergyTxt.value.trim().slice(0, 300) : '';
   if (!identOk(form, pn, name)) return;
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
   if (!DEPTS.some((d) => d.id === dept)) return setFormErr(form, 'נא לבחור מחלקה');
+  /* No default. Leaving the three unticked would file "רגיל" for a soldier who
+     simply scrolled past the question, and the kitchen would find out at the
+     serving hatch. */
+  if (!DIETS.some((d) => d.id === diet)) return setFormErr(form, 'נא לסמן סוג תזונה');
+  // A tick with nothing after it tells the kitchen there is a problem and not
+  // what it is, which is worse than the question never being asked.
+  if (hasAllergy && allergy.length < 2) return setFormErr(form, 'נא לפרט את האלרגיה');
   /* Ticking the civilian box is a claim about a licence with a number and an
      expiry, and a claim with neither is not worth filing: the office cannot
      chase a renewal it has no date for, and cannot match a photo to a licence
@@ -8209,10 +8306,10 @@ async function soldierIdentSubmit(form) {
        on the screen twice and asked for two approvals to file one form. */
     const supp = known.exists && known.status === 'approved';
     const rid = supp ? await deriveRid(`${pn}:details`, S.config.idSalt) : mainRid;
-    S.ident = { pn, name, phone, dept };
+    S.ident = { pn, name, phone, dept, diet, allergy: hasAllergy, allergyTxt: allergy };
     S.rid = rid;
     const payload = {
-      kind: 'details', pn, name, phone, dept,
+      kind: 'details', pn, name, phone, dept, diet, allergy,
       ...(supp ? { supp: true } : {}),
       createdAt: now, log: [{ a: 'submit', t: now }],
     };
@@ -8331,6 +8428,11 @@ function captureIdentForm() {
     name: f.name.value.trim(),
     phone: f.phone.value.trim(),
     dept: f.dept.value,
+    // Ticking a licence box re-renders the whole form, and an answer that is
+    // not read back here is an answer the soldier gave and then watched vanish.
+    diet: f.diet ? f.diet.value : '',
+    allergy: !!(f.allergy && f.allergy.checked),
+    allergyTxt: f.allergyTxt ? f.allergyTxt.value.trim() : '',
   };
   const no = $app.querySelector('[data-act="lic-no"]');
   const exp = $app.querySelector('[data-act="lic-exp"]');
@@ -8891,6 +8993,16 @@ async function approveCore(rid) {
         if (rec.data.name) parent.data.name = rec.data.name;
         if (rec.data.phone) parent.data.phone = rec.data.phone;
         if (rec.data.dept) parent.data.dept = rec.data.dept;
+        /* The diet always arrives filled in — the form will not send without
+           it — so a second slip is the soldier's latest answer and replaces
+           the first. The allergy is the opposite: blank is a real answer there
+           ("no allergy"), and it comes from the same form that just asked, so
+           it replaces too. Both only when the slip is a details slip; a weapon
+           or kit supplement never asks, and its silence must not erase them. */
+        if (rec.data.kind === 'details') {
+          if (rec.data.diet) parent.data.diet = rec.data.diet;
+          parent.data.allergy = rec.data.allergy;
+        }
         if (rec.data.weapon) parent.data.weapon = rec.data.weapon;
         if (rec.data.amral) parent.data.amral = rec.data.amral;
         if (rec.data.scope) parent.data.scope = rec.data.scope;
@@ -9716,6 +9828,10 @@ $app.addEventListener('change', (e) => {
     if (S.recDraft) S.recDraft.dept = el.value;
     return;
   }
+  if (el.dataset.act === 'rec-f-diet') {
+    if (S.recDraft) S.recDraft.diet = el.value;
+    return;
+  }
   if (el.dataset.act === 'arm-e-kind') {
     const reg = regOf(el);
     const it = S.inv[reg.key][+el.dataset.i];
@@ -9910,8 +10026,8 @@ function dispatch(act, el) {
       const rec = findRec(el.dataset.rid);
       if (!rec || !rec.data) break;
       S.recEdit = el.dataset.rid;
-      const { name, pn, phone, dept, weapon, amral, scope } = rec.data;
-      S.recDraft = { name, pn, phone, dept, weapon, amral, scope };
+      const { name, pn, phone, dept, weapon, amral, scope, diet, allergy } = rec.data;
+      S.recDraft = { name, pn, phone, dept, weapon, amral, scope, diet, allergy };
       renderConsole();
       break;
     }

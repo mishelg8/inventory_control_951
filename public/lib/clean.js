@@ -8,7 +8,7 @@
 // whitelisted. Without this, a crafted quantity like "<img …>" flows into
 // innerHTML in the admin console — where the private key lives.
 
-import { ITEMS, DEPTS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
+import { ITEMS, DEPTS, DIETS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
 import { rndId } from './crypto.js';
 
 const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -67,6 +67,17 @@ function cleanRecord(raw) {
     name: asText(raw.name, 60),
     phone: asText(raw.phone, 15),
     dept: DEPTS.some((d) => d.id === raw.dept) ? raw.dept : '',
+    /* Kitchen, not equipment — but it is asked once, on the form everybody
+       fills in, rather than on a list somebody has to keep by hand.
+
+       No default. `asId` would answer 'רגיל' for every record filed before
+       this question existed, and for every weapon and kit slip that never
+       asks it, which is a made-up answer dressed as a real one. Empty means
+       nobody has said, and the screens say exactly that. */
+    diet: DIETS.some((x) => x.id === raw.diet) ? raw.diet : '',
+    // Free text on purpose: an allergy is a sentence, not a checkbox, and a
+    // list of allergens we invented would be missing the one that matters.
+    allergy: asText(raw.allergy, 300),
     weapon: asText(raw.weapon, 20),
     amral: asText(raw.amral, 20),
     scope: asText(raw.scope, 20),

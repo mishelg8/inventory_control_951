@@ -1667,6 +1667,18 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
    tint that still reads as a tint in daylight on a phone. */
 .tbl tbody tr.row-civonly { background: var(--warn-tint); }
 .tbl tbody tr.row-civonly:hover { background: #F0E4C4; }
+/* Food. Red is an allergy — something that can hurt somebody — and it borrows
+   the same tint as a shortage because it is read the same way: this row needs
+   attention before anything is handed over. Yellow is a diet that is not the
+   default: nothing is wrong, the kitchen just has to know.
+
+   A soldier can be both, and then the row is red. Colour carries one message
+   at a time, and between "cannot eat meat" and "peanuts put him in hospital"
+   the second is the one that has to survive a glance. */
+.tbl tbody tr.row-alg { background: var(--bad-tint); }
+.tbl tbody tr.row-alg:hover { background: #F1DAD3; }
+.tbl tbody tr.row-diet { background: var(--warn-tint); }
+.tbl tbody tr.row-diet:hover { background: #F0E4C4; }
 .tbl-ico {
   display: inline-block;
   width: 18px;
@@ -1962,6 +1974,23 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic.on { border-color: var(--pine); background: var(--surface); box-shadow: 0 0 0 1px var(--pine-ring); }
 .lic-head { margin: 0; font-weight: 600; font-size: var(--t-md); }
 .lic-body { margin-top: 11px; animation: rise 0.25s var(--ease) both; }
+
+/* Diet and allergies. Deliberately the same furniture as the licence blocks
+   they sit above, so the page reads as one form rather than as two that met.
+   Three answers share a single box — they are one question — and the rule
+   between them keeps a thumb from landing on the wrong row. */
+.diet { padding-block: 2px; }
+.diet-opt { align-items: center; }
+.diet .diet-opt + .diet-opt { border-top: 1px solid var(--line); }
+
+/* The allergy box opens from the tick itself, not from a re-render. Where
+   :has() is missing the field simply stays visible, which asks one extra
+   question of a few old phones and breaks nothing. */
+.alg-body { margin-top: 11px; }
+.lic:not(:has(.alg-tick:checked)) .alg-body { display: none; }
+/* On a card, an allergy is the line that has to be read before anything is
+   handed over. It is not a detail among details. */
+.alg-flag { color: var(--bad-ink); font-weight: 700; }
 /* Camera and gallery. They wrap rather than squash, and hold the touch-target
    floor on their own: these are pressed one-handed, outdoors, in a hurry. */
 .lic-actions { display: flex; flex-wrap: wrap; gap: 7px; }

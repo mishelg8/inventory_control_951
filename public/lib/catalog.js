@@ -255,6 +255,19 @@ const LIC_KINDS = [
   { id: 'military', label: 'רישיון נהיגה צבאי בתוקף', short: 'רישיון צבאי', mode: 'photo' },
 ];
 
+/* What the kitchen has to know. Three answers, one of them chosen — 'רגיל' is
+   an answer and not a blank, because a soldier who skipped the question and a
+   soldier who eats everything have to be told apart when the food is ordered.
+
+   A record filed before this existed carries no diet at all, and reads as
+   unanswered rather than as 'רגיל'; guessing on a soldier's behalf is how
+   somebody ends up with a tray they cannot eat. */
+const DIETS = [
+  { id: 'regular',    name: 'רגיל' },
+  { id: 'vegetarian', name: 'צמחוני' },
+  { id: 'vegan',      name: 'טבעוני' },
+];
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const EXPIRING_SOON_DAYS = 60;
@@ -272,6 +285,7 @@ export {
   COMMS_PLACES,
   DAY_MS,
   DEPTS,
+  DIETS,
   EXPIRING_SOON_DAYS,
   FUEL_KINDS,
   FUEL_LOW,
