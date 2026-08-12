@@ -1983,6 +1983,49 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic-head { margin: 0; font-weight: 600; font-size: var(--t-md); }
 .lic-body { margin-top: 11px; animation: rise 0.25s var(--ease) both; }
 
+/* ── The sign-up page's palette ────────────────────────────────────────
+   The rest of this app is warm: an olive-tinted ground, sage greys and a
+   near-black banner, chosen for a console read on a bright day. The sign-up
+   page is asked to be the other thing — a neutral grey ground under a white
+   banner, with a deeper forest green — so it redefines the tokens for itself
+   and nothing else changes. Scoped from the page's own class rather than
+   from a flag the router would have to remember to set and unset.
+
+   Only hues move. `--muted` and `--ink` keep the lightness they were argued
+   into for daylight contrast and lose only the green cast, and the greens go
+   *darker*, so every ratio here is at least what it was. */
+body:has(.panel.signup) {
+  --bg:         #F4F5F3;
+  --bg-2:       #EAEBE8;
+  --surface-2:  #FAFAFA;
+  --surface-3:  #F1F2F0;
+  --ink:        #17191B;
+  --ink-2:      #2E3237;
+  --muted:      #5A6068;
+  --muted-2:    #878C93;
+  --line:       #E2E4E0;
+  --line-soft:  #EDEEEB;
+  --line-hard:  #D5D7D3;
+  --pine:       #1E5233;
+  --pine-deep:  #143823;
+  --pine-tint:  #EAF2EC;
+  --pine-ring:  rgba(30, 82, 51, 0.16);
+}
+/* The banner goes white with it. It is one strip across the top of the same
+   screen, and leaving it near-black would have made the page look like a
+   white card someone had dropped onto a different application. */
+body:has(.panel.signup) .topbar {
+  background: #FFFFFF;
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+body:has(.panel.signup) .topbar-sub { color: var(--muted); }
+/* The accent rule under it is also the progress indicator — it starts moving
+   while the console works — so it is hidden rather than deleted, and the busy
+   rule below it still overrides and sweeps. */
+body:has(.panel.signup):not(.is-busy) .topbar::after { background: none; }
+body:has(.panel.signup) .emblem { background: #FFFFFF; }
+
 /* ── The sign-up form ──────────────────────────────────────────────────
    One page, laid out as three named sections inside a card. The form asks
    for eleven things and used to present them as eleven stacked boxes with
