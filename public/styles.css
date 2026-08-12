@@ -1991,6 +1991,15 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 /* On a card, an allergy is the line that has to be read before anything is
    handed over. It is not a detail among details. */
 .alg-flag { color: var(--bad-ink); font-weight: 700; }
+/* The allergy is a sentence, and on the food screen it is the column being
+   read. It gets room to wrap instead of stretching the table sideways. */
+.alg-cell {
+  color: var(--bad-ink);
+  font-weight: 700;
+  min-width: 180px;
+  max-width: 34ch;
+  white-space: normal;
+}
 /* Camera and gallery. They wrap rather than squash, and hold the touch-target
    floor on their own: these are pressed one-handed, outdoors, in a hurry. */
 .lic-actions { display: flex; flex-wrap: wrap; gap: 7px; }

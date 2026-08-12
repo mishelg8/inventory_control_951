@@ -2300,6 +2300,7 @@ const TABS = [
   { id: 'ammo',    name: 'תחמושת ואלפא', needs: ['vault'] },
   { id: 'veh',     name: 'רכבים',        needs: ['vault'] },
   { id: 'lic',     name: 'רישיונות נהיגה', needs: ['records'] },
+  { id: 'food',    name: 'העדפות אוכל',  needs: ['records'] },
   { id: 'sum',     name: 'דוחות',        needs: ['records'] },
   { id: 'wa',      name: 'וואטסאפ',      needs: [], adminOnly: true },
   { id: 'sec',     name: 'אבטחה',        needs: [], adminOnly: true },
@@ -2358,6 +2359,10 @@ function renderConsole() {
     ['ammo',    'תחמושת ואלפא', null],
     ['veh',     'רכבים',        (openRefuels() + vehAlerts()) || null, openRefuels() > 0],
     ['lic',     'רישיונות',     licAlerts() || null, licAlerts() > 0],
+    /* The count is everyone the kitchen has to do something about, and it is
+       not "hot": a vegan is not a problem to be solved, he is a tray to be
+       ordered. Red here would cry wolf on every screen the sidebar is on. */
+    ['food',    'העדפות אוכל',  foodCount() || null],
     ['sum',     'דוחות',        null],
     ['wa',      'וואטסאפ',      S.wa.loaded && S.wa.state !== 'authorized' ? '!' : null,
                                  S.wa.loaded && S.wa.enabled && S.wa.state !== 'authorized'],
@@ -2388,6 +2393,7 @@ function renderConsole() {
   else if (S.tab === 'ammo') body = renderAmmoTab();
   else if (S.tab === 'veh') body = renderVehTab();
   else if (S.tab === 'lic') body = renderLicTab();
+  else if (S.tab === 'food') body = renderFoodTab();
   else if (S.tab === 'sum') body = renderSummaryTab();
   else if (S.tab === 'wa') body = renderWaTab();
   else body = renderSecurityTab();
@@ -3979,6 +3985,168 @@ function licencePanel(approved) {
     </section>`;
 }
 
+/* ── העדפות אוכל ───────────────────────────────────────────────────────
+   Who is not on the standard tray, and who must not be given the wrong one.
+
+   The unit answered both questions on the sign-up form, one soldier at a
+   time, and until now the answers could only be read one soldier at a time
+   too — by opening a card. A kitchen ordering for a week needs the list, not
+   the cards, so this is the list.
+
+   Two tables and not one, because they are two jobs. The diets are a count:
+   how many trays of what. The allergies are a warning: a name, a sentence,
+   and a telephone number to ring when the sentence is not clear enough. A
+   soldier who is both appears in both, on purpose.
+
+   The third table is the one nobody asks for and everybody needs: the
+   soldiers who registered before the form asked, whose answer is not "רגיל"
+   but "we have not asked him yet". Leaving them out would make the screen
+   read as complete when it is not. */
+
+const foodRow = (rec) => {
+  const d = rec.data;
+  return {
+    rid: rec.rid,
+    name: d.name || '',
+    pn: d.pn || '',
+    dept: deptName(d.dept),
+    phone: d.phone || '',
+    diet: d.diet || '',
+    dietLabel: dietName(d.diet),
+    allergy: d.allergy || '',
+  };
+};
+
+const foodApproved = () => S.recs.filter((r) => r.status === 'approved' && !r.damaged);
+const foodRows = (approved, filtered = true) =>
+  (filtered ? applyFilters(approved) : approved).map(foodRow);
+
+const foodSpecial = (r) => !!r.diet && r.diet !== 'regular';
+const foodNotable = (r) => foodSpecial(r) || !!r.allergy;
+
+// The sidebar figure: everyone who is not on the standard tray. Counted over
+// the whole roster, not the filtered view — a badge that moved when somebody
+// typed in the search box would be measuring the search, not the unit.
+const foodCount = () => foodRows(foodApproved(), false).filter(foodNotable).length;
+
+// One soldier's telephone number, masked until asked for. Same control as the
+// weapons and the roster screens: the number is the reason to open this screen
+// and still not something to leave lying open on a shared laptop.
+const foodPhone = (r) => `
+  ${esc(S.revealed.has(r.rid) ? r.phone : maskPhone(r.phone))}
+  ${r.phone
+    ? `<button class="linkbtn" data-act="reveal" data-rid="${esc(r.rid)}">${
+        S.revealed.has(r.rid) ? 'הסתרה' : 'הצגה'}</button>`
+    : ''}`;
+
+const byName = (a, b) => a.name.localeCompare(b.name, 'he');
+
+function renderFoodTab() {
+  const approved = foodApproved();
+  const rows = foodRows(approved);
+  const all = foodRows(approved, false);
+
+  const veg = rows.filter((r) => r.diet === 'vegetarian').sort(byName);
+  const vegan = rows.filter((r) => r.diet === 'vegan').sort(byName);
+  const special = rows.filter(foodSpecial).sort(byName);
+  const allergic = rows.filter((r) => r.allergy).sort(byName);
+  const unknown = rows.filter((r) => !r.diet).sort(byName);
+
+  const specialBody = special.map((r) => `
+    <tr class="row-diet">
+      <td>${esc(r.name)}</td>
+      <td class="num">${esc(r.pn)}</td>
+      <td>${esc(r.dept)}</td>
+      <td><strong>${esc(r.dietLabel)}</strong></td>
+      <td>${r.allergy ? `<span class="alg-flag">⚠ ${esc(r.allergy)}</span>` : '<span class="dim">·</span>'}</td>
+      <td class="num">${foodPhone(r)}</td>
+    </tr>`).join('');
+
+  const allergicBody = allergic.map((r) => `
+    <tr class="row-alg">
+      <td>${esc(r.name)}</td>
+      <td class="num">${esc(r.pn)}</td>
+      <td>${esc(r.dept)}</td>
+      <td class="alg-cell">${esc(r.allergy)}</td>
+      <td>${r.dietLabel ? esc(r.dietLabel) : '<span class="dim">טרם נמסר</span>'}</td>
+      <td class="num">${foodPhone(r)}</td>
+    </tr>`).join('');
+
+  const unknownBody = unknown.map((r) => `
+    <tr>
+      <td>${esc(r.name)}</td>
+      <td class="num">${esc(r.pn)}</td>
+      <td>${esc(r.dept)}</td>
+      <td class="num">${foodPhone(r)}</td>
+    </tr>`).join('');
+
+  return `
+    ${searchBar(all.length, rows.length)}
+    <section class="panel">
+      <h2 class="panel-title">העדפות אוכל</h2>
+      <p class="panel-sub">כל מי שאינו על המגש הרגיל, במקום אחד. הטבלה הראשונה היא ההזמנה — כמה מגשים ומאיזה סוג; השנייה היא האזהרה — מי אסור שיקבל מה, עם טלפון לבירור. חייל שהוא גם צמחוני וגם אלרגי מופיע בשתיהן. את מה שחסר אפשר להשלים מכרטיס החייל, ב״עריכת פרטים״. מכבד את החיפוש והסינון.</p>
+      <div class="stat-row quad">
+        <div class="stat"><span class="stat-n num">${veg.length}</span><span class="stat-l">צמחוני</span></div>
+        <div class="stat"><span class="stat-n num">${vegan.length}</span><span class="stat-l">טבעוני</span></div>
+        <div class="stat"><span class="stat-n num">${allergic.length}</span><span class="stat-l">⚠ אלרגיות</span></div>
+        <div class="stat"><span class="stat-n num">${unknown.length}</span><span class="stat-l">טרם נמסר</span></div>
+      </div>
+      ${allergic.length
+        ? `<div class="callout alert"><p class="mb0"><strong class="num">${allergic.length}</strong> ${
+            allergic.length === 1 ? 'חייל עם אלרגיה רשומה' : 'חיילים עם אלרגיה רשומה'
+          } — ראו את הטבלה האדומה למטה לפני כל הזמנה או חלוקה.</p></div>`
+        : ''}
+      ${rows.length ? reportButtons('food') : ''}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">תזונה מיוחדת</h2>
+      <p class="panel-sub">מי שאינו אוכל את המנה הרגילה. זו הרשימה שהולכת למטבח.</p>
+      ${special.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,3">
+               <thead><tr>
+                 <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
+                 <th>תזונה</th><th>אלרגיה</th><th class="num">טלפון</th>
+               </tr></thead>
+               <tbody>${specialBody}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">אין חיילים עם תזונה מיוחדת ברשימה הנוכחית.</p>'}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">אלרגיות</h2>
+      <p class="panel-sub">מה שהחייל כתב, כלשונו. אם המשפט אינו ברור — הטלפון כאן, ועדיף לשאול מאשר לנחש.</p>
+      ${allergic.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,3">
+               <thead><tr>
+                 <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
+                 <th>האלרגיה</th><th>תזונה</th><th class="num">טלפון</th>
+               </tr></thead>
+               <tbody>${allergicBody}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">אין אלרגיות רשומות ברשימה הנוכחית.</p>'}
+    </section>
+
+    ${unknown.length
+      ? `<section class="panel">
+           <h2 class="panel-title">טרם נמסר</h2>
+           <p class="panel-sub">חיילים שנרשמו לפני שהטופס שאל, או שהשאלה לא נענתה. הם אינם ״רגיל״ — פשוט לא נשאלו. אפשר להשלים במעקב ציוד ← כרטיס החייל ← עריכת פרטים.</p>
+           <div class="tbl-scroll">
+             <table class="tbl" data-phone="0,1">
+               <thead><tr>
+                 <th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th>
+               </tr></thead>
+               <tbody>${unknownBody}</tbody>
+             </table>
+           </div>
+         </section>`
+      : ''}`;
+}
+
 // Weapon register: serial → holder. The one table a logistics NCO reaches for
 // when a serial turns up and they need to know whose it is.
 function weaponsPanel(approved) {
@@ -4169,6 +4337,28 @@ const REPORTS = {
           `${rows.filter((r) => r.st === 'soon').length} פגים בקרוב · ` +
           `${rows.filter(licExpired).length} פג תוקף · ` +
           `${rows.filter(licMissing).length} אין רישיון`,
+      };
+    },
+  },
+
+  /* The list that leaves the building — it goes to whoever orders the food, so
+     it carries the two facts they act on and the telephone number they ring
+     when the allergy needs explaining. Everyone who is not on the standard
+     tray, in one file, sorted so the allergies are at the top. */
+  food: {
+    name: 'העדפות אוכל', file: 'tzayad-food', sensitive: true,
+    build() {
+      const rows = foodRows(foodApproved()).filter(foodNotable)
+        .sort((a, b) => Number(!!b.allergy) - Number(!!a.allergy) || byName(a, b));
+      return {
+        head: ['שם', 'מספר אישי', 'מחלקה', 'טלפון', 'תזונה', 'אלרגיה'],
+        rows: rows.map((r) => [
+          r.name, r.pn, r.dept, r.phone,
+          r.dietLabel || 'טרם נמסר', r.allergy,
+        ]),
+        summary: `${rows.filter((r) => r.diet === 'vegetarian').length} צמחוני · ` +
+          `${rows.filter((r) => r.diet === 'vegan').length} טבעוני · ` +
+          `${rows.filter((r) => r.allergy).length} אלרגיות`,
       };
     },
   },

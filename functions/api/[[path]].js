@@ -232,6 +232,7 @@ const TAB_NEEDS = {
   ammo: ['vault'],
   veh: ['vault'],
   lic: ['records'],
+  food: ['records'],
   sum: ['records'],
   // Neither screen reads a soldier's data: one is the WhatsApp line's own
   // state, the other is users and the audit trail. Both are administrator-only,
