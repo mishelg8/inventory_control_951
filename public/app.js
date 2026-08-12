@@ -1065,32 +1065,41 @@ function renderReport() {
   }
   const v = S.rep || { name: '', phone: '', text: '' };
   render(`
-    <section class="panel center-head">
+    <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">בקשת ציוד / דיווח חוסר</h1>
       <p class="panel-sub center">חסר לכם ציוד או שאתם צריכים השלמה? כתבו כאן ומנהל הציוד יטפל. אין צורך במספר אישי — רק שם ומה שחסר.</p>
       <form data-form="report" novalidate>
-        <label class="field">
-          <span class="field-label">שם מלא</span>
-          <input class="input" name="name" autocomplete="off" maxlength="60"
-                 value="${esc(v.name)}" required>
-        </label>
-        <label class="field">
-          <span class="field-label">טלפון נייד <span class="opt-tag">רשות</span></span>
-          <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
-                 maxlength="10" value="${esc(v.phone)}" placeholder="0501234567">
-          <span class="field-hint">רק כדי שנוכל לעדכן אתכם כשהבקשה מטופלת. אפשר להשאיר ריק.</span>
-        </label>
-        <label class="field">
-          <span class="field-label">מה חסר לכם או מה אתם צריכים?</span>
-          <textarea class="input area" name="text" rows="7" maxlength="1500"
-                    placeholder="לדוגמה: חסרות לי 2 מחסניות, והווסט שקיבלתי עם רצועה קרועה — צריך להחליף." required>${esc(v.text)}</textarea>
-          <span class="field-hint">כתבו בחופשיות — כמה שיותר פרטים, כך קל יותר לטפל.</span>
-        </label>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי מבקש</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">שם מלא <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" required>
+            </label>
+            <label class="field">
+              <span class="field-label">טלפון נייד <span class="opt-tag">רשות</span></span>
+              <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                     maxlength="10" value="${esc(v.phone)}" placeholder="0501234567">
+              <span class="field-hint">רק כדי שנוכל לעדכן אתכם כשהבקשה מטופלת. אפשר להשאיר ריק.</span>
+            </label>
+          </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.flag}</span>מה חסר</h2>
+          <label class="field">
+            <span class="field-label">מה חסר לכם או מה אתם צריכים? <span class="req" aria-hidden="true">*</span></span>
+            <textarea class="input area" name="text" rows="7" maxlength="1500"
+                      placeholder="לדוגמה: חסרות לי 2 מחסניות, והווסט שקיבלתי עם רצועה קרועה — צריך להחליף." required>${esc(v.text)}</textarea>
+            <span class="field-hint">כתבו בחופשיות — כמה שיותר פרטים, כך קל יותר לטפל.</span>
+          </label>
+        </div>
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחת הבקשה</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחת הבקשה</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`);
 }
 
@@ -1147,33 +1156,40 @@ function renderFault() {
   }
   const v = S.flt || { name: '', phone: '', text: '' };
   render(`
-    <section class="panel center-head">
+    <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תקלות בינוי</h1>
       <p class="panel-sub center">משהו שבור במבנה? נזילה, חשמל, מזגן, דלת, חלון. כתבו מה ואיפה, ונטפל.</p>
       <form data-form="fault" novalidate>
-        <div class="grid2">
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי מדווח</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">שם המדווח <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" required>
+            </label>
+            <label class="field">
+              <span class="field-label">טלפון המדווח <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                     maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+            </label>
+          </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.wrench}</span>התקלה</h2>
           <label class="field">
-            <span class="field-label">שם המדווח <span class="req" aria-hidden="true">*</span></span>
-            <input class="input" name="name" autocomplete="off" maxlength="60"
-                   value="${esc(v.name)}" required>
-          </label>
-          <label class="field">
-            <span class="field-label">טלפון המדווח <span class="req" aria-hidden="true">*</span></span>
-            <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
-                   maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+            <span class="field-label">תיאור התקלה <span class="req" aria-hidden="true">*</span></span>
+            <textarea class="input area" name="text" rows="7" maxlength="1500"
+                      placeholder="לדוגמה: נזילה מהתקרה במקלחות בבניין 4, מתחת לחלון. המים מגיעים עד המסדרון." required>${esc(v.text)}</textarea>
+            <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
           </label>
         </div>
-        <label class="field">
-          <span class="field-label">תיאור התקלה <span class="req" aria-hidden="true">*</span></span>
-          <textarea class="input area" name="text" rows="7" maxlength="1500"
-                    placeholder="לדוגמה: נזילה מהתקרה במקלחות בבניין 4, מתחת לחלון. המים מגיעים עד המסדרון." required>${esc(v.text)}</textarea>
-          <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
-        </label>
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחת הדיווח</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחת הדיווח</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`);
 }
 
@@ -1254,11 +1270,13 @@ function renderRefuel() {
   }
   const v = S.rf || { name: '', phone: '', card: '', litres: '', plate: '' };
   render(`
-    <section class="panel center-head">
+    <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">דיווח תדלוק</h1>
       <p class="panel-sub center">תדלקתם רכב בכרטיס תדלוק? רשמו כאן מיד אחרי התדלוק — כך היתרה בכרטיס נשארת נכונה.</p>
       <form data-form="refuel" novalidate>
+        <div class="fcard">
+        <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי מדווח</h2>
         <div class="grid2">
           <label class="field">
             <span class="field-label">שם המתדלק <span class="req" aria-hidden="true">*</span></span>
@@ -1270,6 +1288,10 @@ function renderRefuel() {
             <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
                    maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
           </label>
+        </div>
+
+        <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.fuel}</span>התדלוק</h2>
+        <div class="grid2">
           <label class="field">
             <span class="field-label">כרטיס התדלוק <span class="req" aria-hidden="true">*</span></span>
             <select class="input select" name="card" required>
@@ -1301,8 +1323,8 @@ function renderRefuel() {
                <span class="field-hint">אין כרגע רכבים רשומים במערכת — רשמו את מספר הרכב.</span>`}
         </label>
 
-        <fieldset class="lic-set">
-          <legend class="field-label">קבלת התדלוק <span class="req" aria-hidden="true">*</span></legend>
+        <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.folder}</span>קבלת התדלוק <span class="req" aria-hidden="true">*</span></h2>
+        <div class="fq">
           <p class="field-hint">בלי קבלה אי אפשר להצדיק את הליטרים מול קצין הרכב, ולכן היא חובה.</p>
           <div class="rec-actions">
             <label class="btn ghost small">📷 צילום הקבלה
@@ -1318,12 +1340,15 @@ function renderRefuel() {
                </div>`
             : `<p class="field-hint">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
                <p class="field-hint mb0">טרם צורפה קבלה.</p>`}
-        </fieldset>
+        </div>
+        </div>
 
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחת הדיווח</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחת הדיווח</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`);
 }
 
@@ -1401,56 +1426,60 @@ function renderDeposit() {
   }
   const v = S.dep || { pn: '', name: '', phone: '', weapon: '', amral: '', scope: '' };
   render(`
-    <section class="panel center-head">
+    <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">אפסון נשק בארמון</h1>
       <p class="panel-sub center">מוסרים נשק לאחסון בארמון? מלאו את הפרטים. ארבעת השדות הראשונים הם חובה.</p>
       <form data-form="deposit" novalidate>
-        <div class="grid2">
-          <label class="field">
-            <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
-            <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
-                   maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
-          </label>
-          <label class="field">
-            <span class="field-label">שם החייל <span class="req" aria-hidden="true">*</span></span>
-            <input class="input" name="name" autocomplete="off" maxlength="60"
-                   value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
-          </label>
-          <label class="field">
-            <span class="field-label">מספר טלפון <span class="req" aria-hidden="true">*</span></span>
-            <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
-                   maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
-          </label>
-          <label class="field">
-            <span class="field-label">מספר נשק <span class="req" aria-hidden="true">*</span></span>
-            <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
-                   value="${esc(v.weapon)}" placeholder="7145732" required>
-            ${serialWarnBox('weapon')}
-          </label>
-        </div>
-        <fieldset class="lic-set">
-          <legend class="field-label">אמצעים נלווים <span class="opt-tag">רק אם קיימים</span></legend>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי מוסר</h2>
           <div class="grid2">
             <label class="field">
-              <span class="field-label">מק״ט אקילה</span>
+              <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                     maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">שם החייל <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+            </label>
+            <label class="field">
+              <span class="field-label">מספר טלפון <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="phone" inputmode="tel" autocomplete="tel"
+                     maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+            </label>
+          </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.door}</span>מה מאופסן</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מספר נשק <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
+                     value="${esc(v.weapon)}" placeholder="7145732" required>
+              ${serialWarnBox('weapon')}
+            </label>
+            <label class="field">
+              <span class="field-label">מק״ט אקילה <span class="opt-tag">רק אם קיים</span></span>
               <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
                      value="${esc(v.amral)}">
               ${serialWarnBox('amral')}
             </label>
             <label class="field">
-              <span class="field-label">מק״ט כוונת יום</span>
+              <span class="field-label">מק״ט כוונת יום <span class="opt-tag">רק אם קיים</span></span>
               <input class="input num" name="scope" data-act="ser-chk" data-f="scope" autocomplete="off" maxlength="20"
                      value="${esc(v.scope)}">
               ${serialWarnBox('scope')}
             </label>
           </div>
           <span class="field-hint">אם לא מסרתם אקילה או כוונת — השאירו ריק.</span>
-        </fieldset>
+        </div>
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחת בקשת אפסון</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחת בקשת אפסון</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`);
 }
 
@@ -1744,11 +1773,11 @@ function dietBlock(v) {
   return `
     <div class="fq">
       <span class="fq-l">מהי העדפת התזונה שלך? <span class="req" aria-hidden="true">*</span></span>
-      <div class="optrow">
+      <div class="pickrow">
         ${DIETS.map((d) => `
-          <label class="opt">
+          <label class="pick">
             <input type="radio" name="diet" value="${d.id}"${v.diet === d.id ? ' checked' : ''}>
-            <span class="opt-t">${esc(d.name)}</span>
+            <span class="pick-t">${esc(d.name)}</span>
           </label>`).join('')}
       </div>
     </div>
@@ -1783,7 +1812,7 @@ function renderSoldierStep1() {
     (d) => `<option value="${d.id}"${v.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`
   ).join('');
   render(`
-    <section class="panel signup center-head">
+    <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">רישום פרטים אישיים</h1>
       <p class="panel-sub center">זה הרישום הראשון, ורק אחריו אפשר לרשום נשק או לחתום על ציוד. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
@@ -1842,24 +1871,27 @@ function renderSoldierStep1() {
 function renderWeaponForm() {
   const v = S.ident || { pn: '', name: '', weapon: '', amral: '', scope: '' };
   render(`
-    <section class="panel center-head">
+    <section class="panel sform center-head">
+      <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">רישום נשק</h1>
       <p class="panel-sub center">המספרים שעל הנשק והאמצעים שקיבלתם. אפשר למלא רק את מה שקיבלתם ולהשאיר את השאר ריק.</p>
       <form data-form="weapon" novalidate>
-        <div class="grid2">
-          <label class="field">
-            <span class="field-label">מספר אישי</span>
-            <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
-                   maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
-          </label>
-          <label class="field">
-            <span class="field-label">שם מלא</span>
-            <input class="input" name="name" autocomplete="off" maxlength="60"
-                   value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
-          </label>
-        </div>
-        <fieldset class="lic-set">
-          <legend class="field-label">נשק ואמצעים נלווים</legend>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי אתם</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                     maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">שם מלא <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+            </label>
+          </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.bolt}</span>נשק ואמצעים נלווים</h2>
           <div class="grid2">
             <label class="field">
               <span class="field-label">מספר סידורי של הנשק</span>
@@ -1880,12 +1912,15 @@ function renderWeaponForm() {
               ${serialWarnBox('scope')}
             </label>
           </div>
-          <span class="field-hint">אם לא קיבלתם — אפשר להשאיר ריק.</span>
-        </fieldset>
+          <span class="field-hint">אם לא קיבלתם — אפשר להשאיר ריק. חובה למלא לפחות מספר אחד.</span>
+        </div>
+
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחה לאישור</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחה לאישור</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`, 'weapon-1');
 }
 
@@ -1894,24 +1929,31 @@ function renderGearIdent() {
   const v = S.ident || { pn: '', name: '' };
   render(`
     ${stepsBar(1)}
-    <section class="panel center-head">
+    <section class="panel sform center-head">
       <h1 class="panel-title center">חתימה על ציוד</h1>
       <p class="panel-sub center">מי חותם, מה קיבלתם, וחתימה. אפשר לחתום שוב בכל פעם שמקבלים ציוד נוסף.</p>
       <form data-form="gear-ident" novalidate>
-        <label class="field">
-          <span class="field-label">מספר אישי</span>
-          <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
-                 maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
-        </label>
-        <label class="field">
-          <span class="field-label">שם מלא</span>
-          <input class="input" name="name" autocomplete="off" maxlength="60"
-                 value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
-        </label>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי חותם</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                     maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">שם מלא <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+            </label>
+          </div>
+        </div>
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">המשך</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">המשך</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`, 'gear-1');
 }
 
@@ -1950,14 +1992,19 @@ function renderSoldierStep2() {
       : '';
   render(`
     ${stepsBar(2)}
-    <section class="panel">
+    <section class="panel sform">
       <h1 class="panel-title">${S.suppMode ? 'איזה ציוד נוסף קיבלת?' : 'איזה ציוד קיבלת?'}</h1>
       <p class="panel-sub">שלום ${esc(S.ident.name)} — סמנו את כל הפריטים שקיבלתם.</p>
       ${suppNote}
-      <ul>${rows}</ul>
+      <div class="fcard">
+        <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.box}</span>הציוד</h2>
+        <ul>${rows}</ul>
+      </div>
       <p class="form-err" data-err></p>
-      <button class="btn primary wide" data-act="s-review">המשך לסיכום</button>
-      <button class="btn ghost wide mt" data-act="s-back">חזרה לפרטים</button>
+      <div class="formbar">
+        <button class="btn primary" data-act="s-review">המשך לסיכום</button>
+        <button class="btn ghost" data-act="s-back">חזרה לפרטים</button>
+      </div>
     </section>`, 'sign-2');
 }
 
@@ -1996,15 +2043,22 @@ function renderSoldierConfirm() {
 
   render(`
     ${stepsBar(3)}
-    <section class="panel">
+    <section class="panel sform">
       <h1 class="panel-title">אישור לפני שליחה</h1>
       <p class="panel-sub">בדקו שהכול נכון. אחרי השליחה לא ניתן לשנות — רק מנהל הציוד יוכל לתקן.</p>
 
+      <div class="fcard">
+      <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי חותם</h2>
+      <!-- Only what this flow actually asked for. Signing for kit asks a name
+           and a personal number and nothing else, so the summary was printing
+           an empty "טלפון:" and a "מחלקה: ללא שיוך" under it — two answers the
+           soldier was never given the chance to give, shown as if he had
+           skipped them. -->
       <dl class="confirm-who">
         <div><dt>שם:</dt><dd>${esc(v.name || '')}</dd></div>
         <div><dt>מספר אישי:</dt><dd><span class="num">${esc(v.pn || '')}</span></dd></div>
-        <div><dt>טלפון:</dt><dd><span class="num">${esc(v.phone || '')}</span></dd></div>
-        <div><dt>מחלקה:</dt><dd>${esc(deptName(v.dept))}</dd></div>
+        ${v.phone ? `<div><dt>טלפון:</dt><dd><span class="num">${esc(v.phone)}</span></dd></div>` : ''}
+        ${v.dept ? `<div><dt>מחלקה:</dt><dd>${esc(deptName(v.dept))}</dd></div>` : ''}
         ${licLine}
       </dl>
 
@@ -2021,13 +2075,18 @@ function renderSoldierConfirm() {
         <button type="button" class="linkbtn" data-act="s-edit-ident">תיקון המספרים</button>
       </div>` : ''}
 
-      <h2 class="field-label">הציוד שאתם חותמים עליו</h2>
+      <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.box}</span>הציוד שאתם חותמים עליו</h2>
       <div class="confirm-list">${rows}</div>
+
+      <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.sign}</span>חתימה</h2>
       ${signPad()}
+      </div>
 
       <p class="form-err" data-err></p>
-      <button class="btn primary wide" data-act="s-submit">אישור ושליחה</button>
-      <button class="btn ghost wide mt" data-act="s-edit">חזרה לעריכת הציוד</button>
+      <div class="formbar">
+        <button class="btn primary" data-act="s-submit">אישור ושליחה</button>
+        <button class="btn ghost" data-act="s-edit">חזרה לעריכת הציוד</button>
+      </div>
     </section>`, 'sign-3');
   mountSignPad();
 }
@@ -2049,7 +2108,6 @@ function renderSoldierConfirm() {
 function signPad() {
   return `
     <fieldset class="lic-set">
-      <legend class="field-label">חתימה <span class="req" aria-hidden="true">*</span></legend>
       <p class="field-hint">חתמו באצבע במסגרת. זו החתימה שלכם על הציוד שלמעלה.</p>
       <div class="sigwrap">
         <canvas class="sigpad" width="600" height="220"
@@ -2563,6 +2621,12 @@ const DICO = {
      and what the section actually asks is what the soldier eats. */
   food: `${SVG_OPEN}<path d="M6.5 2.5v5.6a2.2 2.2 0 0 0 4.4 0V2.5"/><path d="M8.7 10.3v11.2"/><path d="M19.4 12.9h-1.7a1.7 1.7 0 0 1-1.7-1.7V7.1a4.6 4.6 0 0 1 3.4-4.6z"/><path d="M19.4 12.9v8.6"/></svg>`,
   car: `${SVG_OPEN}<path d="M3.6 16.4h16.8v-3.3l-1.6-4a1.6 1.6 0 0 0-1.5-1H6.7a1.6 1.6 0 0 0-1.5 1l-1.6 4z"/><path d="M6.4 16.4v2H4.6v-2M19.4 16.4v2h-1.8v-2"/><path d="M6.8 13.3H8M16 13.3h1.2"/></svg>`,
+  // The section headings on the other five forms.
+  flag: `${SVG_OPEN}<path d="M5.5 21V3.5"/><path d="M5.5 4.5h11l-2 3.5 2 3.5h-11z"/></svg>`,
+  wrench: `${SVG_OPEN}<path d="M14.8 6.2a4.2 4.2 0 0 0 5.4 5.4l-8 8a2.4 2.4 0 0 1-3.4-3.4z"/><path d="M14.8 6.2 17.6 3.4"/></svg>`,
+  fuel: `${SVG_OPEN}<path d="M4.5 20.5V5a1.6 1.6 0 0 1 1.6-1.6h5.3A1.6 1.6 0 0 1 13 5v15.5"/><path d="M3.4 20.5h11.2"/><path d="M4.5 11.4H13"/><path d="M16 8.4h2.2a1.6 1.6 0 0 1 1.6 1.6v6a1.4 1.4 0 0 1-2.8 0v-3.4H16"/></svg>`,
+  door: `${SVG_OPEN}<path d="M4.5 20.5h15"/><path d="M6.5 20.5V4.6a1.1 1.1 0 0 1 1.3-1.1l8 1.3a1.1 1.1 0 0 1 .9 1.1v14.6"/><path d="M13.4 12.4v1.6"/></svg>`,
+  sign: `${SVG_OPEN}<path d="M3.5 19.5c3-.4 4.4-2.4 4.4-5.4 0-2-.8-3-1.9-3s-1.8 1-1.8 2.4c0 3.4 3.4 4.6 6.6 4.6 3.6 0 5.6-1.4 7.4-3.3"/><path d="M17.5 6.5 20 9"/><path d="M12.5 14.5 19 8a1.8 1.8 0 0 0-2.5-2.5L10 12z"/></svg>`,
 };
 
 // A titled box in the drawer's grid. `body` is already-built HTML.

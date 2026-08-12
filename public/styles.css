@@ -172,7 +172,7 @@ table { border-collapse: collapse; }
    avoid. Widened from the page itself rather than from a class the router
    would have to remember to set. */
 @media (min-width: 900px) {
-  .wrap:has(> .panel.signup) { max-width: 880px; }
+  .wrap:has(> .panel.sform) { max-width: 880px; }
 }
 /* …and the banner and footer follow it, so the emblem, the screen's name and
    the table beneath them all share one right edge. Set on the body because
@@ -1983,18 +1983,21 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic-head { margin: 0; font-weight: 600; font-size: var(--t-md); }
 .lic-body { margin-top: 11px; animation: rise 0.25s var(--ease) both; }
 
-/* ── The sign-up page's palette ────────────────────────────────────────
-   The rest of this app is warm: an olive-tinted ground, sage greys and a
-   near-black banner, chosen for a console read on a bright day. The sign-up
-   page is asked to be the other thing — a neutral grey ground under a white
-   banner, with a deeper forest green — so it redefines the tokens for itself
-   and nothing else changes. Scoped from the page's own class rather than
-   from a flag the router would have to remember to set and unset.
+/* ── The soldier-facing palette ────────────────────────────────────────
+   The console is warm: an olive-tinted ground, sage greys and a near-black
+   banner, chosen for a screen read for a whole shift in daylight. The pages
+   a soldier sees are the other thing — a neutral grey ground under a white
+   banner, with a deeper forest green.
+
+   Scoped by what the page is *not*. The router sets `is-console` on every
+   route change, so everything a soldier can reach is covered at once — the
+   menu, the seven forms, and the screens that say a thing was sent — and a
+   page added next year is covered without anyone remembering a flag.
 
    Only hues move. `--muted` and `--ink` keep the lightness they were argued
    into for daylight contrast and lose only the green cast, and the greens go
    *darker*, so every ratio here is at least what it was. */
-body:has(.panel.signup) {
+body:not(.is-console) {
   --bg:         #F4F5F3;
   --bg-2:       #EAEBE8;
   --surface-2:  #FAFAFA;
@@ -2014,17 +2017,17 @@ body:has(.panel.signup) {
 /* The banner goes white with it. It is one strip across the top of the same
    screen, and leaving it near-black would have made the page look like a
    white card someone had dropped onto a different application. */
-body:has(.panel.signup) .topbar {
+body:not(.is-console) .topbar {
   background: #FFFFFF;
   color: var(--ink);
   border-bottom: 1px solid var(--line);
 }
-body:has(.panel.signup) .topbar-sub { color: var(--muted); }
+body:not(.is-console) .topbar-sub { color: var(--muted); }
 /* The accent rule under it is also the progress indicator — it starts moving
    while the console works — so it is hidden rather than deleted, and the busy
    rule below it still overrides and sweeps. */
-body:has(.panel.signup):not(.is-busy) .topbar::after { background: none; }
-body:has(.panel.signup) .emblem { background: #FFFFFF; }
+body:not(.is-console):not(.is-busy) .topbar::after { background: none; }
+body:not(.is-console) .emblem { background: #FFFFFF; }
 
 /* ── The sign-up form ──────────────────────────────────────────────────
    One page, laid out as three named sections inside a card. The form asks
@@ -2074,19 +2077,22 @@ body:has(.panel.signup) .emblem { background: #FFFFFF; }
 /* The three diets, as cards rather than as a stack of rows. Side by side they
    read as one question with three answers; stacked, as three questions. They
    wrap on a narrow screen rather than squashing below a thumb's width. */
-.optrow { display: flex; flex-wrap: wrap; gap: 9px; }
+.pickrow { display: flex; flex-wrap: wrap; gap: 9px; }
 /* Three of them will not fit across a phone — "צמחוני" needs more room than a
    third of 266px leaves once the radio and the padding are paid for — and two
    abreast leaves the third stretched full width beside a gap, reading as a
    different kind of answer to the two above it. So on a phone they stack, at
    the width of the licence rows directly beneath them. */
 @media (max-width: 479px) {
-  .optrow { flex-direction: column; }
+  .pickrow { flex-direction: column; }
   /* The basis is a width in a row and a height in a column, so it has to go
      with the direction — left alone it made each answer 132px tall. */
-  .optrow > .opt { flex: 0 0 auto; }
+  .pickrow > .pick { flex: 0 0 auto; }
 }
-.opt {
+/* Named `pick`, not `opt`: `.opt` is already the equipment row on the kit
+   page, and a second rule under that name landed on top of it — same file,
+   later line — and quietly restyled a screen this never meant to touch. */
+.pick {
   flex: 1 1 132px;
   display: flex;
   align-items: center;
@@ -2099,14 +2105,14 @@ body:has(.panel.signup) .emblem { background: #FFFFFF; }
   cursor: pointer;
   transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
 }
-.opt input { width: 20px; height: 20px; accent-color: var(--pine); flex: none; cursor: pointer; }
-.opt-t { font-weight: 600; }
-.opt:has(input:checked) {
+.pick input { width: 20px; height: 20px; accent-color: var(--pine); flex: none; cursor: pointer; }
+.pick-t { font-weight: 600; }
+.pick:has(input:checked) {
   border-color: var(--pine);
   background: var(--pine-tint);
   box-shadow: 0 0 0 1px var(--pine-ring);
 }
-.opt:has(input:checked) .opt-t { color: var(--pine-deep); }
+.pick:has(input:checked) .pick-t { color: var(--pine-deep); }
 
 /* Yes/no, as one control instead of two. A tick box answers only when it is
    ticked — leaving "no" and "not read the question" looking identical — and
