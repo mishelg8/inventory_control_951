@@ -2075,6 +2075,17 @@ body:has(.panel.signup) .emblem { background: #FFFFFF; }
    read as one question with three answers; stacked, as three questions. They
    wrap on a narrow screen rather than squashing below a thumb's width. */
 .optrow { display: flex; flex-wrap: wrap; gap: 9px; }
+/* Three of them will not fit across a phone — "צמחוני" needs more room than a
+   third of 266px leaves once the radio and the padding are paid for — and two
+   abreast leaves the third stretched full width beside a gap, reading as a
+   different kind of answer to the two above it. So on a phone they stack, at
+   the width of the licence rows directly beneath them. */
+@media (max-width: 479px) {
+  .optrow { flex-direction: column; }
+  /* The basis is a width in a row and a height in a column, so it has to go
+     with the direction — left alone it made each answer 132px tall. */
+  .optrow > .opt { flex: 0 0 auto; }
+}
 .opt {
   flex: 1 1 132px;
   display: flex;
@@ -2163,8 +2174,12 @@ body:has(.panel.signup) .emblem { background: #FFFFFF; }
   margin-top: var(--s-4);
 }
 .formbar .btn { min-width: 172px; margin: 0; }
+/* Stacked on a phone, and in that order: send on top, the way out beneath it.
+   Reversed, "חזרה לתפריט" sat directly above the button that submits the form
+   — which is the same adjacency, and the same mis-tap, that putting them on
+   one row was meant to fix. */
 @media (max-width: 619px) {
-  .formbar { flex-direction: column-reverse; align-items: stretch; }
+  .formbar { flex-direction: column; align-items: stretch; }
   .formbar .btn { width: 100%; }
 }
 /* On a card, an allergy is the line that has to be read before anything is

@@ -1820,7 +1820,7 @@ function renderSoldierStep1() {
             </label>
           </div>
 
-          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.heart}</span>מידע רפואי</h2>
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.food}</span>העדפות תזונה</h2>
           ${dietBlock(v)}
 
           <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.car}</span>רישיונות נהיגה</h2>
@@ -2558,9 +2558,10 @@ const DICO = {
   wa: `${SVG_OPEN}<path d="M20.5 11.5a8.5 8.5 0 0 1-12.6 7.4L3.5 20.5l1.6-4.3A8.5 8.5 0 1 1 20.5 11.5z"/></svg>`,
   check: `${SVG_OPEN}<path d="M4 12.5 9.5 18 20 6.5"/></svg>`,
   pen: `${SVG_OPEN}<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M14.5 6.5 17.5 9.5"/></svg>`,
-  // Same 24-grid and stroke as the rest: a heart for what the kitchen and the
-  // medic need to know, a car for the licences.
-  heart: `${SVG_OPEN}<path d="M12 19.6C8.4 17 4.6 14.1 4.6 10.5A3.7 3.7 0 0 1 12 8.2a3.7 3.7 0 0 1 7.4 2.3c0 3.6-3.8 6.5-7.4 9.1z"/></svg>`,
+  /* Same 24-grid and stroke as the rest: a place setting for the diet, a car
+     for the licences. It was a heart to begin with, which said "medical" —
+     and what the section actually asks is what the soldier eats. */
+  food: `${SVG_OPEN}<path d="M6.5 2.5v5.6a2.2 2.2 0 0 0 4.4 0V2.5"/><path d="M8.7 10.3v11.2"/><path d="M19.4 12.9h-1.7a1.7 1.7 0 0 1-1.7-1.7V7.1a4.6 4.6 0 0 1 3.4-4.6z"/><path d="M19.4 12.9v8.6"/></svg>`,
   car: `${SVG_OPEN}<path d="M3.6 16.4h16.8v-3.3l-1.6-4a1.6 1.6 0 0 0-1.5-1H6.7a1.6 1.6 0 0 0-1.5 1l-1.6 4z"/><path d="M6.4 16.4v2H4.6v-2M19.4 16.4v2h-1.8v-2"/><path d="M6.8 13.3H8M16 13.3h1.2"/></svg>`,
 };
 
