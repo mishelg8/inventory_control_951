@@ -166,6 +166,14 @@ table { border-collapse: collapse; }
 }
 /* the console needs room for tables; soldiers keep the narrow column */
 .wrap.wide { max-width: 1240px; }
+/* …except the sign-up form, which is the one soldier page with two fields
+   abreast. At 640 the pairs collapsed back into a single narrow stack with
+   half the card empty beside them, which is the layout the grid exists to
+   avoid. Widened from the page itself rather than from a class the router
+   would have to remember to set. */
+@media (min-width: 900px) {
+  .wrap:has(> .panel.signup) { max-width: 880px; }
+}
 /* …and the banner and footer follow it, so the emblem, the screen's name and
    the table beneath them all share one right edge. Set on the body because
    they are three separate elements and only an ancestor can tell all three. */
@@ -1975,19 +1983,147 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .lic-head { margin: 0; font-weight: 600; font-size: var(--t-md); }
 .lic-body { margin-top: 11px; animation: rise 0.25s var(--ease) both; }
 
-/* Diet and allergies. Deliberately the same furniture as the licence blocks
-   they sit above, so the page reads as one form rather than as two that met.
-   Three answers share a single box — they are one question — and the rule
-   between them keeps a thumb from landing on the wrong row. */
-.diet { padding-block: 2px; }
-.diet-opt { align-items: center; }
-.diet .diet-opt + .diet-opt { border-top: 1px solid var(--line); }
+/* ── The sign-up form ──────────────────────────────────────────────────
+   One page, laid out as three named sections inside a card. The form asks
+   for eleven things and used to present them as eleven stacked boxes with
+   nothing to say where one subject ended and the next began; the headings
+   are what turn that into "who you are, what you eat, what you may drive".
 
-/* The allergy box opens from the tick itself, not from a re-render. Where
-   :has() is missing the field simply stays visible, which asks one extra
-   question of a few old phones and breaks nothing. */
+   Everything below is layout only. Nothing here decides what is required —
+   the submit handler does that, and it is the only thing that does. */
+.fcard {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  padding: 18px 16px 6px;
+  margin-bottom: var(--s-5);
+}
+/* On a phone the outer panel is already a card with padding of its own, and
+   nesting a second one spends the width twice. The sections stay; the box
+   around them goes. */
+@media (max-width: 619px) {
+  .fcard { border: 0; padding: 0; }
+}
+.fsec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pine);
+  font-size: var(--t-lg);
+  font-weight: 700;
+  margin: 0 0 12px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.fsec:not(:first-child) { margin-top: var(--s-6); }
+.fsec-i { display: inline-flex; width: 21px; height: 21px; flex: none; color: var(--pine); }
+.fsec-i svg { width: 100%; height: 100%; }
+
+/* A question that is not a text field: a label, then controls. */
+.fq { margin-bottom: var(--s-5); }
+.fq-l {
+  display: block;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: 7px;
+}
+
+/* The three diets, as cards rather than as a stack of rows. Side by side they
+   read as one question with three answers; stacked, as three questions. They
+   wrap on a narrow screen rather than squashing below a thumb's width. */
+.optrow { display: flex; flex-wrap: wrap; gap: 9px; }
+.opt {
+  flex: 1 1 132px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
+}
+.opt input { width: 20px; height: 20px; accent-color: var(--pine); flex: none; cursor: pointer; }
+.opt-t { font-weight: 600; }
+.opt:has(input:checked) {
+  border-color: var(--pine);
+  background: var(--pine-tint);
+  box-shadow: 0 0 0 1px var(--pine-ring);
+}
+.opt:has(input:checked) .opt-t { color: var(--pine-deep); }
+
+/* Yes/no, as one control instead of two. A tick box answers only when it is
+   ticked — leaving "no" and "not read the question" looking identical — and
+   two buttons that share a frame are answered either way. */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+.seg-b {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  min-height: 44px;
+  padding: 0 18px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.seg-b + .seg-b { border-inline-start: 1px solid var(--line); }
+/* The radio itself is the accessible control and stays focusable; it is the
+   button around it that is painted, so a keyboard still lands somewhere real. */
+.seg-b input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.seg-b:has(input:checked) { background: var(--pine); color: #fff; }
+.seg-b:has(input:focus-visible) { outline: 2px solid var(--pine); outline-offset: -2px; }
+
+/* The detail box opens from the answer itself, not from a re-render: the text
+   is often already typed by then, and re-rendering the form to show a field is
+   how typed text gets thrown away. Where :has() is missing the box simply
+   stays visible, which asks one extra question of a few old phones. */
 .alg-body { margin-top: 11px; }
-.lic:not(:has(.alg-tick:checked)) .alg-body { display: none; }
+.alg-q:not(:has(input[value="yes"]:checked)) .alg-body { display: none; }
+
+/* The two licences, side by side while they are only tick boxes. Ticking one
+   opens a licence number, an expiry and a camera under it, and at that point
+   it takes the full width — a column half the card wide is not where anybody
+   should be typing a date. */
+.licgrid { display: grid; grid-template-columns: 1fr; gap: 0; }
+@media (min-width: 620px) {
+  .licgrid { grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  .licgrid > .lic.on { grid-column: 1 / -1; }
+}
+
+/* Send on one side, the way out on the other. They were stacked full-width and
+   equally loud, so "חזרה לתפריט" sat directly under the button that submits
+   the form and was pressed instead of it. */
+.formbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: var(--s-4);
+}
+.formbar .btn { min-width: 172px; margin: 0; }
+@media (max-width: 619px) {
+  .formbar { flex-direction: column-reverse; align-items: stretch; }
+  .formbar .btn { width: 100%; }
+}
 /* On a card, an allergy is the line that has to be read before anything is
    handed over. It is not a detail among details. */
 .alg-flag { color: var(--bad-ink); font-weight: 700; }

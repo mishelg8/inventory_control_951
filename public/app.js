@@ -1742,82 +1742,97 @@ function licBlock(kind) {
    whatever the soldier had already typed into that very box. */
 function dietBlock(v) {
   return `
-    <fieldset class="lic-set">
-      <legend class="field-label">תזונה <span class="req" aria-hidden="true">*</span></legend>
-      <div class="lic diet">
+    <div class="fq">
+      <span class="fq-l">מהי העדפת התזונה שלך? <span class="req" aria-hidden="true">*</span></span>
+      <div class="optrow">
         ${DIETS.map((d) => `
-          <label class="check diet-opt">
+          <label class="opt">
             <input type="radio" name="diet" value="${d.id}"${v.diet === d.id ? ' checked' : ''}>
-            <span>${esc(d.name)}</span>
+            <span class="opt-t">${esc(d.name)}</span>
           </label>`).join('')}
       </div>
-      <div class="lic">
-        <label class="check lic-head">
-          <input class="alg-tick" type="checkbox" name="allergy"${v.allergy ? ' checked' : ''}>
-          <span>יש לי אלרגיה</span>
+    </div>
+    <div class="fq alg-q">
+      <span class="fq-l">האם קיימת אלרגיה למזון?</span>
+      <div class="seg">
+        <label class="seg-b">
+          <input type="radio" name="alg" value="no"${v.alg === 'yes' ? '' : ' checked'}>
+          <span>לא</span>
         </label>
-        <div class="alg-body">
-          <label class="field mb0">
-            <span class="field-label">פירוט האלרגיה <span class="req" aria-hidden="true">*</span></span>
-            <textarea class="input area" name="allergyTxt" rows="3" maxlength="300"
-                      placeholder="לדוגמה: אלרגיה לבוטנים ולשומשום — גם במגע. נושא מזרק אפיפן.">${esc(v.allergyTxt || '')}</textarea>
-          </label>
-        </div>
+        <label class="seg-b">
+          <input type="radio" name="alg" value="yes"${v.alg === 'yes' ? ' checked' : ''}>
+          <span>כן</span>
+        </label>
       </div>
-    </fieldset>`;
+      <div class="alg-body">
+        <label class="field mb0">
+          <span class="field-label">פירוט האלרגיה <span class="req" aria-hidden="true">*</span></span>
+          <textarea class="input area" name="allergyTxt" rows="3" maxlength="300"
+                    placeholder="לדוגמה: אלרגיה לבוטנים ולשומשום — גם במגע. נושא מזרק אפיפן.">${esc(v.allergyTxt || '')}</textarea>
+        </label>
+      </div>
+    </div>`;
 }
 
 function renderSoldierStep1() {
   const v = S.ident || {
     pn: '', name: '', phone: '', dept: '', weapon: '', amral: '', scope: '',
-    diet: '', allergy: false, allergyTxt: '',
+    diet: '', alg: 'no', allergyTxt: '',
   };
   const deptOpts = DEPTS.map(
     (d) => `<option value="${d.id}"${v.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`
   ).join('');
   render(`
-    <section class="panel center-head">
+    <section class="panel signup center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center">רישום פרטים אישיים</h1>
       <p class="panel-sub center">זה הרישום הראשון, ורק אחריו אפשר לרשום נשק או לחתום על ציוד. הפרטים מוצפנים במכשיר שלכם — רק מנהל הציוד יכול לקרוא אותם.</p>
       <form data-form="ident" novalidate>
-        <!-- The weapon and accessory numbers below have always shown the shape
-             they expect. These three did not, so the form opened with three
-             empty boxes above three hinted ones and read as unfinished — and
-             the phone field in particular gave no sign whether it wanted
-             dashes, a country code or neither. -->
-        <label class="field">
-          <span class="field-label">מספר אישי</span>
-          <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
-                 maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
-        </label>
-        <label class="field">
-          <span class="field-label">שם מלא</span>
-          <input class="input" name="name" autocomplete="off" maxlength="60"
-                 value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
-        </label>
-        <label class="field">
-          <span class="field-label">טלפון נייד</span>
-          <input class="input num" name="phone" inputmode="tel" autocomplete="off"
-                 maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
-        </label>
-        <label class="field">
-          <span class="field-label">מחלקה</span>
-          <select class="input select" name="dept" required>
-            <option value="">— בחרו מחלקה —</option>
-            ${deptOpts}
-          </select>
-        </label>
-        ${dietBlock(v)}
-        <fieldset class="lic-set">
-          <legend class="field-label">רישיונות נהיגה</legend>
-          ${LIC_KINDS.map(licBlock).join('')}
-        </fieldset>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>פרטים אישיים</h2>
+          <!-- The weapon and accessory numbers below have always shown the shape
+               they expect. These three did not, so the form opened with three
+               empty boxes above three hinted ones and read as unfinished — and
+               the phone field in particular gave no sign whether it wanted
+               dashes, a country code or neither. -->
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                     maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">שם מלא <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+            </label>
+            <label class="field">
+              <span class="field-label">טלפון נייד <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="phone" inputmode="tel" autocomplete="off"
+                     maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">מחלקה <span class="req" aria-hidden="true">*</span></span>
+              <select class="input select" name="dept" required>
+                <option value="">— בחרו מחלקה —</option>
+                ${deptOpts}
+              </select>
+            </label>
+          </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.heart}</span>מידע רפואי</h2>
+          ${dietBlock(v)}
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.car}</span>רישיונות נהיגה</h2>
+          <div class="licgrid">${LIC_KINDS.map(licBlock).join('')}</div>
+        </div>
 
         <p class="form-err" data-err></p>
-        <button class="btn primary wide" type="submit">שליחה לאישור</button>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחה לאישור</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
       </form>
-      ${backToMenu()}
     </section>`, 'sign-1');
 }
 
@@ -2543,6 +2558,10 @@ const DICO = {
   wa: `${SVG_OPEN}<path d="M20.5 11.5a8.5 8.5 0 0 1-12.6 7.4L3.5 20.5l1.6-4.3A8.5 8.5 0 1 1 20.5 11.5z"/></svg>`,
   check: `${SVG_OPEN}<path d="M4 12.5 9.5 18 20 6.5"/></svg>`,
   pen: `${SVG_OPEN}<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M14.5 6.5 17.5 9.5"/></svg>`,
+  // Same 24-grid and stroke as the rest: a heart for what the kitchen and the
+  // medic need to know, a car for the licences.
+  heart: `${SVG_OPEN}<path d="M12 19.6C8.4 17 4.6 14.1 4.6 10.5A3.7 3.7 0 0 1 12 8.2a3.7 3.7 0 0 1 7.4 2.3c0 3.6-3.8 6.5-7.4 9.1z"/></svg>`,
+  car: `${SVG_OPEN}<path d="M3.6 16.4h16.8v-3.3l-1.6-4a1.6 1.6 0 0 0-1.5-1H6.7a1.6 1.6 0 0 0-1.5 1l-1.6 4z"/><path d="M6.4 16.4v2H4.6v-2M19.4 16.4v2h-1.8v-2"/><path d="M6.8 13.3H8M16 13.3h1.2"/></svg>`,
 };
 
 // A titled box in the drawer's grid. `body` is already-built HTML.
@@ -8427,7 +8446,10 @@ async function soldierIdentSubmit(form) {
   const phone = form.phone.value.trim();
   const dept = form.dept.value;
   const diet = form.diet.value;
-  const hasAllergy = form.allergy.checked;
+  /* "לא" is the answer the control opens on, which is what keeps the allergy
+     optional: a soldier who has none passes through without touching it, and
+     only someone who says "כן" is asked to write anything. */
+  const hasAllergy = form.alg.value === 'yes';
   const allergy = hasAllergy ? form.allergyTxt.value.trim().slice(0, 300) : '';
   if (!identOk(form, pn, name)) return;
   if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
@@ -8496,7 +8518,7 @@ async function soldierIdentSubmit(form) {
        on the screen twice and asked for two approvals to file one form. */
     const supp = known.exists && known.status === 'approved';
     const rid = supp ? await deriveRid(`${pn}:details`, S.config.idSalt) : mainRid;
-    S.ident = { pn, name, phone, dept, diet, allergy: hasAllergy, allergyTxt: allergy };
+    S.ident = { pn, name, phone, dept, diet, alg: hasAllergy ? 'yes' : 'no', allergyTxt: allergy };
     S.rid = rid;
     const payload = {
       kind: 'details', pn, name, phone, dept, diet, allergy,
@@ -8621,7 +8643,7 @@ function captureIdentForm() {
     // Ticking a licence box re-renders the whole form, and an answer that is
     // not read back here is an answer the soldier gave and then watched vanish.
     diet: f.diet ? f.diet.value : '',
-    allergy: !!(f.allergy && f.allergy.checked),
+    alg: f.alg ? f.alg.value : 'no',
     allergyTxt: f.allergyTxt ? f.allergyTxt.value.trim() : '',
   };
   const no = $app.querySelector('[data-act="lic-no"]');
