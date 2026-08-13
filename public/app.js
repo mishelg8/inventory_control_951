@@ -10681,13 +10681,38 @@ async function boot() {
   render('<p class="loading">טוען…</p>');
   registerShareTarget();
   await claimSharedPhoto();
-  try {
-    S.config = await api('/config');
-  } catch (e) {
+
+  /* One quiet retry before the wall.
+
+     This is the first request the app makes, and until it answers there is
+     nothing on the screen but the error panel — so a single passing failure,
+     a dropped packet on a base connection or a hiccup at the far end, meets
+     a soldier with "שגיאת התחברות" and no way forward but a button. They read
+     that as "the system is down" and go and ask somebody, which is a large
+     consequence for a fault that has already cured itself by the time they
+     put the phone down.
+
+     Reading the configuration is a GET that changes nothing, so asking twice
+     costs nothing and cannot double anything up. Twice only: past that it is
+     genuinely down, and a phone spinning at a blank screen tells the soldier
+     less than the panel does. The pause lets a blip pass rather than
+     colliding with it a second time. */
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 600));
+    try {
+      S.config = await api('/config');
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) {
     render(`
       <section class="panel center">
         <h1 class="panel-title">שגיאת התחברות</h1>
-        <p class="panel-sub">${esc(e.message)}</p>
+        <p class="panel-sub">${esc(lastErr.message)}</p>
         <button class="btn primary" data-act="retry">ניסיון חוזר</button>
       </section>`);
     $app.querySelector('[data-act="retry"]').addEventListener('click', boot);

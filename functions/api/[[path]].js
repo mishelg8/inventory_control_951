@@ -103,9 +103,20 @@ async function allow(db, key, limit, windowMs, now) {
 
 // The throttle table is write-heavy and nothing ever removed lapsed rows.
 // Swept opportunistically so it cannot grow without bound.
+//
+// Its failures are swallowed on purpose. This runs before every request,
+// including a plain read of /api/config — the first call the app makes, before
+// a soldier has seen anything at all. A one-in-fifty housekeeping write that
+// took the request down with it turned a passing D1 hiccup into "שגיאת שרת" on
+// the front door, over rows nobody asked to delete. If the sweep loses, the
+// lapsed rows wait for the next one.
 async function sweepThrottle(db, now) {
   if (Math.random() < 0.02) {
-    await db.prepare('DELETE FROM throttle WHERE until <= ?1').bind(now - 86400000).run();
+    try {
+      await db.prepare('DELETE FROM throttle WHERE until <= ?1').bind(now - 86400000).run();
+    } catch (e) {
+      console.error('sweepThrottle', e && e.message);
+    }
   }
 }
 
@@ -1396,6 +1407,18 @@ export async function onRequest(context) {
 
     return err(404, 'הנתיב לא נמצא');
   } catch (e) {
+    /* The client is told nothing beyond "שגיאת שרת" — it is a stranger and an
+       exception text is a map of the inside. But this used to be told to
+       nobody at all, which meant a 500 seen on a phone could not be explained
+       afterwards: Cloudflare keeps no request log of its own here, so the only
+       account of what broke was the one we threw away. Now it goes to the
+       stream `wrangler pages deployment tail` reads.
+
+       What is logged is deliberately thin: the method, the route family, and
+       the error with its stack. No body, no path tail, no headers — the stack
+       already names the line, which identifies the route more precisely than
+       the URL would, and none of the three can carry a soldier's details. */
+    console.error('api 500', method, seg[0] || '/', seg.length, e && e.message, e && e.stack);
     return err(500, 'שגיאת שרת');
   }
 }
