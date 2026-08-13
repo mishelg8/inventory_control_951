@@ -32,8 +32,11 @@
 
 set -uo pipefail
 
-DEST="$HOME/Library/Application Support/Tzayad/backups"
+APP="$HOME/Library/Application Support/Tzayad"
+DEST="$APP/backups"
 LOG="$DEST/backup.log"
+TOOLS="$APP/tools"          # wrangler lives here, installed once — see below
+WRANGLER="$TOOLS/node_modules/.bin/wrangler"
 KEEP=14
 MIN_BYTES=100000            # a real export is megabytes; anything this small is a failure
 
@@ -47,19 +50,55 @@ out="$DEST/db-$stamp.sql"
 rm -f "$tmp"
 # One level up: wrangler drops a .wrangler working directory wherever it runs,
 # and the backup folder should hold backups and nothing else.
-cd "$(dirname "$DEST")" || exit 1
+cd "$APP" || exit 1
 
 # launchd starts with almost no PATH, and a Node upgrade moves the one this was
 # installed against. Say so plainly rather than logging "command not found".
-command -v npx >/dev/null 2>&1 || {
-  say "FAIL: npx is not on PATH — fix PATH in ~/Library/LaunchAgents/com.tzayad.backup.plist"
+command -v node >/dev/null 2>&1 || {
+  say "FAIL: node is not on PATH — fix PATH in ~/Library/LaunchAgents/com.tzayad.backup.plist"
   exit 1
 }
 
+# wrangler is installed here once and then simply run.
+#
+# This used to be `npx --yes wrangler@4`, which re-resolved the package against
+# registry.npmjs.org on every single run. On the night of 12 August 2026 that
+# fetch timed out, the whole run died before it ever reached Cloudflare, and
+# the day had no backup — a nightly dependency on a third party that the job
+# has no reason to need. The project directory cannot help: it lives in
+# ~/Downloads, which is exactly what a scheduled job is not allowed to read.
+# So the tool lives in the job's own folder, beside the backups it takes.
+#
 # Pinned to the major version the project uses. No project directory is
 # involved, so this is the one thing that has to name a version.
-if ! npx --yes wrangler@4 d1 export tzayad --remote --output "$tmp" >> "$LOG" 2>&1; then
-  say "FAIL: wrangler export failed — check the login (npx wrangler login)"
+if [ ! -x "$WRANGLER" ]; then
+  say "wrangler is not installed here yet — installing wrangler@4 into $TOOLS"
+  mkdir -p "$TOOLS"
+  [ -f "$TOOLS/package.json" ] || printf '{"private":true}\n' > "$TOOLS/package.json"
+  if ! npm install --prefix "$TOOLS" --no-audit --no-fund wrangler@4 >> "$LOG" 2>&1; then
+    say "FAIL: could not install wrangler into $TOOLS — no export attempted, deleted nothing"
+    exit 1
+  fi
+fi
+
+# One retry. The export is a download of several megabytes over a link that
+# occasionally drops it, and losing a day's backup to a single dropped
+# connection is the failure this job exists to prevent.
+export_ok=0
+for attempt in 1 2; do
+  if "$WRANGLER" d1 export tzayad --remote --output "$tmp" >> "$LOG" 2>&1; then
+    export_ok=1
+    break
+  fi
+  rm -f "$tmp"
+  [ "$attempt" = 1 ] && { say "export attempt 1 failed — retrying in 60s"; sleep 60; }
+done
+
+if [ "$export_ok" != 1 ]; then
+  # Deliberately not "check the login". It said that for a year, and when the
+  # job finally did fail the message sent the reader to a login that was fine.
+  # The wrangler output is directly above this line in the log; read that.
+  say "FAIL: wrangler export failed twice — the reason is in the wrangler output above"
   rm -f "$tmp"
   exit 1
 fi

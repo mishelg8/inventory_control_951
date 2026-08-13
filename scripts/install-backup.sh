@@ -19,6 +19,13 @@ mkdir -p "$APP/backups" "$HOME/Library/LaunchAgents"
 cp "$HERE/backup-db.sh" "$APP/backup-db.sh"
 chmod +x "$APP/backup-db.sh"
 
+# wrangler, installed once into the job's own folder rather than fetched from
+# the registry every night. The nightly fetch is what lost the 12 August 2026
+# backup. Doing it here means the first scheduled run already has its tool.
+mkdir -p "$APP/tools"
+[ -f "$APP/tools/package.json" ] || printf '{"private":true}\n' > "$APP/tools/package.json"
+npm install --prefix "$APP/tools" --no-audit --no-fund wrangler@4
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
