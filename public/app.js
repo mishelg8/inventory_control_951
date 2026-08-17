@@ -2681,6 +2681,9 @@ const READ_ACTS = new Set([
   'reveal', 'rep-reveal', 'doc', 'doc-zoom', 'lic-docs', 'flt-shots-hide',
   'expand', 'rep-filter', 'dep-filter', 'rf-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
+  // Saving a photograph is a read, and the same read a viewer may already do
+  // on screen — the same reasoning that leaves the CSV export on this list.
+  'lic-dl-all', 'lic-dl-one', 'flt-dl-all', 'flt-dl-one',
   'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
 
@@ -4094,8 +4097,15 @@ function renderLicTab() {
   // licencePanel already carries the heading, the figures and the table. A
   // wrapper around it only said "רישיונות נהיגה" twice, with two sets of
   // counts under two identical titles.
-  return licencePanel(S.recs.filter((r) => r.status === 'approved' && !r.damaged));
+  return licencePanel(licApproved());
 }
+
+// The same set the screen is built from, so the download button and the table
+// can never disagree about what "the rows on screen" means.
+const licApproved = () => S.recs.filter((r) => r.status === 'approved' && !r.damaged);
+
+const licDownloadAll = () =>
+  withBusy(() => downloadShots(licShotList(licenceRows(licApproved()))));
 
 function licencePanel(approved) {
   const rows = licenceRows(approved);
@@ -4138,7 +4148,8 @@ function licencePanel(approved) {
           <td class="lic-acts">${shots.length
             ? `<button class="linkbtn" data-act="lic-docs" data-rid="${esc(r.rid)}">${
                 open.length ? 'הסתרה' : 'צפייה ברשומה'
-              }</button>`
+              }</button>
+               ${licShotsOneBtn(r, shots.length)}`
             : ''}${licEditLink(r)}</td>
         </tr>
         ${S.licEdit === r.rid
@@ -4190,10 +4201,41 @@ function licencePanel(approved) {
                <tbody>${body}</tbody>
              </table>
            </div>
-           ${reportButtons('licences')}`
+           ${reportButtons('licences', licShotsBtn(rows))}`
         : '<p class="empty">אין רשומות מאושרות.</p>'}
     </section>`;
 }
+
+/* The licence photographs behind the rows on screen. A soldier with both
+   licences contributes two files, named so the pair does not have to be told
+   apart by opening them. */
+const licShotList = (rows) => rows.flatMap((r) => LIC_KINDS
+  .filter((k) => (k.id === 'civil' ? r.doc : r.milDoc))
+  .map((k) => ({ rid: r.rid, kind: k.id, stem: `${k.short}-${r.name}-${r.pn}` })));
+
+function licShotsBtn(rows) {
+  const shots = licShotList(rows);
+  if (!shots.length) return '';
+  return askBtn('licshots', 'lic-dl-all', `הורדת כל הצילומים (${shots.length})`,
+    'הצילומים יישמרו למחשב בלי הצפנה. להוריד?', { yes: 'הורדה' });
+}
+
+/* One soldier's licences, from that soldier's row.
+   The screen-wide button under the table is for emptying a whole filtered
+   list; this is the one for the ordinary errand — a מפל״ג who needs the
+   licence of the driver standing in front of him. */
+function licShotsOneBtn(r, n) {
+  return askBtn(`licdl:${r.rid}`, 'lic-dl-one',
+    `הורדת ${n > 1 ? 'הצילומים' : 'הצילום'}`,
+    'הצילומים יישמרו למחשב בלי הצפנה. להוריד?',
+    { data: { rid: r.rid }, yes: 'הורדה', cls: 'linkbtn' });
+}
+
+const licDownloadOne = (rid) =>
+  withBusy(() => {
+    const row = licenceRows(licApproved(), false).find((x) => x.rid === rid);
+    return row ? downloadShots(licShotList([row])) : Promise.resolve();
+  });
 
 /* ── העדפות אוכל ───────────────────────────────────────────────────────
    Who is not on the standard tray, and who must not be given the wrong one.
@@ -6828,6 +6870,73 @@ function saveDataUrl(dataUrl, name) {
   a.remove();
 }
 
+/* ── Taking the photographs off the system ─────────────────────────────
+   A licence and a photograph of a broken pipe are evidence, and evidence is
+   asked for by people who do not have a console login: a מפל״ג who wants the
+   driving licences of everyone going out tomorrow, a works officer who has to
+   forward the leak to the contractor. Until now the only way to get one out
+   was to open it on screen and photograph the screen.
+
+   What leaves is what is on screen — the search and the filter are respected,
+   because "all the photographs" on a filtered table means the ones the filter
+   left, and downloading four hundred when eleven are showing is not what
+   anybody meant by pressing the button.
+
+   Two things this is careful about:
+
+   * A saved file is a decrypted file. That is the whole point of it and it is
+     also the risk, so the button asks first, in the same words the CSV export
+     asks in.
+   * Downloading must not change what the screen shows. Fetching a photograph
+     puts it in the open-images cache, which is what the table reads to decide
+     whether a row is expanded — so a bulk download would end with every row on
+     the screen unfolded into thumbnails nobody asked to see. Whatever was not
+     open before is closed again at the end. */
+
+const fileSafe = (s) => String(s || '').replace(/[\\/:*?"<>|\n\r\t]+/g, '-').trim() || 'ללא-שם';
+const dayStamp = (ms) => new Date(ms || Date.now()).toISOString().slice(0, 10);
+
+async function downloadShots(wanted) {
+  if (!wanted.length) { toast('אין צילומים להורדה', true); return; }
+
+  const wasOpen = new Set(Object.keys(S.docs));
+  const byOwner = new Map();
+  for (const w of wanted) {
+    if (!byOwner.has(w.rid)) byOwner.set(w.rid, []);
+    byOwner.get(w.rid).push(w);
+  }
+
+  let saved = 0;
+  let missing = 0;
+  let n = 0;
+  for (const [rid, list] of byOwner) {
+    n++;
+    toast(`מוריד… ${n} מתוך ${byOwner.size}`);
+    // One request brings down everything hanging off this id, so a soldier's
+    // two licences and a fault's four pictures each cost one round trip.
+    try {
+      await fetchDocs(rid);
+    } catch {
+      missing += list.length;
+      continue;
+    }
+    for (const w of list) {
+      const src = S.docs[`${rid}:${w.kind}`];
+      if (!src) { missing++; continue; }
+      saveDataUrl(src, `${fileSafe(w.stem)}.jpg`);
+      saved++;
+      // Browsers throttle — and quietly drop — a burst of saves from one page.
+      await new Promise((r) => setTimeout(r, 350));
+    }
+  }
+
+  for (const key of Object.keys(S.docs)) if (!wasOpen.has(key)) docForget(key);
+  renderConsole();
+  toast(missing
+    ? `${saved} צילומים הורדו · ${missing} לא נמצאו`
+    : `${saved} צילומים הורדו`);
+}
+
 const fuelFileStem = (card) =>
   `קבלה-${nameOf(FUEL_KINDS, card.kind)}-${(card.no || 'ללא-מספר').replace(/[^\w֐-׿-]/g, '')}`;
 
@@ -7432,6 +7541,7 @@ function faultShots(r) {
       <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">📷 ${
         n > 1 ? `${n} צילומים מצורפים` : 'צילום מצורף'
       } — הצגה</button>
+      ${fltShotsOneBtn(r, n)}
     </p>`;
   }
   return `
@@ -7450,8 +7560,67 @@ function faultShots(r) {
       <button class="linkbtn" data-act="flt-shots-hide" data-id="${esc(r.id)}">הסתרת ${
         open.length > 1 ? 'הצילומים' : 'הצילום'
       }</button>
+      ${fltShotsOneBtn(r, n)}
     </p>`;
 }
+
+/* Downloading one fault's pictures, from the fault itself.
+   The screen-wide button below the list is for taking a whole filtered set
+   off the system at once; this is the one that gets used, because the job is
+   almost always "send the contractor the pictures of *this* leak" and a
+   folder holding every open fault's photographs is not that. */
+function fltShotsOneBtn(r, n) {
+  return askBtn(`fltdl:${r.id}`, 'flt-dl-one',
+    `הורדת ${n > 1 ? `${n} הצילומים` : 'הצילום'}`,
+    'הצילומים יישמרו למחשב בלי הצפנה. להוריד?',
+    { data: { id: r.id }, yes: 'הורדה', cls: 'linkbtn' });
+}
+
+const fltDownloadOne = (id) =>
+  withBusy(() => {
+    const rec = S.reports.find((x) => x.id === id);
+    return rec ? downloadShots(fltShotList([rec])) : Promise.resolve();
+  });
+
+/* The faults the filter and the search have left, in one place: the screen is
+   built from this and so is the download button, which is the only way the two
+   can agree on what "all the photographs" means. Paging is deliberately not
+   applied — a download that stopped at the end of page one would be a trap. */
+function faultsOnScreen(all = faultReports()) {
+  const byStatus = all.filter((r) => {
+    if (S.fltFilter === 'all') return true;
+    if (S.fltFilter === 'open') return r.status !== 'done';   // open + in progress
+    return r.status === S.fltFilter;
+  });
+  const q = S.fltQ.trim().toLowerCase();
+  return byStatus.filter((r) =>
+    !q ||
+    (r.data.name || '').toLowerCase().includes(q) ||
+    (r.data.phone || '').includes(q) ||
+    (r.data.text || '').toLowerCase().includes(q)
+  );
+}
+
+// Every photograph attached to those faults, named so a folder of them can be
+// read without opening any: who reported it, when, and which of the set it is.
+const fltShotList = (list) => list.flatMap((r) => {
+  const n = r.data.photos || (r.data.photo ? 1 : 0);
+  return FAULT_KINDS.slice(0, n).map((kind, i) => ({
+    rid: r.id,
+    kind,
+    stem: `תקלה-${dayStamp(r.data.createdAt)}-${r.data.name}${n > 1 ? `-${i + 1}` : ''}`,
+  }));
+});
+
+function fltShotsBtn(vis) {
+  const shots = fltShotList(vis);
+  if (!shots.length) return '';
+  return askBtn('fltshots', 'flt-dl-all', `הורדת כל הצילומים (${shots.length})`,
+    'הצילומים יישמרו למחשב בלי הצפנה. להוריד?', { yes: 'הורדה' });
+}
+
+const fltDownloadAll = () =>
+  withBusy(() => downloadShots(fltShotList(faultsOnScreen())));
 
 function renderFaultsTab() {
   const all = faultReports();
@@ -7460,18 +7629,7 @@ function renderFaultsTab() {
       `<button class="filter" aria-pressed="${S.fltFilter === id}" data-act="flt-filter" data-f="${id}">${label}</button>`)
     .join('');
 
-  const byStatus = all.filter((r) => {
-    if (S.fltFilter === 'all') return true;
-    if (S.fltFilter === 'open') return r.status !== 'done';   // open + in progress
-    return r.status === S.fltFilter;
-  });
-  const q = S.fltQ.trim().toLowerCase();
-  const vis = byStatus.filter((r) =>
-    !q ||
-    (r.data.name || '').toLowerCase().includes(q) ||
-    (r.data.phone || '').includes(q) ||
-    (r.data.text || '').toLowerCase().includes(q)
-  );
+  const vis = faultsOnScreen(all);
   const p = paged('faults', vis);
 
   const cards = p.slice.map((r) => {
@@ -7532,7 +7690,7 @@ function renderFaultsTab() {
       <div class="filters">${filters}</div>
       ${cards || '<p class="empty">אין תקלות שתואמות את החיפוש והסינון.</p>'}
       ${pager('faults', p)}
-      ${all.length ? reportButtons('faults') : ''}
+      ${all.length ? reportButtons('faults', fltShotsBtn(vis)) : ''}
     </section>`;
 }
 
@@ -10612,6 +10770,10 @@ function dispatch(act, el) {
     case 'fuel-doc-del': fuelDocDelete(+el.dataset.i, el.dataset.r); break;
     case 'fuel-dl-one': fuelDownloadOne(+el.dataset.i, el.dataset.r); break;
     case 'fuel-dl-all': fuelDownloadAll(+el.dataset.i); break;
+    case 'lic-dl-all': S.askDel = ''; licDownloadAll(); break;
+    case 'lic-dl-one': S.askDel = ''; licDownloadOne(el.dataset.rid); break;
+    case 'flt-dl-all': S.askDel = ''; fltDownloadAll(); break;
+    case 'flt-dl-one': S.askDel = ''; fltDownloadOne(el.dataset.id); break;
     case 'fuel-use': fuelUse(+el.dataset.i); break;
     case 'fuel-use-del':
       S.inv.fuel[+el.dataset.i].uses.splice(+el.dataset.n, 1);
