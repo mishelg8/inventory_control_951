@@ -122,11 +122,15 @@ function cleanReport(raw) {
     amral: asText(raw.amral, 20),
     scope: asText(raw.scope, 20),
     filed: !!raw.filed,          // already pushed into the armoury register
-    /* fault-only: whether a photograph of the fault came with the report. The
-       picture itself lives in `docs` under this report's id; this only says
-       there is one to go and fetch, so the console does not ask after every
-       fault that has none. */
+    /* fault-only: how many photographs of the fault came with the report. The
+       pictures themselves live in `docs` under this report's id; this only
+       says how many there are to go and fetch, so the console does not ask
+       after every fault that has none.
+
+       `photo` was the first version of this — one picture, a plain true — and
+       reports filed under it are still in the console, so it is still read. */
     photo: !!raw.photo,
+    photos: asCount(raw.photos, 4),
     createdAt: asTime(raw.createdAt) || Date.now(),
   };
 }

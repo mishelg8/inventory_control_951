@@ -252,6 +252,19 @@ const TAB_NEEDS = {
   sec: [],
 };
 
+/* A building fault takes more than one photograph. A leak is a stain on a
+   ceiling, a puddle on a floor and the pipe behind a panel, and one frame of
+   the three sends somebody to look at the other two.
+
+   The docs table is keyed (rid, kind), so several photographs on one report
+   need several kinds. Numbered rather than given their own ids: the rid stays
+   the report's, which is what lets the server go on checking that the report
+   exists and is still open before it accepts an image from a stranger. Four
+   is the cap — enough to show a room from two angles and the thing itself,
+   and four at 280KB apiece is still a send a phone can finish on a base
+   connection. */
+const FAULT_DOC_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
+
 // Which data source each kind of attachment belongs to, and therefore which
 // screen permission may read it. A photograph is not its own thing: it is part
 // of the record, the report or the fuel card it was attached to.
@@ -260,8 +273,8 @@ const DOC_SOURCE = {
   military: 'records',
   signature: 'records',
   refuel: 'reports',
-  fault: 'reports',
   fuel: 'vault',            // a receipt the office has filed onto a card
+  ...Object.fromEntries(FAULT_DOC_KINDS.map((k) => [k, 'reports'])),
 };
 
 function scopesFor(tabs) {
@@ -587,9 +600,9 @@ export async function onRequest(context) {
         // hangs off the record like a licence photo and is sealed the same
         // way — the server stores a picture it cannot see, of a signature it
         // could not verify anyway.
-        // 'fault' is a photograph of the broken thing itself, attached to a
-        // building-fault report. Optional, unlike the receipt beside it.
-        !['civil', 'military', 'refuel', 'signature', 'fault'].includes(kind) ||
+        // The fault kinds are photographs of the broken thing itself, attached
+        // to a building-fault report. Optional, unlike the receipt beside it.
+        !['civil', 'military', 'refuel', 'signature', ...FAULT_DOC_KINDS].includes(kind) ||
         !isB64(ek, 1000) ||
         !isB64(iv, 64) ||
         !isB64(ct, DOC_MAX_B64)
@@ -599,7 +612,7 @@ export async function onRequest(context) {
       // A refuelling receipt and a fault photograph hang off the report, not
       // off a sign-out record, and the same rule applies: either may be
       // attached while the report is still open and not once it is closed.
-      if (kind === 'refuel' || kind === 'fault') {
+      if (kind === 'refuel' || FAULT_DOC_KINDS.includes(kind)) {
         const rep = await db
           .prepare('SELECT status FROM reports WHERE id = ?1 AND deleted_at IS NULL')
           .bind(rid)

@@ -148,6 +148,14 @@ const fmtDay = (iso) => {
 
 const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 cap
 
+/* A building fault takes more than one photograph — the stain on the ceiling,
+   the puddle under it and the pipe behind the panel. The docs table is keyed
+   (rid, kind), so each picture on a report needs its own kind; these are the
+   four the Worker accepts, in this order. Kept in step with FAULT_DOC_KINDS in
+   functions/api/[[path]].js. */
+const FAULT_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
+const FAULT_PHOTO_MAX = FAULT_KINDS.length;
+
 // The gallery button keeps `accept="image/*"`, and three attempts to improve on
 // that are recorded here so nobody spends the afternoon a fourth time.
 //
@@ -252,7 +260,7 @@ const S = {
 
   // building faults (soldier-facing, separate flow)
   flt: null,                    // draft { name, phone, text }
-  fltPhoto: null,               // optional photograph of the fault, before sending
+  fltPhotos: [],                // optional photographs of the fault, before sending
   fltSent: false,
   fltQ: '',                     // admin search over faults
   fltFilter: 'open',            // 'open' | 'partial' | 'done' | 'all'
@@ -1163,7 +1171,8 @@ function renderFault() {
      or reporting something they walked past an hour ago, should not be blocked
      from telling anybody. Unlike the refuelling receipt, nothing here has to
      be justified to an officer; the fault is either there or it is not. */
-  const shot = S.fltPhoto;
+  const shots = S.fltPhotos;
+  const room = FAULT_PHOTO_MAX - shots.length;
   render(`
     <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
@@ -1193,30 +1202,41 @@ function renderFault() {
             <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
           </label>
 
-          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.folder}</span>צילום התקלה</h2>
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.folder}</span>צילומי התקלה</h2>
           <div class="fq">
-            <p class="field-hint">לא חובה, אבל עוזר מאוד — תמונה אחת חוסכת סיבוב של מישהו שבא לראות מה קרה.</p>
-            <div class="rec-actions">
-              <label class="btn ghost small">📷 ${shot ? 'צילום מחדש' : 'צילום התקלה'}
-                <input class="vis-hidden" type="file" accept="image/*" capture="environment"
-                       data-act="flt-photo"></label>
-              <label class="btn ghost small">🖼 בחירה מהגלריה
-                <input class="vis-hidden" type="file" accept="image/*" data-act="flt-photo"></label>
-              ${S.sharedPhoto && !shot
-                ? `<button type="button" class="btn ghost small" data-act="flt-shared">📥 התמונה ששיתפתם</button>`
-                : ''}
-            </div>
-            ${shot
-              ? `<div class="lic-shot">
-                   <img class="lic-thumb" src="${shot.preview}" alt="תצוגה מקדימה של צילום התקלה">
-                   <div class="lic-shot-side">
-                     <span class="lic-ok">✓ צורף</span>
-                     <span class="lic-size num">${Math.round(shot.size / 1024)} KB</span>
-                     <button type="button" class="linkbtn danger-link" data-act="flt-photo-clear">הסרה</button>
-                   </div>
+            <p class="field-hint">לא חובה, אבל עוזר מאוד — תמונה אחת חוסכת סיבוב של מישהו שבא לראות מה קרה. אפשר לצרף עד ${FAULT_PHOTO_MAX}.</p>
+            ${room > 0
+              ? `<div class="rec-actions">
+                   <label class="btn ghost small">📷 ${shots.length ? 'צילום נוסף' : 'צילום התקלה'}
+                     <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                            data-act="flt-photo"></label>
+                   <label class="btn ghost small">🖼 בחירה מהגלריה
+                     <input class="vis-hidden" type="file" accept="image/*" multiple
+                            data-act="flt-photo"></label>
+                   ${S.sharedPhoto
+                     ? `<button type="button" class="btn ghost small" data-act="flt-shared">📥 התמונה ששיתפתם</button>`
+                     : ''}
                  </div>`
+              : ''}
+            ${shots.length
+              ? `<div class="licshots">
+                   ${shots.map((s, i) => `
+                     <figure class="licshot">
+                       <img class="lic-thumb" src="${s.preview}" alt="תצוגה מקדימה של צילום ${i + 1}">
+                       <figcaption class="lic-shot-side">
+                         <span class="lic-size num">${Math.round(s.size / 1024)} KB</span>
+                         <button type="button" class="linkbtn danger-link"
+                                 data-act="flt-photo-del" data-i="${i}">הסרה</button>
+                       </figcaption>
+                     </figure>`).join('')}
+                 </div>
+                 <p class="field-hint mt mb0">${
+                   room
+                     ? `צורפו ${shots.length} — אפשר להוסיף עוד ${room}.`
+                     : `צורפו ${shots.length} צילומים — זה המקסימום. להחליף אחד, הסירו אותו קודם.`
+                 }</p>`
               : `<p class="field-hint">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
-                 <p class="field-hint mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק המנהל יוכל לפתוח אותה.</p>`}
+                 <p class="field-hint mb0">התמונות מוצפנות במכשיר שלכם לפני השליחה — רק המנהל יוכל לפתוח אותן.</p>`}
           </div>
         </div>
         <p class="form-err" data-err></p>
@@ -1242,24 +1262,47 @@ function captureFaultForm() {
   };
 }
 
-// The photograph of the fault, compressed and held in memory until the report
-// is sent. Optional, so nothing here refuses the form.
+/* The photographs of the fault, compressed and held in memory until the report
+   is sent. Optional, so nothing here refuses the form.
+
+   The gallery picker takes several at once — choosing four pictures of one
+   leak and then being told to come back three more times is the kind of thing
+   that ends with the report never being filed. The camera button stays single:
+   a phone camera hands back one frame per press anyway. */
 async function faultPhoto(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
+  const picked = [...(input.files || [])];
+  if (!picked.length) return;
   captureFaultForm();
-  if (notAnImage(file)) { toast('יש לבחור קובץ תמונה', true); return; }
-  toast('מעבד את התמונה…');
-  try {
-    const { bytes, size } = await compressImage(file);
-    let bin = '';
-    for (const b of bytes) bin += String.fromCharCode(b);
-    S.fltPhoto = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
-    renderFault();
-    toast('הצילום צורף');
-  } catch (e) {
-    toast(e.message || 'עיבוד התמונה נכשל', true);
+
+  const images = picked.filter((f) => !notAnImage(f));
+  if (!images.length) { toast('יש לבחור קובץ תמונה', true); return; }
+
+  const room = FAULT_PHOTO_MAX - S.fltPhotos.length;
+  if (room <= 0) { toast(`אפשר לצרף עד ${FAULT_PHOTO_MAX} צילומים`, true); return; }
+  const taking = images.slice(0, room);
+
+  toast(taking.length > 1 ? `מעבד ${taking.length} תמונות…` : 'מעבד את התמונה…');
+  const added = [];
+  for (const file of taking) {
+    try {
+      const { bytes, size } = await compressImage(file);
+      let bin = '';
+      for (const b of bytes) bin += String.fromCharCode(b);
+      added.push({ bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` });
+    } catch (e) {
+      // One picture that will not compress must not cost the others: a soldier
+      // who picked four and got nothing has no idea which one was the problem.
+      toast(e.message || 'עיבוד אחת התמונות נכשל', true);
+    }
   }
+  if (!added.length) return;
+  S.fltPhotos = [...S.fltPhotos, ...added];
+  renderFault();
+
+  const skipped = images.length - taking.length;
+  toast(skipped
+    ? `צורפו ${added.length} — ${skipped} לא נכנסו, המקסימום הוא ${FAULT_PHOTO_MAX}`
+    : added.length > 1 ? `${added.length} צילומים צורפו` : 'הצילום צורף');
 }
 
 async function faultSubmit(form) {
@@ -1277,25 +1320,25 @@ async function faultSubmit(form) {
   await withBusy(async () => {
     const pubKey = await importPubKey(S.config.pub);
     const id = hex(crypto.getRandomValues(new Uint8Array(16)));
-    const photo = S.fltPhoto;
+    const photos = S.fltPhotos.slice(0, FAULT_PHOTO_MAX);
     const sealed = await seal(pubKey, {
       kind: 'fault', name, phone, text,
-      /* The flag rides inside the sealed report so the console knows there is
-         a picture to fetch without asking after every fault that has none. */
-      ...(photo ? { photo: true } : {}),
+      /* The count rides inside the sealed report so the console knows how many
+         pictures to expect without asking after every fault that has none. */
+      ...(photos.length ? { photos: photos.length } : {}),
       createdAt: Date.now(),
     });
     await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
     // Separately, like a licence photo and like the refuelling receipt, so
     // listing faults never drags image data around with it.
-    if (photo) {
+    for (let i = 0; i < photos.length; i++) {
       await api('/docs', {
-        body: { rid: id, kind: 'fault', ...(await sealBytes(pubKey, photo.bytes)) },
+        body: { rid: id, kind: FAULT_KINDS[i], ...(await sealBytes(pubKey, photos[i].bytes)) },
       });
     }
     S.fltSent = true;
     S.flt = null;
-    S.fltPhoto = null;
+    S.fltPhotos = [];
     renderFault();
   });
   if (!S.fltSent) {
@@ -2635,7 +2678,8 @@ function autoDocs() {
 // this only keeps the screen honest about what is possible.
 const READ_ACTS = new Set([
   'tab', 'refresh', 'lock', 'page', 'filter', 'search', 'dept', 'collapse',
-  'reveal', 'rep-reveal', 'doc', 'doc-zoom', 'lic-docs', 'expand', 'rep-filter', 'dep-filter', 'rf-filter',
+  'reveal', 'rep-reveal', 'doc', 'doc-zoom', 'lic-docs', 'flt-shots-hide',
+  'expand', 'rep-filter', 'dep-filter', 'rf-filter',
   'flt-filter', 'arm-kind', 'fuel-open', 'fuel-doc', 'fuel-dl-one', 'fuel-dl-all',
   'rep-csv', 'rep-pdf', 'tz-wa',
 ]);
@@ -7367,32 +7411,46 @@ function renderReportsTab() {
 // onto the same three states the reports pipe already persists.
 const FLT_LABEL = { open: 'נפתחה', partial: 'הועבר לטיפול', done: '✓ טופל' };
 
-/* The soldier's photograph of the fault, if one came with the report. Kept
+/* The soldier's photographs of the fault, if any came with the report. Kept
    shut until asked for: a screen of open faults would otherwise decrypt and
    hold a dozen full-size images nobody has looked at, on a phone, over a base
-   connection. One press brings it down, a second opens it to a size a
-   tradesman can actually judge a crack from. */
-function faultShot(r) {
-  if (!r.data.photo) return '';
-  const key = `${r.id}:fault`;
-  const src = S.docs[key];
-  if (!src) {
+   connection. One press brings them down — all of a fault's pictures travel in
+   the same request, so there is nothing to gain by opening them one at a time
+   — and pressing a thumbnail opens it to a size a tradesman can judge a crack
+   from.
+
+   `photos` is the count; `photo` is what the first version of this wrote, and
+   reports filed under it are still in the console, so a plain true still means
+   one picture. */
+function faultShots(r) {
+  const n = r.data.photos || (r.data.photo ? 1 : 0);
+  if (!n) return '';
+  const keys = FAULT_KINDS.slice(0, n).map((k) => ({ k, key: `${r.id}:${k}` }));
+  const open = keys.filter(({ key }) => S.docs[key]);
+  if (!open.length) {
     return `<p class="rec-meta">
-      <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">📷 צילום מצורף — הצגה</button>
+      <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">📷 ${
+        n > 1 ? `${n} צילומים מצורפים` : 'צילום מצורף'
+      } — הצגה</button>
     </p>`;
   }
   return `
-    <figure class="licshot">
-      <button class="lic-shot-btn" type="button" data-act="doc-zoom"
-              data-rid="${esc(r.id)}" data-kind="fault"
-              aria-label="${S.docBig.has(key) ? 'הקטנת' : 'הגדלת'} צילום התקלה של ${esc(r.data.name)}">
-        <img class="doc-img${S.docBig.has(key) ? ' big' : ''}" src="${src}"
-             alt="צילום התקלה שדיווח ${esc(r.data.name)}">
-      </button>
-      <figcaption>
-        <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">הסתרה</button>
-      </figcaption>
-    </figure>`;
+    <div class="licshots">
+      ${open.map(({ k, key }, i) => `
+        <figure class="licshot">
+          <button class="lic-shot-btn" type="button" data-act="doc-zoom"
+                  data-rid="${esc(r.id)}" data-kind="${k}"
+                  aria-label="${S.docBig.has(key) ? 'הקטנת' : 'הגדלת'} צילום ${i + 1} של ${esc(r.data.name)}">
+            <img class="doc-img${S.docBig.has(key) ? ' big' : ''}" src="${S.docs[key]}"
+                 alt="צילום ${i + 1} של התקלה שדיווח ${esc(r.data.name)}">
+          </button>
+        </figure>`).join('')}
+    </div>
+    <p class="rec-meta">
+      <button class="linkbtn" data-act="flt-shots-hide" data-id="${esc(r.id)}">הסתרת ${
+        open.length > 1 ? 'הצילומים' : 'הצילום'
+      }</button>
+    </p>`;
 }
 
 function renderFaultsTab() {
@@ -7433,7 +7491,7 @@ function renderFaultsTab() {
           <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
         </div>
         <blockquote class="rep-text">${esc(d.text)}</blockquote>
-        ${faultShot(r)}
+        ${faultShots(r)}
 
         <fieldset class="rep-states">
           <legend class="field-label">סטטוס טיפול</legend>
@@ -10579,6 +10637,11 @@ function dispatch(act, el) {
       bringIntoView($app, 'start');
       break;
     case 'doc': toggleDoc(rid, el.dataset.kind); break;
+    // A fault's pictures came down together and go back together.
+    case 'flt-shots-hide':
+      for (const k of FAULT_KINDS) docForget(`${el.dataset.id}:${k}`);
+      renderConsole();
+      break;
     // Both of a soldier's licences at once — they arrive in the same response,
     // so showing one and hiding the other only costs a second look.
     case 'lic-docs': toggleLicDocs(rid); break;
@@ -10673,15 +10736,19 @@ function dispatch(act, el) {
     case 'dep-approve': depApprove(el.dataset.id); break;
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
-    case 'flt-again': S.fltSent = false; S.flt = null; S.fltPhoto = null; renderFault(); break;
+    case 'flt-again': S.fltSent = false; S.flt = null; S.fltPhotos = []; renderFault(); break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
     case 'sig-clear': clearSignature(); break;
     case 'rf-photo-clear': captureRefuelForm(); S.rfPhoto = null; renderRefuel(); break;
-    case 'flt-photo-clear': captureFaultForm(); S.fltPhoto = null; renderFault(); break;
+    case 'flt-photo-del':
+      captureFaultForm();
+      S.fltPhotos = S.fltPhotos.filter((_, i) => i !== +el.dataset.i);
+      renderFault();
+      break;
     case 'flt-shared':
-      if (S.sharedPhoto) {
+      if (S.sharedPhoto && S.fltPhotos.length < FAULT_PHOTO_MAX) {
         captureFaultForm();
-        S.fltPhoto = S.sharedPhoto;
+        S.fltPhotos = [...S.fltPhotos, S.sharedPhoto];
         S.sharedPhoto = null;
         renderFault();
         toast('התמונה צורפה');

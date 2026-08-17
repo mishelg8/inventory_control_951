@@ -2258,6 +2258,10 @@ body:not(.is-console) .emblem { background: #FFFFFF; }
    they are thumbnails, and each captioned, because a driving licence and a
    military one are the same size and shape and nothing on the picture itself
    says which is which. An opened one takes the row to itself. */
+/* Named for licences, but a row of thumbnails is a row of thumbnails: the
+   fault report's photographs use these two as well — on the soldier's form
+   while they are being attached, and in the console once opened. Change them
+   with both in mind. */
 .licshots { display: flex; flex-wrap: wrap; gap: var(--s-5); align-items: flex-start; }
 .licshot { margin: 0; display: flex; flex-direction: column; gap: 2px; }
 .licshot:has(.doc-img.big) { flex: 1 1 100%; }
