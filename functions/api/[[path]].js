@@ -252,6 +252,18 @@ const TAB_NEEDS = {
   sec: [],
 };
 
+// Which data source each kind of attachment belongs to, and therefore which
+// screen permission may read it. A photograph is not its own thing: it is part
+// of the record, the report or the fuel card it was attached to.
+const DOC_SOURCE = {
+  civil: 'records',
+  military: 'records',
+  signature: 'records',
+  refuel: 'reports',
+  fault: 'reports',
+  fuel: 'vault',            // a receipt the office has filed onto a card
+};
+
 function scopesFor(tabs) {
   if (tabs === '*') return new Set(['records', 'vault', 'reports']);
   let list;
@@ -575,23 +587,29 @@ export async function onRequest(context) {
         // hangs off the record like a licence photo and is sealed the same
         // way — the server stores a picture it cannot see, of a signature it
         // could not verify anyway.
-        !['civil', 'military', 'refuel', 'signature'].includes(kind) ||
+        // 'fault' is a photograph of the broken thing itself, attached to a
+        // building-fault report. Optional, unlike the receipt beside it.
+        !['civil', 'military', 'refuel', 'signature', 'fault'].includes(kind) ||
         !isB64(ek, 1000) ||
         !isB64(iv, 64) ||
         !isB64(ct, DOC_MAX_B64)
       ) {
         return err(400, 'בקשה לא תקינה');
       }
-      // A refuelling receipt hangs off the report, not off a sign-out record,
-      // and the same rule applies: it may be attached while the report is
-      // still open and not once the office has filed it.
-      if (kind === 'refuel') {
+      // A refuelling receipt and a fault photograph hang off the report, not
+      // off a sign-out record, and the same rule applies: either may be
+      // attached while the report is still open and not once it is closed.
+      if (kind === 'refuel' || kind === 'fault') {
         const rep = await db
           .prepare('SELECT status FROM reports WHERE id = ?1 AND deleted_at IS NULL')
           .bind(rid)
           .first();
-        if (!rep) return err(409, 'אין דיווח לצרף אליו קבלה');
-        if (rep.status === 'done') return err(409, 'הדיווח כבר נקלט — פנו למנהל הרכב');
+        if (!rep) return err(409, 'אין דיווח לצרף אליו צילום');
+        if (rep.status === 'done') {
+          return err(409, kind === 'refuel'
+            ? 'הדיווח כבר נקלט — פנו למנהל הרכב'
+            : 'התקלה כבר סומנה כטופלה — פנו למנהל');
+        }
       } else {
         const owner = await db
           .prepare('SELECT status FROM records WHERE rid = ?1 AND deleted_at IS NULL')
@@ -698,11 +716,19 @@ export async function onRequest(context) {
       // the three data sources. This binds editors as much as viewers — an
       // editor may write, but only within the screens they were given, so the
       // same scope check gates their writes as well as their reads.
-      if (isRestricted(session.role)) {
-        const scopes = scopesFor(session.tabs);
+      const scopes = isRestricted(session.role) ? scopesFor(session.tabs) : null;
+      if (scopes) {
         const wants =
           seg[1] === 'records' ? 'records'
-            : seg[1] === 'docs' ? 'records'
+            /* Attachments are the one route whose source is not the route.
+               A photograph is readable by whoever may read the thing it hangs
+               off, and that differs per attachment: a licence belongs to the
+               soldier's record, a refuelling receipt and a photograph of a
+               broken pipe to the report, a filed receipt to the vault. Asking
+               for 'records' here denied the fault photograph to precisely the
+               person the fault screen exists for. Decided per kind instead —
+               see DOC_SOURCE at the two docs routes below. */
+            : seg[1] === 'docs' ? null
               : seg[1] === 'vault' ? 'vault'
                 : seg[1] === 'reports' ? 'reports'
                   : null;
@@ -927,14 +953,20 @@ export async function onRequest(context) {
         }
       }
 
-      // GET /api/admin/docs/:rid — licence photos for one soldier, on demand
+      // GET /api/admin/docs/:rid — the photographs hanging off one id, on demand
       if (seg[1] === 'docs' && seg.length === 3 && method === 'GET') {
         if (!isHex(seg[2], HEX32)) return err(400, 'בקשה לא תקינה');
         const { results } = await db
           .prepare('SELECT kind, ek, iv, ct FROM docs WHERE rid = ?1')
           .bind(seg[2])
           .all();
-        return json({ docs: results });
+        // One id can only be a record or a report, never both, so this filter
+        // never splits a real response — it is here so that a restricted user
+        // gets the attachments of the screens they were given and nothing else.
+        const rows = scopes
+          ? (results || []).filter((r) => scopes.has(DOC_SOURCE[r.kind] || 'records'))
+          : results;
+        return json({ docs: rows });
       }
 
       // PUT | DELETE /api/admin/docs/:rid/:kind — attachments the office owns.
@@ -954,6 +986,7 @@ export async function onRequest(context) {
         if (!isHex(rid, HEX32) || !['fuel', 'civil', 'military'].includes(kind)) {
           return err(400, 'בקשה לא תקינה');
         }
+        if (scopes && !scopes.has(DOC_SOURCE[kind])) return err(403, 'אין הרשאה לנתונים אלה');
 
         if (method === 'PUT') {
           const b = await readBody(request);

@@ -252,6 +252,7 @@ const S = {
 
   // building faults (soldier-facing, separate flow)
   flt: null,                    // draft { name, phone, text }
+  fltPhoto: null,               // optional photograph of the fault, before sending
   fltSent: false,
   fltQ: '',                     // admin search over faults
   fltFilter: 'open',            // 'open' | 'partial' | 'done' | 'all'
@@ -1155,6 +1156,14 @@ function renderFault() {
     return;
   }
   const v = S.flt || { name: '', phone: '', text: '' };
+  /* A photograph is worth more here than anywhere else in this app: a
+     description of a leak is one person's words, and the picture tells the
+     tradesman what tools to bring and which building to walk to. It stays
+     optional all the same — a soldier standing in a dark corridor at night,
+     or reporting something they walked past an hour ago, should not be blocked
+     from telling anybody. Unlike the refuelling receipt, nothing here has to
+     be justified to an officer; the fault is either there or it is not. */
+  const shot = S.fltPhoto;
   render(`
     <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
@@ -1183,6 +1192,32 @@ function renderFault() {
                       placeholder="לדוגמה: נזילה מהתקרה במקלחות בבניין 4, מתחת לחלון. המים מגיעים עד המסדרון." required>${esc(v.text)}</textarea>
             <span class="field-hint">כתבו איפה בדיוק ומה קרה — ככל שיש יותר פרטים כך הטיפול מהיר יותר.</span>
           </label>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.folder}</span>צילום התקלה</h2>
+          <div class="fq">
+            <p class="field-hint">לא חובה, אבל עוזר מאוד — תמונה אחת חוסכת סיבוב של מישהו שבא לראות מה קרה.</p>
+            <div class="rec-actions">
+              <label class="btn ghost small">📷 ${shot ? 'צילום מחדש' : 'צילום התקלה'}
+                <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                       data-act="flt-photo"></label>
+              <label class="btn ghost small">🖼 בחירה מהגלריה
+                <input class="vis-hidden" type="file" accept="image/*" data-act="flt-photo"></label>
+              ${S.sharedPhoto && !shot
+                ? `<button type="button" class="btn ghost small" data-act="flt-shared">📥 התמונה ששיתפתם</button>`
+                : ''}
+            </div>
+            ${shot
+              ? `<div class="lic-shot">
+                   <img class="lic-thumb" src="${shot.preview}" alt="תצוגה מקדימה של צילום התקלה">
+                   <div class="lic-shot-side">
+                     <span class="lic-ok">✓ צורף</span>
+                     <span class="lic-size num">${Math.round(shot.size / 1024)} KB</span>
+                     <button type="button" class="linkbtn danger-link" data-act="flt-photo-clear">הסרה</button>
+                   </div>
+                 </div>`
+              : `<p class="field-hint">אין גלריה ברשימה שנפתחת? בחרו <strong>הקבצים שלי</strong> ← <strong>תמונות</strong>.</p>
+                 <p class="field-hint mb0">התמונה מוצפנת במכשיר שלכם לפני השליחה — רק המנהל יוכל לפתוח אותה.</p>`}
+          </div>
         </div>
         <p class="form-err" data-err></p>
         <div class="formbar">
@@ -1191,6 +1226,40 @@ function renderFault() {
         </div>
       </form>
     </section>`);
+}
+
+/* Attaching a photograph re-renders the form, and this page is uncontrolled —
+   what is on screen is the only copy of what has been typed. Read it back
+   first or the description a soldier wrote before reaching for the camera is
+   gone by the time the picture lands. */
+function captureFaultForm() {
+  const f = $app.querySelector('form[data-form="fault"]');
+  if (!f) return;
+  S.flt = {
+    name: f.name.value.trim(),
+    phone: f.phone.value.trim(),
+    text: f.text.value,
+  };
+}
+
+// The photograph of the fault, compressed and held in memory until the report
+// is sent. Optional, so nothing here refuses the form.
+async function faultPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  captureFaultForm();
+  if (notAnImage(file)) { toast('יש לבחור קובץ תמונה', true); return; }
+  toast('מעבד את התמונה…');
+  try {
+    const { bytes, size } = await compressImage(file);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    S.fltPhoto = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
+    renderFault();
+    toast('הצילום צורף');
+  } catch (e) {
+    toast(e.message || 'עיבוד התמונה נכשל', true);
+  }
 }
 
 async function faultSubmit(form) {
@@ -1206,14 +1275,27 @@ async function faultSubmit(form) {
   btn.disabled = true;
   btn.textContent = 'שולח…';
   await withBusy(async () => {
-    const sealed = await seal(await importPubKey(S.config.pub), {
-      kind: 'fault', name, phone, text, createdAt: Date.now(),
+    const pubKey = await importPubKey(S.config.pub);
+    const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+    const photo = S.fltPhoto;
+    const sealed = await seal(pubKey, {
+      kind: 'fault', name, phone, text,
+      /* The flag rides inside the sealed report so the console knows there is
+         a picture to fetch without asking after every fault that has none. */
+      ...(photo ? { photo: true } : {}),
+      createdAt: Date.now(),
     });
-    await api('/reports', {
-      body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
-    });
+    await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
+    // Separately, like a licence photo and like the refuelling receipt, so
+    // listing faults never drags image data around with it.
+    if (photo) {
+      await api('/docs', {
+        body: { rid: id, kind: 'fault', ...(await sealBytes(pubKey, photo.bytes)) },
+      });
+    }
     S.fltSent = true;
     S.flt = null;
+    S.fltPhoto = null;
     renderFault();
   });
   if (!S.fltSent) {
@@ -7285,6 +7367,34 @@ function renderReportsTab() {
 // onto the same three states the reports pipe already persists.
 const FLT_LABEL = { open: 'נפתחה', partial: 'הועבר לטיפול', done: '✓ טופל' };
 
+/* The soldier's photograph of the fault, if one came with the report. Kept
+   shut until asked for: a screen of open faults would otherwise decrypt and
+   hold a dozen full-size images nobody has looked at, on a phone, over a base
+   connection. One press brings it down, a second opens it to a size a
+   tradesman can actually judge a crack from. */
+function faultShot(r) {
+  if (!r.data.photo) return '';
+  const key = `${r.id}:fault`;
+  const src = S.docs[key];
+  if (!src) {
+    return `<p class="rec-meta">
+      <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">📷 צילום מצורף — הצגה</button>
+    </p>`;
+  }
+  return `
+    <figure class="licshot">
+      <button class="lic-shot-btn" type="button" data-act="doc-zoom"
+              data-rid="${esc(r.id)}" data-kind="fault"
+              aria-label="${S.docBig.has(key) ? 'הקטנת' : 'הגדלת'} צילום התקלה של ${esc(r.data.name)}">
+        <img class="doc-img${S.docBig.has(key) ? ' big' : ''}" src="${src}"
+             alt="צילום התקלה שדיווח ${esc(r.data.name)}">
+      </button>
+      <figcaption>
+        <button class="linkbtn" data-act="doc" data-rid="${esc(r.id)}" data-kind="fault">הסתרה</button>
+      </figcaption>
+    </figure>`;
+}
+
 function renderFaultsTab() {
   const all = faultReports();
   const filters = [['open', 'פתוחות'], ['partial', 'בטיפול'], ['done', 'טופלו'], ['all', 'הכל']]
@@ -7323,6 +7433,7 @@ function renderFaultsTab() {
           <button class="linkbtn" data-act="rep-reveal" data-id="${esc(r.id)}">${S.revealed.has(r.id) ? 'הסתרה' : 'הצגה'}</button>
         </div>
         <blockquote class="rep-text">${esc(d.text)}</blockquote>
+        ${faultShot(r)}
 
         <fieldset class="rep-states">
           <legend class="field-label">סטטוס טיפול</legend>
@@ -10076,6 +10187,7 @@ $app.addEventListener('change', (e) => {
   // number fields refresh their computed columns on commit, not per keystroke
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
+  if (el.dataset.act === 'flt-photo') { faultPhoto(el); return; }
   /* Switching to a mission takes the soldier list away and, with it, any link
      that was made while the destination was still a person. */
   if (el.dataset.act === 'loan-loc') {
@@ -10561,10 +10673,20 @@ function dispatch(act, el) {
     case 'dep-approve': depApprove(el.dataset.id); break;
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
-    case 'flt-again': S.fltSent = false; S.flt = null; renderFault(); break;
+    case 'flt-again': S.fltSent = false; S.flt = null; S.fltPhoto = null; renderFault(); break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
     case 'sig-clear': clearSignature(); break;
     case 'rf-photo-clear': captureRefuelForm(); S.rfPhoto = null; renderRefuel(); break;
+    case 'flt-photo-clear': captureFaultForm(); S.fltPhoto = null; renderFault(); break;
+    case 'flt-shared':
+      if (S.sharedPhoto) {
+        captureFaultForm();
+        S.fltPhoto = S.sharedPhoto;
+        S.sharedPhoto = null;
+        renderFault();
+        toast('התמונה צורפה');
+      }
+      break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used

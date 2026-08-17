@@ -122,6 +122,11 @@ function cleanReport(raw) {
     amral: asText(raw.amral, 20),
     scope: asText(raw.scope, 20),
     filed: !!raw.filed,          // already pushed into the armoury register
+    /* fault-only: whether a photograph of the fault came with the report. The
+       picture itself lives in `docs` under this report's id; this only says
+       there is one to go and fetch, so the console does not ask after every
+       fault that has none. */
+    photo: !!raw.photo,
     createdAt: asTime(raw.createdAt) || Date.now(),
   };
 }
