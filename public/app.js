@@ -3252,13 +3252,58 @@ const SIGN_BODY = {
   gear:    'החתימה על הציוד נקלטה בהצלחה',
 };
 
-const waSignMsg = (d) =>
-  waMsg(SIGN_BODY[d.kind] ? d.kind : 'full', d.name, SIGN_BODY[d.kind] || SIGN_BODY.full);
+/* The kit itself, in the message.
 
-// Kit added from the console after the soldier has left. He is not standing
-// there to see it written down, which is exactly why he is told.
-const waGearAddMsg = (d) =>
-  waMsg('gear', d.name, 'נוסף ציוד לרישום שלך. לפירוט פנו למנהל הציוד');
+   These messages carried no lists for a while, on the grounds that they travel
+   over a third party's servers and a kit list is more than a soldier needs in
+   order to know where they stand. The unit's judgement is the other way, and
+   it is a fair one: a signature the soldier cannot check is a signature they
+   have to come to the store to check. What goes out is the kit — names and
+   counts from the unit's own list, nothing that identifies a person beyond the
+   first name already in the greeting, and no serial numbers. */
+const itemLines = (pairs) =>
+  pairs.map(([name, n]) => `• ${name}${n > 1 ? ` ×${n}` : ''}`).join('\n');
+
+const listOf = (d, pick) => ITEMS
+  .filter((i) => d.items && d.items[i.id])
+  .map((i) => [i.name, pick(d.items[i.id])])
+  .filter(([, n]) => n > 0);
+
+// What the soldier put their name to.
+const signedItems = (d) => listOf(d, (it) => it.t);
+// What is still out with them after whatever has come back.
+const heldItems = (d) => listOf(d, (it) => it.t - (it.r || 0));
+
+/* Whether the kit is listed follows the kit, not the label on the submission.
+
+   Keying it off `kind === 'gear'` was the obvious thing and it was wrong for
+   the commonest case: a kit signature is a supplement, and on approval it
+   merges into the soldier's main record, which carries kind 'full'. The
+   message that went out at approval had the list — it is built from the
+   submission — and the manual re-send from the row a day later did not, off
+   the same soldier, about the same kit. Now anything holding kit says so.
+
+   'details' and 'weapon' are excluded for the same reason, from the other
+   side: they are about something that is not the kit, and they never carry
+   items anyway. */
+const signBody = (d) => {
+  const kind = SIGN_BODY[d.kind] ? d.kind : 'full';
+  const list = kind === 'details' || kind === 'weapon' ? [] : signedItems(d);
+  return list.length
+    ? `${SIGN_BODY[kind]}. רשום עליך:\n${itemLines(list)}`
+    : SIGN_BODY[kind];
+};
+
+const waSignMsg = (d) =>
+  waMsg(SIGN_BODY[d.kind] ? d.kind : 'full', d.name, signBody(d));
+
+/* Kit added from the console after the soldier has left. He is not standing
+   there to see it written down, which is exactly why he is told — and why the
+   message names what was added rather than sending him to ask. */
+const waGearAddMsg = (d, added) =>
+  waMsg('gear', d.name, added && added.length
+    ? `נוסף ציוד לרישום שלך:\n${itemLines(added)}`
+    : 'נוסף ציוד לרישום שלך. לפירוט פנו למנהל הציוד');
 
 // The weapon reached the armoury and is no longer the soldier's responsibility.
 const waDepositMsg = (d) =>
@@ -3280,15 +3325,24 @@ const waReportMsg = (d, st) =>
 const waLink = (d) =>
   `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(waSignMsg(d))}`;
 
-/* Return receipt. Whether anything is still outstanding is the one fact worth
-   carrying — it is what the soldier would otherwise have to come and ask, and
-   it is a count, not an inventory. */
-function waReturnMsg(d) {
-  const left = ITEMS.filter((i) => d.items[i.id])
-    .reduce((n, i) => n + (d.items[i.id].t - (d.items[i.id].r || 0)), 0);
-  return waMsg('credit', d.name, left > 0
-    ? `הציוד שהחזרת זוכה על שמך. עדיין רשומים עליך ${left} פריטים`
-    : 'הציוד שהחזרת זוכה על שמך. אין ציוד נוסף הרשום עליך — החשבון סגור');
+/* Return receipt. What was written off, and what is still out — both by name,
+   because "עדיין רשומים עליך 3 פריטים" tells a soldier there is a problem and
+   not which three, which is the version they have to come to the store to
+   resolve.
+
+   `credited` is what this particular press wrote off, and only the caller
+   knows it: by the time the message is built the record already says everything
+   is back, so it cannot be recovered from the record. Without it the message
+   still says the useful half — what is left. */
+function waReturnMsg(d, credited) {
+  const left = heldItems(d);
+  const head = credited && credited.length
+    ? `הציוד שהחזרת זוכה על שמך:\n${itemLines(credited)}`
+    : 'הציוד שהחזרת זוכה על שמך.';
+  const tail = left.length
+    ? `\n\nעדיין רשומים עליך:\n${itemLines(left)}`
+    : '\n\nאין ציוד נוסף הרשום עליך — החשבון סגור';
+  return waMsg('credit', d.name, head + tail);
 }
 
 const returnWaLink = (d) =>
@@ -3944,6 +3998,8 @@ function licRow(rec) {
     // number and no expiry to type — so whether one was attached is the only
     // thing the screen can say about it.
     milDoc: !!((d.lic || {}).military && d.lic.military.doc),
+    refresh: !!d.refresh,
+    refreshAt: d.refreshAt || '',
   };
 }
 
@@ -4055,6 +4111,24 @@ function licEditor(r) {
       </label>
       ${d.military ? shotBlock(LIC_KINDS.find((k) => k.id === 'military')) : ''}
 
+      <label class="check">
+        <input type="checkbox" data-act="lic-ed-refresh" ${d.refresh ? 'checked' : ''}>
+        <span>עבר רענון נהיגה</span>
+      </label>
+      ${d.refresh
+        ? `<div class="fuel-entry">
+             <label class="field mb0">
+               <span class="field-label">תאריך הרענון</span>
+               <input class="input mini" type="date" value="${esc(d.refreshAt || '')}"
+                      min="${DATE_MIN}" max="${DATE_MAX}" data-act="lic-ed-refat"
+                      aria-label="תאריך הרענון">
+             </label>
+           </div>
+           ${d.refreshAt && !inDateRange(d.refreshAt)
+             ? '<p class="field-hint bad-hint">⚠ התאריך אינו תקין — בדקו את השנה.</p>'
+             : '<p class="field-hint mb0">אפשר להשאיר ריק אם ידוע שעבר אבל לא ידוע מתי.</p>'}`
+        : ''}
+
       <p class="field-hint">הסרת הסימון מוחקת גם את הצילום של אותו רישיון.</p>
       <div class="rec-actions">
         <button class="btn primary small" data-act="lic-save" data-rid="${esc(r.rid)}">שמירת התיקון</button>
@@ -4107,8 +4181,20 @@ const licApproved = () => S.recs.filter((r) => r.status === 'approved' && !r.dam
 const licDownloadAll = () =>
   withBusy(() => downloadShots(licShotList(licenceRows(licApproved()))));
 
+/* Whether the soldier has sat the driving refresher, and when.
+   The tick alone is an answer — an office that knows he sat it but not when is
+   still telling the truth, and forcing a date it does not have would only
+   produce an invented one. */
+function refreshCell(r) {
+  if (!r.refresh) return '<span class="muted-txt">—</span>';
+  return r.refreshAt
+    ? `<span class="ok">✓ ${esc(fmtDay(r.refreshAt))}</span>`
+    : '<span class="ok">✓</span> <span class="muted-txt">ללא תאריך</span>';
+}
+
 function licencePanel(approved) {
   const rows = licenceRows(approved);
+  const refreshed = rows.filter((r) => r.refresh);
   const gone = rows.filter(licExpired);
   const missing = rows.filter(licMissing);
   const bad = rows.filter(licBlocked);
@@ -4145,6 +4231,7 @@ function licencePanel(approved) {
             alarm ? '⚠ ' : r.st === 'valid' ? '✓ ' : ''
           }${LIC_LABEL[r.st]}</td>
           <td>${r.mil ? '✓' : '—'}</td>
+          <td class="num">${refreshCell(r)}</td>
           <td class="lic-acts">${shots.length
             ? `<button class="linkbtn" data-act="lic-docs" data-rid="${esc(r.rid)}">${
                 open.length ? 'הסתרה' : 'צפייה ברשומה'
@@ -4153,10 +4240,10 @@ function licencePanel(approved) {
             : ''}${licEditLink(r)}</td>
         </tr>
         ${S.licEdit === r.rid
-          ? `<tr class="sub"><td colspan="8">${licEditor(r)}</td></tr>`
+          ? `<tr class="sub"><td colspan="9">${licEditor(r)}</td></tr>`
           : ''}
         ${open.length
-          ? `<tr class="lic-shots"><td colspan="8"><div class="licshots">${open
+          ? `<tr class="lic-shots"><td colspan="9"><div class="licshots">${open
               .map(({ k, key, src }) => `
                 <figure class="licshot">
                   <button class="lic-shot-btn" type="button" data-act="doc-zoom"
@@ -4181,6 +4268,7 @@ function licencePanel(approved) {
         <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
         <div class="stat"><span class="stat-n num">${gone.length}</span><span class="stat-l">⚠ פג תוקף</span></div>
         <div class="stat"><span class="stat-n num">${missing.length}</span><span class="stat-l">⚠ אין רישיון</span></div>
+        <div class="stat"><span class="stat-n num">${refreshed.length}</span><span class="stat-l">עברו רענון</span></div>
       </div>
       ${bad.length
         ? `<div class="callout alert"><p class="mb0">${[
@@ -4192,11 +4280,13 @@ function licencePanel(approved) {
         : ''}
       ${rows.length
         ? `<div class="tbl-scroll">
-             <table class="tbl" data-phone="0,5,7">
+             <!-- the kept-on-a-phone indices move with the columns: רענון was
+                  inserted at 7, so the photo actions are 8 now -->
+             <table class="tbl" data-phone="0,5,8">
                <thead><tr>
                  <th>שם</th><th class="num">מ״א</th><th>מחלקה</th>
                  <th class="num">מס׳ רישיון</th><th class="num">בתוקף עד</th>
-                 <th>סטטוס</th><th>צבאי</th><th>צילום</th>
+                 <th>סטטוס</th><th>צבאי</th><th class="num">רענון</th><th>צילום</th>
                </tr></thead>
                <tbody>${body}</tbody>
              </table>
@@ -4580,15 +4670,19 @@ const REPORTS = {
       const rows = licenceRows(approved).slice()
         .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
       return {
-        head: ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס', 'רישיון צבאי', 'צילום מצורף'],
+        head: ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס',
+          'רישיון צבאי', 'רענון', 'תאריך רענון', 'צילום מצורף'],
         rows: rows.map((r) => [
           r.name, r.pn, r.dept, r.no, r.exp ? fmtDay(r.exp) : '',
-          LIC_LABEL[r.st], r.mil ? 'כן' : 'לא', r.doc ? 'כן' : 'לא',
+          LIC_LABEL[r.st], r.mil ? 'כן' : 'לא',
+          r.refresh ? 'כן' : 'לא', r.refresh && r.refreshAt ? fmtDay(r.refreshAt) : '',
+          r.doc ? 'כן' : 'לא',
         ]),
         summary: `${rows.filter((r) => r.st === 'valid').length} בתוקף · ` +
           `${rows.filter((r) => r.st === 'soon').length} פגים בקרוב · ` +
           `${rows.filter(licExpired).length} פג תוקף · ` +
-          `${rows.filter(licMissing).length} אין רישיון`,
+          `${rows.filter(licMissing).length} אין רישיון · ` +
+          `${rows.filter((r) => r.refresh).length} עברו רענון`,
       };
     },
   },
@@ -9495,6 +9589,11 @@ const licSave = (rid) =>
       if (!d.exp) { toast('רישיון אזרחי: יש למלא תאריך תוקף', true); return; }
       if (!inDateRange(d.exp)) { toast('תאריך התוקף אינו תקין — בדקו את השנה', true); return; }
     }
+    // The refresher date is optional, but a date that is there has to be real.
+    if (d.refresh && d.refreshAt && !inDateRange(d.refreshAt)) {
+      toast('תאריך הרענון אינו תקין — בדקו את השנה', true);
+      return;
+    }
 
     /* Unticking a licence takes its photograph with it: the picture is of that
        licence, and keeping it would leave the vault holding a document for
@@ -9543,6 +9642,10 @@ const licSave = (rid) =>
     rec.data = { ...rec.data };
     if (Object.keys(lic).length) rec.data.lic = lic;
     else delete rec.data.lic;
+    // Clearing the tick clears the date with it: a date left behind after
+    // "he did not sit it" is the sort of leftover that gets read as an answer.
+    rec.data.refresh = !!d.refresh;
+    rec.data.refreshAt = d.refresh ? (d.refreshAt || '') : '';
 
     try {
       await saveRec(rec);
@@ -9873,7 +9976,11 @@ const gearAddSave = (rid) =>
     S.gearAdd = '';
     S.gearDraft = {};
     renderConsole();
-    const w = await waNotify(rec.data.phone, waGearAddMsg(rec.data));
+    // What this press added, not the whole holding — the rest he already knows.
+    const addedNames = added
+      .map(([id, q]) => [itemById(id) && itemById(id).name, q])
+      .filter(([name]) => name);
+    const w = await waNotify(rec.data.phone, waGearAddMsg(rec.data, addedNames));
     toast(`נוסף ציוד ל${rec.data.name}${waNote(w)}`);
   });
 
@@ -9922,11 +10029,15 @@ const adminCreditAll = (rid) =>
   withBusy(async () => {
     const rec = findRec(rid);
     if (!rec || rec.damaged) return;
+    // Read before writing: a moment later the record says everything is back,
+    // and what was just written off can no longer be told from what was
+    // written off last week.
+    const credited = heldItems(rec.data);
     for (const it of Object.values(rec.data.items)) it.r = it.t;
     rec.data.log.push({ a: 'credit', t: Date.now() });
     await saveRec(rec);
     renderConsole();
-    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data));
+    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited));
     if (w.sent) markSent(rid, 'returnNotified', 'auto');
     renderConsole();
     toast(`זוכה במלואו: ${rec.data.name}${waNote(w)}`);
@@ -10428,6 +10539,14 @@ $app.addEventListener('change', (e) => {
     if (S.licDraft) { S.licDraft[el.dataset.kind] = el.checked; renderConsole(); }
     return;
   }
+  if (el.dataset.act === 'lic-ed-refresh') {
+    if (S.licDraft) { S.licDraft.refresh = el.checked; renderConsole(); }
+    return;
+  }
+  if (el.dataset.act === 'lic-ed-refat') {
+    if (S.licDraft) { S.licDraft.refreshAt = el.value; renderConsole(); }
+    return;
+  }
   if (el.dataset.act === 'lic-ed-file') { licEdFile(el.dataset.kind, el); return; }
   if (el.dataset.act === 'rec-f-dept') {
     if (S.recDraft) S.recDraft.dept = el.value;
@@ -10647,6 +10766,8 @@ function dispatch(act, el) {
         no: (lic.civil && lic.civil.no) || '',
         exp: (lic.civil && lic.civil.exp) || '',
         military: !!(lic.military && lic.military.has),
+        refresh: !!(rec.data && rec.data.refresh),
+        refreshAt: (rec.data && rec.data.refreshAt) || '',
         pic: {},
       };
       renderConsole();

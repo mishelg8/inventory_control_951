@@ -83,6 +83,16 @@ function cleanRecord(raw) {
     scope: asText(raw.scope, 20),
     items,
     ...(Object.keys(lic).length ? { lic } : {}),
+    /* The driving refresher. It is not a licence and not per licence — it is
+       one course a soldier has either sat this year or has not, recorded by
+       the office rather than claimed on the sign-up form, which is why it has
+       no field on any soldier-facing page.
+
+       The tick and the date are kept apart on purpose: an office that knows
+       he sat it but not when must still be able to say so, and a date alone
+       (with the tick cleared) must not read as "passed". */
+    refresh: !!raw.refresh,
+    refreshAt: /^\d{4}-\d{2}-\d{2}$/.test(raw.refreshAt) ? raw.refreshAt : '',
     createdAt: asTime(raw.createdAt) || Date.now(),
     approvedAt: asTime(raw.approvedAt),
     notified: asTime(raw.notified),
