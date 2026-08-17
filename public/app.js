@@ -10076,7 +10076,9 @@ function deleteDialog() {
           ? `<p class="modal-note">${serials.map(([k, n]) => `${k} <span class="num">${esc(n)}</span>`).join(' · ')}</p>`
           : ''}
 
-        <p class="modal-sub mb0">הרשומה נשמרת בסל המחזור ואפשר לשחזר אותה משם במשך 30 יום.</p>
+        <!-- the same words the screen that holds it uses: "סל מיחזור", under
+             אבטחה. A promise the reader cannot find is not a reassurance. -->
+        <p class="modal-sub mb0">הרשומה נשמרת בסל המיחזור (מסך "אבטחה") ואפשר לשחזר אותה משם במשך 30 יום.</p>
         <div class="modal-acts">
           <button class="btn ghost" type="button" data-act="del-cancel">ביטול</button>
           <button class="btn danger" type="button" data-act="del-ok"
