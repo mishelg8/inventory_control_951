@@ -297,6 +297,7 @@ const S = {
   me: '',                       // username of the signed-in user
   tabs: '*',                    // '*' or the list of screens this user may see
   users: [],                    // roster, admin only
+  sessions: null,               // live sign-ins, admin only, loaded on demand
   trash: null,                  // soft-deleted rows, loaded on demand
   audit: null,                  // admin action log, loaded on demand
   userTabs: new Set(),          // screens ticked in the new-user form
@@ -7985,7 +7986,10 @@ const AUDIT_LABEL = {
   // Who came in, who tried and failed, and who was locked out for trying too
   // often. The trail recorded everything an account did except how it got in.
   login: 'כניסה', 'login-fail': 'כניסה נכשלה', 'login-lock': 'נעילה זמנית',
+  'login-blocked': 'ניסיון כניסה לחשבון חסום',
   logout: 'יציאה', 'sessions-revoke': 'ניתוק כל המכשירים',
+  'session-end': 'ניתוק מכשיר', 'user-block': 'חסימת משתמש',
+  'user-unblock': 'ביטול חסימה',
   wipe: 'מחיקת כל הנתונים', 'wa-send': 'שליחת וואטסאפ מהקו',
 };
 
@@ -7999,8 +8003,10 @@ function usersPanel() {
       ? '<span class="ok">כל המסכים</span>'
       : tabsLabel(u.tabs);
     const tone = u.role === 'admin' ? 'done' : u.role === 'editor' ? 'live' : 'wait';
-    return `<tr>
-      <td class="lg-name">${esc(u.username)}${isMe ? ' <span class="tagi">אתם</span>' : ''}</td>
+    return `<tr${u.blocked ? ' class="row-short"' : ''}>
+      <td class="lg-name">${esc(u.username)}${isMe ? ' <span class="tagi">אתם</span>' : ''}${
+        u.blocked ? ' <span class="tagi">חסום</span>' : ''
+      }</td>
       <td><span class="state ${tone}">${esc(roleName(u.role))}</span></td>
       <td class="screens">${screens}</td>
       <td class="num">${u.last_seen ? esc(fmtDate(u.last_seen)) : '—'}</td>
@@ -8008,7 +8014,12 @@ function usersPanel() {
         <button class="btn ghost small" data-act="uedit-open" data-u="${esc(u.username)}">
           ${S.userEdit === u.username ? 'סגירה' : 'עריכה'}
         </button>
-        ${isMe ? '' : `${delCell(`user:${u.username}`, 'user-del', { u: u.username }, 'מחיקה', 'מחיקת המשתמש')}`}
+        ${isMe ? '' : `${u.blocked
+          ? `<button class="linkbtn" data-act="user-unblock" data-u="${esc(u.username)}">ביטול חסימה</button>`
+          : askBtn(`block:${u.username}`, 'user-block', 'חסימה',
+              `לחסום את ${u.username}? החשבון יישאר, לא יוכל להיכנס, וכל החיבורים הפתוחים שלו ייסגרו.`,
+              { data: { u: u.username }, yes: 'חסימה', tone: 'danger', cls: 'linkbtn' })}
+        ${delCell(`user:${u.username}`, 'user-del', { u: u.username }, 'מחיקה', 'מחיקת המשתמש')}`}
       </td>
     </tr>
     ${S.userEdit === u.username ? `<tr class="sub"><td colspan="5">${userEditRow(u)}</td></tr>` : ''}`;
@@ -8124,6 +8135,86 @@ function trashPanel() {
     </section>`;
 }
 
+/* Who is signed in right now, one row per device.
+   The screen used to be a sentence and a button that ended everything,
+   including the session reading it — which meant "somebody is signed in as me
+   somewhere" could only be answered by signing yourself out too. Now it is a
+   list, and the smallest thing you can do to it is one device. */
+function sessionsPanel() {
+  const list = S.sessions;
+  return `
+    <section class="panel">
+      <h2 class="panel-title">חיבורים פעילים</h2>
+      <p class="panel-sub">חיבור נסגר מעצמו כעבור שעה ללא פעילות, ובכל מקרה 12 שעות מרגע הכניסה. הרשימה מציגה את כל מי שמחובר כרגע — לחיצה על "ניתוק" סוגרת מכשיר אחד, והמשתמש יידרש להיכנס מחדש.</p>
+      ${!list
+        ? '<button class="btn ghost wide" data-act="sessions-load">הצגת החיבורים הפעילים</button>'
+        : !list.length
+          ? '<p class="empty">אין חיבורים פעילים.</p>'
+          : `<div class="tbl-scroll">
+               <table class="tbl" data-phone="0,1,-4">
+                 <thead><tr>
+                   <th>משתמש</th><th>מכשיר</th><th class="num">מחובר מאז</th>
+                   <th class="num">פעילות אחרונה</th><th></th>
+                 </tr></thead>
+                 <tbody>${list.map((s) => `
+                   <tr${s.current ? ' class="row-me"' : ''}>
+                     <td class="lg-name">${esc(s.username || '—')}${
+                       s.current ? ' <span class="tagi">זה אתם</span>' : ''
+                     }<div class="muted-txt">${esc(roleName(s.role))}</div></td>
+                     <td>${esc(s.agent || 'לא ידוע')}</td>
+                     <td class="num">${esc(fmtDate(s.createdAt))}</td>
+                     <td class="num">${esc(fmtDate(s.lastSeen))}</td>
+                     <td>${askBtn(`sess:${s.id}`, 'session-end', 'ניתוק',
+                         s.current ? 'זה החיבור שאתם משתמשים בו — ניתוק יוציא אתכם מהמערכת. להמשיך?'
+                                   : `לנתק את ${s.username || 'החיבור'}?`,
+                         { data: { id: s.id }, yes: 'ניתוק', tone: 'danger', cls: 'linkbtn danger-link' })}</td>
+                   </tr>`).join('')}</tbody>
+               </table>
+             </div>
+             <div class="rec-actions mt">
+               <button class="btn ghost" data-act="sessions-load">רענון</button>
+               ${askBtn('sess-all', 'sessions-revoke', 'ניתוק מכל המכשירים',
+                 'כל החיבורים שלכם ייסגרו, כולל זה — תצטרכו להיכנס מחדש. להמשיך?',
+                 { yes: 'ניתוק' })}
+             </div>`}
+    </section>`;
+}
+
+const loadSessions = () =>
+  withBusy(async () => {
+    const { sessions } = await api('/admin/sessions');
+    S.sessions = sessions || [];
+    renderConsole();
+  });
+
+const sessionEnd = (id) =>
+  withBusy(async () => {
+    const r = await api(`/admin/sessions/${id}`, { method: 'DELETE' });
+    // Ending your own leaves you signed out; anything else just refreshes.
+    if (r && r.self) { location.reload(); return; }
+    await loadSessionsQuiet();
+    renderConsole();
+    toast('החיבור נותק');
+  });
+
+const loadSessionsQuiet = async () => {
+  const { sessions } = await api('/admin/sessions');
+  S.sessions = sessions || [];
+};
+
+const userBlock = (username, blocked) =>
+  withBusy(async () => {
+    const r = await api(`/admin/users/${encodeURIComponent(username)}/block`, {
+      method: 'POST', body: { blocked },
+    });
+    await loadUsers();
+    if (S.sessions) await loadSessionsQuiet().catch(() => {});
+    renderConsole();
+    toast(blocked
+      ? `${username} נחסם${r && r.ended ? ` · ${r.ended} חיבורים נותקו` : ''}`
+      : `החסימה על ${username} הוסרה`);
+  });
+
 const VAULT_PART_HE = {
   stock: 'מלאי', countedAt: 'ספירת מלאי', armon: 'ארמון', armonLog: 'יומן ארמון',
   comms: 'ציוד קשר', commsLog: 'יומן קשר', ammo: 'תחמושת ואלפא', ammoLog: 'יומן תחמושת',
@@ -8153,7 +8244,9 @@ function auditTarget(e) {
 
   if (a === 'vault') return { kind: 'כספת', name: VAULT_PART_HE[t] || t };
   if (a === 'wa-send') return null;
-  if (a.startsWith('user-') || a.startsWith('login') || a === 'sessions-revoke') {
+  // Anything whose target is a username and not an opaque id.
+  if (a.startsWith('user-') || a.startsWith('login')
+      || a === 'sessions-revoke' || a === 'session-end') {
     return { kind: 'חשבון', name: t, mono: true };
   }
 
@@ -8176,6 +8269,7 @@ function auditTarget(e) {
 const AUDIT_TONE = {
   'delete-record': 'bad', 'delete-report': 'bad', 'user-delete': 'bad', wipe: 'bad',
   'login-fail': 'warn', 'login-lock': 'warn', 'sessions-revoke': 'warn',
+  'user-block': 'bad', 'login-blocked': 'warn', 'session-end': 'warn',
   approve: 'ok', 'restore-record': 'ok', 'restore-report': 'ok',
 };
 
@@ -8510,11 +8604,7 @@ function renderSecurityTab() {
 
     ${auditPanel()}
 
-    <section class="panel">
-      <h2 class="panel-title">חיבורים פעילים</h2>
-      <p class="panel-sub">חיבור נסגר מעצמו כעבור שעה ללא פעילות, ובכל מקרה 12 שעות מרגע הכניסה. אם נשארתם מחוברים במכשיר אחר — נתקו הכל מכאן, וגם החיבור הנוכחי ייסגר.</p>
-      <button class="btn ghost wide" data-act="sessions-revoke">ניתוק מכל המכשירים</button>
-    </section>
+    ${sessionsPanel()}
 
     <section class="panel">
       <h2 class="panel-title">גיבוי מפתח שחזור</h2>
@@ -11182,6 +11272,10 @@ function dispatch(act, el) {
     // users, trash, audit
     case 'key-export': exportRecoveryKey(); break;
     case 'sessions-revoke': revokeSessions(); break;
+    case 'sessions-load': loadSessions(); break;
+    case 'session-end': S.askDel = ''; sessionEnd(el.dataset.id); break;
+    case 'user-block': S.askDel = ''; userBlock(el.dataset.u, true); break;
+    case 'user-unblock': userBlock(el.dataset.u, false); break;
     case 'trash-load': loadTrash(); break;
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;

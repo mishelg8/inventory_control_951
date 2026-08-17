@@ -172,6 +172,33 @@ async function spendTicket(db, id, now) {
    of a record an administrator went into. Anything else is dropped rather
    than stored, so a client cannot turn this field into a channel for writing
    a soldier's details into plaintext. */
+/* A device label, short enough to be useless to anybody but the person who
+   owns the device. Two sessions of the same account are otherwise
+   indistinguishable, and "sign everybody out" was the only answer available.
+
+   What is deliberately not kept: the raw User-Agent, which is long enough to
+   fingerprint a machine, and the address, because a whole base sits behind one
+   address — it would name nobody while still being one more thing written down
+   about people in a table that is not encrypted. */
+function deviceLabel(ua) {
+  const s = String(ua || '');
+  if (!s) return null;
+  const os = /Android/i.test(s) ? 'אנדרואיד'
+    : /iPhone|iPad|iOS/i.test(s) ? 'אייפון'
+      : /Macintosh|Mac OS/i.test(s) ? 'מק'
+        : /Windows/i.test(s) ? 'Windows'
+          : /Linux/i.test(s) ? 'Linux'
+            : 'מכשיר';
+  // Order matters: Edge and Chrome both say "Chrome", Chrome says "Safari".
+  const app = /Edg\//i.test(s) ? 'Edge'
+    : /OPR\/|Opera/i.test(s) ? 'Opera'
+      : /Firefox\//i.test(s) ? 'Firefox'
+        : /Chrome\//i.test(s) ? 'Chrome'
+          : /Safari\//i.test(s) ? 'Safari'
+            : '';
+  return app ? `${os} · ${app}` : os;
+}
+
 const AUDIT_NOTES = ['פרטים', 'רישיונות', 'ציוד', 'זיכוי', 'נשק', 'תזונה'];
 const auditNote = (v) => (AUDIT_NOTES.includes(v) ? v : null);
 
@@ -699,14 +726,25 @@ export async function onRequest(context) {
           await audit(db, now, { username }, 'login-fail', username || null, null);
           return err(401, 'שם משתמש או סיסמה שגויים');
         }
+        /* Checked after the password and not before it, so that a blocked
+           account and a mistyped one cannot be told apart by anybody who does
+           not already know the password. Whoever does know it is told plainly
+           — they are not an attacker, they are somebody who needs to go and
+           ask why. */
+        if (cred.blocked) {
+          await audit(db, now, { username: cred.username || username }, 'login-blocked',
+                      cred.username || username || null, null);
+          return err(403, 'החשבון חסום — פנו למנהל המערכת');
+        }
 
         const role = ROLES.includes(cred.role) ? cred.role : 'admin';
         const tabs = role === 'admin' ? '*' : (cred.tabs || '*');
         const token = randomToken();
         await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
         await db
-          .prepare('INSERT INTO sessions (token, expires, role, username, tabs, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
-          .bind(token, now + SESSION_MS, role, cred.username || username || null, tabs, now)
+          .prepare('INSERT INTO sessions (token, expires, role, username, tabs, created_at, agent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)')
+          .bind(token, now + SESSION_MS, role, cred.username || username || null, tabs, now,
+                deviceLabel(request.headers.get('User-Agent')))
           .run();
         await db
           .prepare('UPDATE users SET last_seen = ?1 WHERE username = ?2')
@@ -791,12 +829,89 @@ export async function onRequest(context) {
         return json({ ok: true, ended }, 200, { 'Set-Cookie': clearedCookie() });
       }
 
+      /* GET /api/admin/sessions — who is signed in right now.
+         Administrator only: it names every account with a live session, which
+         is more than an editor has any business seeing. The token never leaves
+         the server whole — a session is addressed by the first sixteen
+         characters of it, which is enough to name one row and not enough to
+         be one. */
+      if (seg[1] === 'sessions' && seg.length === 2 && method === 'GET') {
+        if (session.role !== 'admin') return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
+        await db.prepare('DELETE FROM sessions WHERE expires <= ?1').bind(now).run();
+        const { results } = await db
+          .prepare('SELECT token, username, role, created_at, expires, agent FROM sessions ORDER BY created_at DESC')
+          .all();
+        return json({
+          sessions: (results || []).map((s) => ({
+            id: String(s.token).slice(0, 16),
+            username: s.username,
+            role: s.role,
+            createdAt: s.created_at,
+            // Refreshed on every authenticated request, so this is the last
+            // time that device did anything, not a countdown.
+            lastSeen: s.expires - SESSION_MS,
+            agent: s.agent || null,
+            current: s.token === session.token,
+          })),
+          idleMs: SESSION_MS,
+          maxMs: SESSION_ABS_MS,
+        });
+      }
+
+      // DELETE /api/admin/sessions/:id — end one device, by the short id above.
+      if (seg[1] === 'sessions' && seg.length === 3 && method === 'DELETE') {
+        if (session.role !== 'admin') return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
+        const id = seg[2];
+        if (!/^[0-9a-f]{16}$/.test(id)) return err(400, 'בקשה לא תקינה');
+        const row = await db
+          .prepare("SELECT token, username FROM sessions WHERE substr(token, 1, 16) = ?1")
+          .bind(id)
+          .first();
+        if (!row) return err(404, 'החיבור כבר אינו קיים');
+        await db.prepare('DELETE FROM sessions WHERE token = ?1').bind(row.token).run();
+        await audit(db, now, session, 'session-end', row.username || null, null);
+        // Ending your own session has to clear your own cookie too, or the
+        // browser goes on presenting a token the server has forgotten.
+        const self = row.token === session.token;
+        return json({ ok: true, self }, 200, self ? { 'Set-Cookie': clearedCookie() } : undefined);
+      }
+
       // GET /api/admin/users — the roster, never the credentials themselves
       if (seg[1] === 'users' && seg.length === 2 && method === 'GET') {
         const { results } = await db
-          .prepare('SELECT username, role, tabs, created_at, last_seen FROM users ORDER BY role DESC, username')
+          .prepare('SELECT username, role, tabs, created_at, last_seen, blocked FROM users ORDER BY role DESC, username')
           .all();
         return json({ users: results, me: session.username });
+      }
+
+      /* POST /api/admin/users/:username/block — {blocked: true|false}
+         Stopping an account without destroying it. Deleting a user takes their
+         wrapped copy of the private key with it and cannot be undone; blocking
+         is the reversible answer, which is the one you want at the moment you
+         are not yet sure what happened. Blocking also ends whatever that
+         account has open — a block that leaves a live session running has
+         stopped nothing. */
+      if (seg[1] === 'users' && seg[3] === 'block' && seg.length === 4 && method === 'POST') {
+        if (session.role !== 'admin') return err(403, 'אין הרשאה לאזור זה — נדרשת הרשאת מנהל');
+        const username = decodeURIComponent(seg[2]).toLowerCase();
+        if (!isUsername(username)) return err(400, 'שם משתמש לא תקין');
+        if (username === session.username) return err(400, 'אי אפשר לחסום את החשבון שאיתו אתם מחוברים');
+        const b = await readBody(request);
+        const blocked = !!(b && b.blocked);
+        const u = await getUser(db, username);
+        if (!u) return err(404, 'המשתמש לא נמצא');
+        await db
+          .prepare('UPDATE users SET blocked = ?1 WHERE username = ?2')
+          .bind(blocked ? 1 : 0, username)
+          .run();
+        let ended = 0;
+        if (blocked) {
+          const r = await db.prepare('DELETE FROM sessions WHERE username = ?1').bind(username).run();
+          ended = (r.meta && r.meta.changes) || 0;
+        }
+        await audit(db, now, session, blocked ? 'user-block' : 'user-unblock', username,
+                    blocked && ended ? `${ended} חיבורים נותקו` : null);
+        return json({ ok: true, ended });
       }
 
       // PUT | DELETE /api/admin/users/:username

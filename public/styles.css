@@ -1671,6 +1671,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .tbl .bad  { color: var(--bad-ink);  font-weight: 700; }
 .tbl tbody tr.row-short { background: var(--bad-tint); }
 .tbl tbody tr.row-short:hover { background: #F1DAD3; }
+/* The session you are reading the list from. Not a warning and not an alarm —
+   just "this row is you", so the disconnect beside it is not a surprise. */
+.tbl tbody tr.row-me { background: var(--pine-tint); }
 /* Civilian licence only — no military one. Not a fault, so not red: a warning
    tint that still reads as a tint in daylight on a phone. */
 .tbl tbody tr.row-civonly { background: var(--warn-tint); }
