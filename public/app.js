@@ -281,6 +281,7 @@ const S = {
         qr: null, err: null, to: '', body: '', busy: false },
 
   creditAsk: '',                // rid whose "credit everything" question is open
+  delAsk: '',                   // rid whose "delete this record" question is open
   gearAdd: '',                  // rid whose "add kit" editor is open
   gearDraft: {},                // itemId -> how many to add, until saved
 
@@ -2641,7 +2642,7 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>
-    ${creditDialog()}${gearDialog()}`);
+    ${creditDialog()}${gearDialog()}${deleteDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -3065,6 +3066,13 @@ function groupByDept(recs) {
    anything. Arming a row disarms whichever was armed before, so there is
    never more than one live "yes" on the screen. */
 
+/* The record delete, wherever it appears. Not delCell: the question this one
+   asks is too big for a strip inside the row, so the button only opens the
+   dialog and the dialog does the asking. See deleteDialog(). */
+const recDelBtn = (rec, label = '✕', cls = 'linkbtn danger-link') =>
+  `<button class="${cls}" data-act="del-ask" data-rid="${esc(rec.rid)}"
+           aria-label="מחיקת הרשומה" title="מחיקת הרשומה">${label}</button>`;
+
 function delCell(key, act, data = {}, label = '✕', aria = 'מחיקה', note = '') {
   if (S.askDel !== key) {
     return `<button class="linkbtn danger-link" data-act="ask-del" data-key="${esc(key)}"
@@ -3357,7 +3365,7 @@ function damagedCard(rec) {
       </header>
       <p class="muted-txt">לא ניתן לפענח את הרשומה — ייתכן שהנתונים שובשו בצד השרת.</p>
       <div class="rec-actions">
-        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
+        ${recDelBtn(rec, 'מחיקה')}
       </div>
       ${fpStrip(rec.rid)}
     </article>`;
@@ -3404,7 +3412,7 @@ function pendingCard(rec) {
       <ul>${rows}</ul>
       <div class="rec-actions">
         ${approveBtn(rec, 'btn primary')}
-        ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
+        ${recDelBtn(rec, 'מחיקה')}
       </div>
       ${fpStrip(rec.rid)}
     </article>`;
@@ -3491,7 +3499,7 @@ function renderPendingTab() {
         <td class="num">${esc(fmtShort(d.createdAt))}</td>
         <td class="nowrap">
           ${approveBtn(rec, 'btn primary small')}
-          ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקה', 'מחיקת הרשומה')}
+          ${recDelBtn(rec, 'מחיקה')}
         </td>
       </tr>
       ${open ? `<tr class="sub"><td colspan="7">${pendingDetail(rec)}</td></tr>` : ''}`;
@@ -3685,8 +3693,7 @@ function renderTrackTab() {
                data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer"
                title="${waAuto() ? 'שליחת וואטסאפ מהקו — יוצא מיד' : 'שליחת וואטסאפ'}"
                aria-label="שליחת וואטסאפ ל${esc(d.name)}">${DICO.wa}</a>
-            ${delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, '✕', 'מחיקת הרשומה',
-                      'למחוק את הרשומה?')}
+            ${recDelBtn(rec)}
           </span>
         </td>
       </tr>
@@ -3855,7 +3862,7 @@ function trackDetail(rec) {
     <button class="dact" data-act="lic-edit" data-rid="${esc(rec.rid)}">
       ${DICO.folder}<span>תיקון רישיונות וצילומים</span></button>
     <div class="dact-del">${
-      delCell(`rec:${rec.rid}`, 'del', { rid: rec.rid }, 'מחיקת הרשומה', 'מחיקת הרשומה')
+      recDelBtn(rec, 'מחיקת הרשומה')
     }</div>`;
 
   /* The drawer as cards rather than one column of lines.
@@ -10025,6 +10032,60 @@ function creditDialog() {
     </div>`;
 }
 
+/* Deleting a soldier's record, asked in the middle of the screen.
+
+   The ✕ sits in a row of small controls, a thumb's width from "צפייה" and from
+   the credit tick, and the row's own arm-then-confirm answered in a strip the
+   width of a table cell — the same shape and the same place as the press that
+   opened it. Two taps in the same spot is not a decision, it is a reflex, and
+   the thing it removes is a soldier's whole record: their licences, their
+   signature, and what they are holding.
+
+   So this one leaves the row. It says whose record it is, what is on it, and
+   the one fact that turns a frightening question into an answerable one —
+   that the record goes to the bin and comes back from it for thirty days. */
+function deleteDialog() {
+  if (!S.delAsk) return '';
+  const rec = findRec(S.delAsk);
+  if (!rec) return '';
+  const d = rec.data || {};
+  const out = rec.damaged ? [] : heldItems(d);
+  const serials = rec.damaged ? [] : SERIAL_FIELDS
+    .map(([f, label]) => [label, d[f]])
+    .filter(([, n]) => n);
+
+  return `
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delq" data-act="modal-keep">
+        <h2 class="modal-title" id="delq">${rec.damaged
+          ? 'למחוק את הרשומה הפגומה?'
+          : `למחוק את הרשומה של ${esc(d.name || '')}?`}</h2>
+        <p class="modal-sub">${rec.damaged
+          ? 'רשומה שלא ניתן לפענח. אין בה מה להציג.'
+          : `מ״א ${esc(d.pn || '—')}${d.dept ? ` · ${esc(deptName(d.dept))}` : ''}. הרשומה כולה יורדת מהמסך — הפרטים, הרישיונות, החתימה והציוד.`}</p>
+
+        ${out.length
+          ? `<ul class="modal-list">${out.map(([name, n]) => `
+              <li class="kit-row">
+                <span class="kit-name">${esc(name)}</span>
+                <span class="kit-count num">${n}</span>
+              </li>`).join('')}</ul>
+             <p class="modal-note">⚠ הציוד הזה עדיין רשום עליו. מחיקה אינה זיכוי — אם הוא החזיר, זכו אותו במקום למחוק.</p>`
+          : ''}
+        ${serials.length
+          ? `<p class="modal-note">${serials.map(([k, n]) => `${k} <span class="num">${esc(n)}</span>`).join(' · ')}</p>`
+          : ''}
+
+        <p class="modal-sub mb0">הרשומה נשמרת בסל המחזור ואפשר לשחזר אותה משם במשך 30 יום.</p>
+        <div class="modal-acts">
+          <button class="btn ghost" type="button" data-act="del-cancel">ביטול</button>
+          <button class="btn danger" type="button" data-act="del-ok"
+                  data-rid="${esc(rec.rid)}">כן, למחוק</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 const adminCreditAll = (rid) =>
   withBusy(async () => {
     const rec = findRec(rid);
@@ -10047,7 +10108,6 @@ const adminDelete = (rid) =>
   withBusy(async () => {
     const rec = findRec(rid);
     if (!rec) return;
-    const who = rec.damaged ? 'הרשומה הפגומה' : `הרשומה של ${rec.data.name}`;
     await api(`/admin/records/${rid}`, { method: 'DELETE' });
     S.recs = S.recs.filter((r) => r.rid !== rid);
     renderConsole();
@@ -10357,8 +10417,9 @@ $app.addEventListener('click', (e) => {
 /* Both dialogs are questions, and closing one without answering is always the
    safe outcome — nothing is written until the confirm button is pressed. */
 function closeModals() {
-  if (!S.creditAsk && !S.gearAdd) return false;
+  if (!S.creditAsk && !S.gearAdd && !S.delAsk) return false;
   S.creditAsk = '';
+  S.delAsk = '';
   S.gearAdd = '';
   S.gearDraft = {};
   renderConsole();
@@ -10704,6 +10765,9 @@ function dispatch(act, el) {
     case 'credit': adminCredit(rid, item, d); break;
     case 'creditall': S.askDel = ''; S.creditAsk = rid; renderConsole(); break;
     case 'credit-cancel': S.creditAsk = ''; renderConsole(); break;
+    case 'del-ask': S.askDel = ''; S.delAsk = rid; renderConsole(); break;
+    case 'del-cancel': S.delAsk = ''; renderConsole(); break;
+    case 'del-ok': S.delAsk = ''; adminDelete(rid); break;
     case 'modal-close': closeModals(); break;
     case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
     case 'gear-add-cancel': S.gearAdd = ''; S.gearDraft = {}; renderConsole(); break;
