@@ -282,6 +282,8 @@ const S = {
 
   creditAsk: '',                // rid whose "credit everything" question is open
   delAsk: '',                   // rid whose "delete this record" question is open
+  repDelAsk: '',                // report id whose "delete this report" question is open
+  auditQ: '',                   // admin search over the action log
   gearAdd: '',                  // rid whose "add kit" editor is open
   gearDraft: {},                // itemId -> how many to add, until saved
 
@@ -2642,7 +2644,7 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>
-    ${creditDialog()}${gearDialog()}${deleteDialog()}`);
+    ${creditDialog()}${gearDialog()}${deleteDialog()}${repDeleteDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -5704,7 +5706,7 @@ function depositsPanel() {
               `לקלוט לארמון את נשק ${d.weapon} של ${d.name}?`,
               { data: { id: r.id }, yes: 'כן, לקלוט', cls: 'btn primary small' })}
         ${repEditLink(r)}
-        ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, 'מחיקה', 'מחיקת הדיווח')}
+        ${repDelBtn(r, 'מחיקה')}
       </td>
     </tr>
     ${S.repEdit === r.id ? `<tr class="sub"><td colspan="9">${repEditor(r)}</td></tr>` : ''}`;
@@ -6652,7 +6654,7 @@ function refuelPanel() {
             ? `<button class="btn ghost small" data-act="rf-reopen" data-id="${esc(r.id)}">החזרה לטיפול</button>`
             : `<button class="btn primary small" data-act="rf-file" data-id="${esc(r.id)}"
                        ${target ? '' : 'disabled'}>קליטה לכרטיס</button>`}
-          ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, '✕', 'מחיקת הדיווח', 'למחוק את הדיווח?')}
+          ${repDelBtn(r)}
         </td>
       </tr>`;
   }).join('');
@@ -7549,7 +7551,7 @@ function renderReportsTab() {
         return `<article class="rec broken">
             <header class="rec-head"><div class="rec-name">דיווח פגום</div><span class="state live">שגיאה</span></header>
             <p class="muted-txt">לא ניתן לפענח את הדיווח.</p>
-            <div class="rec-actions">${delCell(`rep:${rec.id}`, 'rep-del', { id: rec.id }, 'מחיקה', 'מחיקת הדיווח')}</div>
+            <div class="rec-actions">${repDelBtn(rec, 'מחיקה')}</div>
           </article>`;
       }
       const d = rec.data;
@@ -7597,7 +7599,7 @@ function renderReportsTab() {
               ? `<a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}" target="_blank" rel="noopener noreferrer">וואטסאפ</a>`
               : ''}
             ${repEditLink(rec)}
-            ${delCell(`rep:${rec.id}`, 'rep-del', { id: rec.id }, 'מחיקה', 'מחיקת הדיווח')}
+            ${repDelBtn(rec, 'מחיקה')}
           </div>
           ${repEditor(rec)}
         </article>`;
@@ -7767,7 +7769,7 @@ function renderFaultsTab() {
           <a class="btn wa ghost-wa" href="https://wa.me/${waPhone(d.phone)}"
              target="_blank" rel="noopener noreferrer">וואטסאפ למדווח</a>
           ${repEditLink(r)}
-          ${delCell(`rep:${r.id}`, 'rep-del', { id: r.id }, 'מחיקה', 'מחיקת הדיווח')}
+          ${repDelBtn(r, 'מחיקה')}
         </div>
         ${repEditor(r)}
       </article>`;
@@ -8115,26 +8117,66 @@ function trashPanel() {
     </section>`;
 }
 
+/* Which actions are worth flagging when you scan the log for trouble. A
+   deletion and a wipe are not the same weight as an approval, and a failed
+   login next to a lock-out is the shape of somebody trying passwords. */
+const AUDIT_TONE = {
+  'delete-record': 'bad', 'delete-report': 'bad', 'user-delete': 'bad', wipe: 'bad',
+  'login-fail': 'warn', 'login-lock': 'warn', 'sessions-revoke': 'warn',
+  approve: 'ok', 'restore-record': 'ok', 'restore-report': 'ok',
+};
+
+/* The log answers one question — who did what — so the screen is built around
+   that pair and everything else is support.
+
+   It also grew past the point where dumping it worked: eight hundred rows on
+   one screen is not a record anybody reads, it is a wall you scroll past. So
+   it pages, and it takes a search over the two columns that matter, because
+   "what did rexev.951 touch last week" is the question people actually bring
+   to an audit trail. */
 function auditPanel() {
+  const all = S.audit || [];
+  const q = S.auditQ.trim().toLowerCase();
+  const vis = !q ? all : all.filter((e) =>
+    (e.username || '').toLowerCase().includes(q) ||
+    (AUDIT_LABEL[e.action] || e.action || '').toLowerCase().includes(q) ||
+    (e.action || '').toLowerCase().includes(q)
+  );
+  const p = paged('audit', vis);
+
   return `
     <section class="panel">
       <h2 class="panel-title">יומן פעולות מנהלים</h2>
-      <p class="panel-sub">מי עשה מה ומתי. היומן אינו מוצפן ולכן אינו מכיל שמות חיילים או פרטים אישיים — רק סוג הפעולה והמזהה.</p>
+      <p class="panel-sub">מי עשה מה ומתי. היומן אינו מוצפן ולכן אינו מכיל שמות חיילים או פרטים אישיים — רק שם המשתמש, סוג הפעולה והמזהה של מה שנגעו בו.</p>
       ${!S.audit
         ? '<button class="btn ghost wide" data-act="audit-load">טעינת היומן</button>'
-        : S.audit.length
-          ? `<div class="tbl-scroll">
-               <table class="tbl" data-phone="0,1,2">
-                 <thead><tr><th class="num">מתי</th><th>משתמש</th><th>פעולה</th><th class="num">מזהה</th><th>פרטים</th></tr></thead>
-                 <tbody>${S.audit.map((e) => `<tr>
-                   <td class="num">${esc(fmtDate(e.at))}</td>
-                   <td>${esc(e.username || '—')}</td>
-                   <td>${esc(AUDIT_LABEL[e.action] || e.action)}</td>
-                   <td class="num">${esc((e.target || '').slice(0, 12))}</td>
-                   <td>${esc(e.detail || '')}</td>
-                 </tr>`).join('')}</tbody>
-               </table>
-             </div>
+        : all.length
+          ? `${all.length > 10
+              ? plainSearch('audit-search', 'audit-qclear', S.auditQ,
+                            'חיפוש לפי שם משתמש או סוג פעולה', all.length, vis.length)
+              : ''}
+             ${vis.length
+               ? `<div class="tbl-scroll">
+                    <table class="tbl" data-phone="1,2,0">
+                      <thead><tr>
+                        <th>משתמש</th><th>פעולה</th><th class="num">מתי</th>
+                        <th class="num">מזהה</th><th>פרטים</th>
+                      </tr></thead>
+                      <tbody>${p.slice.map((e) => `<tr>
+                        <td class="lg-name">${esc(e.username || '—')}</td>
+                        <td>${(() => {
+                          const tone = AUDIT_TONE[e.action];
+                          const label = esc(AUDIT_LABEL[e.action] || e.action);
+                          return tone ? `<span class="state ${tone === 'bad' ? 'wait' : tone === 'warn' ? 'live' : 'done'}">${label}</span>` : label;
+                        })()}</td>
+                        <td class="num">${esc(fmtDate(e.at))}</td>
+                        <td class="num">${esc((e.target || '').slice(0, 12))}</td>
+                        <td>${esc(e.detail || '')}</td>
+                      </tr>`).join('')}</tbody>
+                    </table>
+                  </div>
+                  ${pager('audit', p)}`
+               : '<p class="empty">אין פעולות שתואמות את החיפוש.</p>'}
              <button class="btn ghost wide mt" data-act="audit-load">רענון</button>`
           : '<p class="empty">לא נרשמו פעולות.</p>'}
     </section>`;
@@ -10088,6 +10130,52 @@ function deleteDialog() {
     </div>`;
 }
 
+/* The same question for a report — a shortage request, a deposit, a fault or a
+   refuelling. It is one row rather than a soldier's whole file, so it earned
+   the strip in the row and not this. What changed the argument is that the row
+   it sits in is the same row the status radios sit in: the press that marks a
+   fault "טופל" and the press that deletes it are a centimetre apart, and only
+   one of them is reversible without an administrator. */
+function repDeleteDialog() {
+  if (!S.repDelAsk) return '';
+  const rec = S.reports.find((r) => r.id === S.repDelAsk);
+  if (!rec) return '';
+  const d = rec.data || {};
+  const kindName = rec.damaged ? 'דיווח' : (REPORT_KIND[d.kind] || 'בקשת חוסר');
+  const shots = rec.damaged ? 0 : (d.photos || (d.photo ? 1 : 0));
+
+  return `
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="repdelq" data-act="modal-keep">
+        <h2 class="modal-title" id="repdelq">${rec.damaged
+          ? 'למחוק את הדיווח הפגום?'
+          // no definite article before the kind — "למחוק את התקלת בינוי" is
+          // not a sentence anybody says out loud
+          : `למחוק ${esc(kindName)} של ${esc(d.name || '')}?`}</h2>
+        <p class="modal-sub">${rec.damaged
+          ? 'דיווח שלא ניתן לפענח. אין בו מה להציג.'
+          : `דווח ${esc(fmtDate(d.createdAt))}${d.phone ? ` · ${esc(maskPhone(d.phone))}` : ''}`}</p>
+
+        ${d.text ? `<blockquote class="rep-text">${esc(d.text)}</blockquote>` : ''}
+        ${shots
+          ? `<p class="modal-note">⚠ ${shots > 1 ? `${shots} צילומים מצורפים יימחקו` : 'הצילום המצורף יימחק'} יחד עם הדיווח.</p>`
+          : ''}
+
+        <p class="modal-sub mb0">הדיווח נשמר בסל המיחזור (מסך "אבטחה") ואפשר לשחזר אותו משם במשך 30 יום.</p>
+        <div class="modal-acts">
+          <button class="btn ghost" type="button" data-act="repdel-cancel">ביטול</button>
+          <button class="btn danger" type="button" data-act="repdel-ok"
+                  data-id="${esc(rec.id)}">כן, למחוק</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// The button, wherever a report is listed.
+const repDelBtn = (rec, label = '✕', cls = 'linkbtn danger-link') =>
+  `<button class="${cls}" data-act="repdel-ask" data-id="${esc(rec.id)}"
+           aria-label="מחיקת הדיווח" title="מחיקת הדיווח">${label}</button>`;
+
 const adminCreditAll = (rid) =>
   withBusy(async () => {
     const rec = findRec(rid);
@@ -10419,9 +10507,10 @@ $app.addEventListener('click', (e) => {
 /* Both dialogs are questions, and closing one without answering is always the
    safe outcome — nothing is written until the confirm button is pressed. */
 function closeModals() {
-  if (!S.creditAsk && !S.gearAdd && !S.delAsk) return false;
+  if (!S.creditAsk && !S.gearAdd && !S.delAsk && !S.repDelAsk) return false;
   S.creditAsk = '';
   S.delAsk = '';
+  S.repDelAsk = '';
   S.gearAdd = '';
   S.gearDraft = {};
   renderConsole();
@@ -10497,6 +10586,7 @@ $app.addEventListener('input', (e) => {
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'arm-mission': S.inv[regOf(el).key][+el.dataset.i].mission = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    case 'audit-search': S.auditQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
     case 'veh-search':  S.regQ = { ...S.regQ, veh: el.value };    rerenderKeepFocus(el); break;
@@ -10770,6 +10860,9 @@ function dispatch(act, el) {
     case 'del-ask': S.askDel = ''; S.delAsk = rid; renderConsole(); break;
     case 'del-cancel': S.delAsk = ''; renderConsole(); break;
     case 'del-ok': S.delAsk = ''; adminDelete(rid); break;
+    case 'repdel-ask': S.askDel = ''; S.repDelAsk = el.dataset.id; renderConsole(); break;
+    case 'repdel-cancel': S.repDelAsk = ''; renderConsole(); break;
+    case 'repdel-ok': S.repDelAsk = ''; repDelete(el.dataset.id); break;
     case 'modal-close': closeModals(); break;
     case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
     case 'gear-add-cancel': S.gearAdd = ''; S.gearDraft = {}; renderConsole(); break;
@@ -11105,6 +11198,7 @@ function dispatch(act, el) {
       break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
+    case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;
     case 'wa-ret': markSent(rid, 'returnNotified'); break;
