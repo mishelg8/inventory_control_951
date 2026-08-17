@@ -7966,6 +7966,13 @@ const loadAudit = () =>
   withBusy(async () => {
     const { audit } = await api('/admin/audit');
     S.audit = audit || [];
+    /* The bin comes with it. Half the questions brought to an action log are
+       about deletions, and a deleted record is by definition not in the list
+       the log would otherwise be matched against — so without this, the rows
+       an administrator most wants to read are the only ones that stay
+       anonymous. Quietly: a bin that will not load costs the names, not the
+       log. */
+    if (!S.trash) await fetchTrash().catch(() => {});
     renderConsole();
   });
 
@@ -8117,6 +8124,52 @@ function trashPanel() {
     </section>`;
 }
 
+const VAULT_PART_HE = {
+  stock: 'מלאי', countedAt: 'ספירת מלאי', armon: 'ארמון', armonLog: 'יומן ארמון',
+  comms: 'ציוד קשר', commsLog: 'יומן קשר', ammo: 'תחמושת ואלפא', ammoLog: 'יומן תחמושת',
+  vehicles: 'רכבים', fuel: 'כרטיסי תדלוק',
+};
+
+/* Which record, which report, whose account.
+
+   The log stores an identifier and never a name, and that is not an oversight
+   to be corrected: the audit table is the one table in this system that is not
+   encrypted, so a name written into it would be a name sitting in plaintext on
+   somebody else's server — which is the whole thing this design exists to
+   avoid.
+
+   The name belongs on the screen, not in the table. The console is already
+   holding every record and report decrypted in memory, so it can look the
+   identifier up and say "דנה כהן" while the row on the server still says
+   f73fbec8. Deleted rows resolve too, from the recycle bin, which is why the
+   log fetches it alongside itself — an administrator asking "which record did
+   he delete" is asking about a row that by definition is no longer in the
+   list. Past thirty days the bin is empty and the answer is honestly the
+   identifier, which is what a permanent deletion leaves behind. */
+function auditTarget(e) {
+  const t = e.target || '';
+  if (!t) return null;
+  const a = e.action;
+
+  if (a === 'vault') return { kind: 'כספת', name: VAULT_PART_HE[t] || t };
+  if (a === 'wa-send') return null;
+  if (a.startsWith('user-') || a.startsWith('login') || a === 'sessions-revoke') {
+    return { kind: 'חשבון', name: t, mono: true };
+  }
+
+  if (a === 'delete-report' || a === 'edit-report' || a === 'restore-report') {
+    const r = (S.reports || []).find((x) => x.id === t)
+      || (((S.trash || {}).reports) || []).find((x) => x.id === t);
+    if (!r || !r.data) return null;
+    return { kind: REPORT_KIND[r.data.kind] || 'בקשת חוסר', name: r.data.name || '—' };
+  }
+
+  const rec = (S.recs || []).find((x) => x.rid === t)
+    || (((S.trash || {}).records) || []).find((x) => x.rid === t);
+  if (!rec || !rec.data) return null;
+  return { kind: 'רשומת חייל', name: rec.data.name || '—', pn: rec.data.pn || '' };
+}
+
 /* Which actions are worth flagging when you scan the log for trouble. A
    deletion and a wipe are not the same weight as an approval, and a failed
    login next to a lock-out is the shape of somebody trying passwords. */
@@ -8147,7 +8200,7 @@ function auditPanel() {
   return `
     <section class="panel">
       <h2 class="panel-title">יומן פעולות מנהלים</h2>
-      <p class="panel-sub">מי עשה מה ומתי. היומן אינו מוצפן ולכן אינו מכיל שמות חיילים או פרטים אישיים — רק שם המשתמש, סוג הפעולה והמזהה של מה שנגעו בו.</p>
+      <p class="panel-sub">מי עשה מה, על מה ומתי. לחיצה על שם משתמש מסננת את היומן אליו. <strong>היומן עצמו אינו מוצפן ולכן לא נשמר בו שום שם</strong> — הוא שומר מזהה בלבד, והשמות שאתם רואים כאן מפוענחים בדפדפן שלכם מול הרשומות והסל. רשומה שנמחקה לצמיתות תישאר כמזהה.</p>
       ${!S.audit
         ? '<button class="btn ghost wide" data-act="audit-load">טעינת היומן</button>'
         : all.length
@@ -8159,20 +8212,28 @@ function auditPanel() {
                ? `<div class="tbl-scroll">
                     <table class="tbl" data-phone="1,2,0">
                       <thead><tr>
-                        <th>משתמש</th><th>פעולה</th><th class="num">מתי</th>
-                        <th class="num">מזהה</th><th>פרטים</th>
+                        <th>משתמש</th><th>פעולה</th><th>על מה</th>
+                        <th class="num">מתי</th><th class="num">מזהה</th>
                       </tr></thead>
-                      <tbody>${p.slice.map((e) => `<tr>
-                        <td class="lg-name">${esc(e.username || '—')}</td>
-                        <td>${(() => {
-                          const tone = AUDIT_TONE[e.action];
-                          const label = esc(AUDIT_LABEL[e.action] || e.action);
-                          return tone ? `<span class="state ${tone === 'bad' ? 'wait' : tone === 'warn' ? 'live' : 'done'}">${label}</span>` : label;
-                        })()}</td>
+                      <tbody>${p.slice.map((e) => {
+                        const tone = AUDIT_TONE[e.action];
+                        const label = esc(AUDIT_LABEL[e.action] || e.action);
+                        const on = auditTarget(e);
+                        return `<tr>
+                        <td class="lg-name"><button class="linkbtn" data-act="audit-who"
+                                data-q="${esc(e.username || '')}">${esc(e.username || '—')}</button></td>
+                        <td>${tone
+                          ? `<span class="state ${tone === 'bad' ? 'wait' : tone === 'warn' ? 'live' : 'done'}">${label}</span>`
+                          : label}${e.detail && AUDIT_LABEL[e.action]
+                            ? ` <span class="tagi">${esc(e.detail)}</span>` : ''}</td>
+                        <td>${on
+                          ? `<span class="${on.mono ? 'num' : ''}">${esc(on.name)}</span>${
+                              on.pn ? ` <span class="muted-txt num">${esc(on.pn)}</span>` : ''
+                            }<div class="muted-txt">${esc(on.kind)}</div>`
+                          : `<span class="muted-txt">${e.target ? 'לא נמצא — נמחק לצמיתות' : '—'}</span>`}</td>
                         <td class="num">${esc(fmtDate(e.at))}</td>
-                        <td class="num">${esc((e.target || '').slice(0, 12))}</td>
-                        <td>${esc(e.detail || '')}</td>
-                      </tr>`).join('')}</tbody>
+                        <td class="num muted-txt">${esc((e.target || '').slice(0, 8))}</td>
+                      </tr>`; }).join('')}</tbody>
                     </table>
                   </div>
                   ${pager('audit', p)}`
@@ -8540,9 +8601,17 @@ async function loadRecords(incremental) {
 const findRec = (rid) => S.recs.find((r) => r.rid === rid);
 
 // Re-seal the record's full payload with a fresh content key and PUT it.
-async function saveRec(rec) {
+/* `note` says which part of the record this save touched, for the action log.
+   It is one word from a list the Worker owns — see AUDIT_NOTES there — and
+   anything else is dropped on arrival, because that table is not encrypted
+   and a free-text field on it would be a way to write a soldier's details
+   into plaintext. */
+async function saveRec(rec, note) {
   const sealed = await seal(S.pubKey, rec.data);
-  await api(`/admin/records/${rec.rid}`, { method: 'PUT', body: { ...sealed, status: rec.status } });
+  await api(`/admin/records/${rec.rid}`, {
+    method: 'PUT',
+    body: { ...sealed, status: rec.status, ...(note ? { note } : {}) },
+  });
 }
 
 async function loadReports(incremental) {
@@ -9483,7 +9552,7 @@ const adminAdjust = (rid, itemId, delta) =>
     if (next === it.t) return;
     it.t = next;
     rec.data.log.push({ a: 'adjust', t: Date.now() });
-    await saveRec(rec);
+    await saveRec(rec, 'ציוד');
     renderConsole();
   });
 
@@ -9591,7 +9660,10 @@ const recSave = (rid) =>
     const prev = rec.data;
     rec.data = next;
     try {
-      await saveRec(rec);
+      // The drawer edits identity and the serials in one form, so the log says
+      // which of the two actually moved rather than guessing.
+      const serialsMoved = SERIAL_FIELDS.some(([f]) => (prev[f] || '') !== (next[f] || ''));
+      await saveRec(rec, serialsMoved ? 'נשק' : 'פרטים');
     } catch {
       rec.data = prev;                       // the server refused; the screen must not lie
       toast('השמירה נכשלה — הנתונים לא שונו', true);
@@ -9697,7 +9769,7 @@ const licSave = (rid) =>
     rec.data.refreshAt = d.refresh ? (d.refreshAt || '') : '';
 
     try {
-      await saveRec(rec);
+      await saveRec(rec, 'רישיונות');
     } catch {
       rec.data = prev;                       // the server refused; the screen must not lie
       /* The photographs went up first, and the record that would have pointed
@@ -9797,7 +9869,7 @@ async function approveCore(rid) {
           throw new Error('העברת צילומי הרישיון נכשלה — ההשלמה לא מוזגה ולא נמחקה');
         }
         parent.data.log.push({ a: 'supplement', t: now });
-        await saveRec(parent);
+        await saveRec(parent, 'פרטים');
         for (const kind of moved) docForget(`${parent.rid}:${kind}`);
         await api(`/admin/records/${rec.rid}`, { method: 'DELETE' });
         S.recs = S.recs.filter((r) => r.rid !== rec.rid);
@@ -9940,7 +10012,7 @@ const adminCredit = (rid, itemId, delta) =>
     if (next === (it.r || 0)) return;
     it.r = next;
     rec.data.log.push({ a: 'credit', t: Date.now() });
-    await saveRec(rec);
+    await saveRec(rec, 'זיכוי');
     renderConsole();
   });
 
@@ -10015,7 +10087,7 @@ const gearAddSave = (rid) =>
     }
     rec.data.log.push({ a: 'gear-add', t: Date.now() });
     try {
-      await saveRec(rec);
+      await saveRec(rec, 'ציוד');
     } catch (e) {
       rec.data.items = JSON.parse(before);      // the record is left as it was
       rec.data.log.pop();
@@ -10186,7 +10258,7 @@ const adminCreditAll = (rid) =>
     const credited = heldItems(rec.data);
     for (const it of Object.values(rec.data.items)) it.r = it.t;
     rec.data.log.push({ a: 'credit', t: Date.now() });
-    await saveRec(rec);
+    await saveRec(rec, 'זיכוי');
     renderConsole();
     const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited));
     if (w.sent) markSent(rid, 'returnNotified', 'auto');
@@ -11113,6 +11185,8 @@ function dispatch(act, el) {
     case 'trash-load': loadTrash(); break;
     case 'trash-restore': trashRestore(el.dataset.kind, el.dataset.id); break;
     case 'audit-load': loadAudit(); break;
+    // Pressing a name in the log asks the log about that person.
+    case 'audit-who': S.auditQ = el.dataset.q || ''; S.page = {}; renderConsole(); break;
     case 'user-del': userDelete(el.dataset.u); break;
     case 'uedit-open': {
       const name = el.dataset.u;

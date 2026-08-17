@@ -164,6 +164,17 @@ async function spendTicket(db, id, now) {
 
 // Append-only trail of admin actions. Never records anything identifying —
 // the console is encrypted and the audit log is not.
+/* What an update touched, in one word, chosen from a list the server owns.
+
+   The audit table is not encrypted — that is the whole reason it holds no
+   names — so it cannot take a sentence the console composed. A closed list
+   can be let through: these words identify nobody, they only say which part
+   of a record an administrator went into. Anything else is dropped rather
+   than stored, so a client cannot turn this field into a channel for writing
+   a soldier's details into plaintext. */
+const AUDIT_NOTES = ['פרטים', 'רישיונות', 'ציוד', 'זיכוי', 'נשק', 'תזונה'];
+const auditNote = (v) => (AUDIT_NOTES.includes(v) ? v : null);
+
 async function audit(db, now, session, action, target, detail) {
   await db
     .prepare('INSERT INTO audit (at, username, action, target, detail) VALUES (?1, ?2, ?3, ?4, ?5)')
@@ -1235,6 +1246,21 @@ export async function onRequest(context) {
           ) {
             return err(400, 'בקשה לא תקינה');
           }
+          /* Read the status before writing it, because the log is about what
+             happened and not about what the request said.
+
+             This used to call every save of an approved record an approval —
+             the request carries `status: 'approved'` whether it is approving a
+             pending soldier or correcting a licence on one approved in July,
+             and the trail said "אישור רשומה" for both. An action log that
+             cannot tell an approval from an edit is not much of an action log,
+             and it was quietly wrong on every correction ever made. */
+          const before = await db
+            .prepare('SELECT status FROM records WHERE rid = ?1')
+            .bind(rid)
+            .first();
+          const approving = status === 'approved' && (!before || before.status !== 'approved');
+
           const r = await db
             .prepare(
               'UPDATE records SET ek = ?1, iv = ?2, ct = ?3, status = ?4, updated_at = ?5 WHERE rid = ?6'
@@ -1247,7 +1273,8 @@ export async function onRequest(context) {
           // already refused a duplicate, so a clash here is a race — and the
           // record is written either way; only the claim is reported.
           const held = await claimSerials(db, b.tags, 'record', rid, status === 'approved' ? 'approved' : 'pending', now);
-          await audit(db, now, session, status === 'approved' ? 'approve' : 'update', rid, null);
+          await audit(db, now, session, approving ? 'approve' : 'update', rid,
+                      approving ? null : auditNote(b.note));
           if (held && !held.bad) {
             return err(409, `${FIELD_HE[held.field]} כבר קיים במערכת (${STATE_HE[held.state] || held.state})`);
           }
