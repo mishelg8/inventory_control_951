@@ -2691,7 +2691,7 @@ const READ_ACTS = new Set([
   // Saving a photograph is a read, and the same read a viewer may already do
   // on screen — the same reasoning that leaves the CSV export on this list.
   'lic-dl-all', 'lic-dl-one', 'flt-dl-all', 'flt-dl-one',
-  'rep-csv', 'rep-pdf', 'tz-wa',
+  'rep-csv', 'rep-pdf', 'tz-wa', 'wa-vcf',
 ]);
 
 /* A viewer's screen, with everything they may not do taken off it.
@@ -5074,8 +5074,7 @@ function printDoc({ title, meta, head, rows, summary }) {
 // Excel-safe CSV cell: always quoted, embedded quotes doubled.
 const csvCell = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
 
-function downloadCsv(lines, filename) {
-  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+function saveFile(blob, filename) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -5084,6 +5083,77 @@ function downloadCsv(lines, filename) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
+
+function downloadCsv(lines, filename) {
+  saveFile(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), filename);
+}
+
+/* ── Contacts for the phone that holds the line ───────────────────────
+   A number that writes to people already in its address book does not look
+   like a number cold-calling strangers, and the provider's own guidance
+   says to put the recipients in the phone book before messaging them. The
+   phone numbers are in the vault, so only this side can build the file —
+   the server never sees one in the clear and could not write it.
+
+   vCard 3.0, CRLF, UTF-8 without a BOM: what an iPhone and an Android both
+   import by opening the file. Lines are kept short on purpose — the format
+   wants folding past 75 octets, and a Hebrew name plus a personal number
+   stays well under it, so there is nothing to fold. */
+const vcfText = (v) => String(v == null ? '' : v).replace(/[\;,]/g, '\\$&').replace(/\n/g, '\\n');
+
+// Local 05x to the international form WhatsApp matches on.
+function vcfPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  const intl = d.startsWith('972') ? `+${d}` : d.startsWith('0') ? `+972${d.slice(1)}` : `+${d}`;
+  return /^\+\d{9,15}$/.test(intl) ? intl : '';
+}
+
+/* One card per soldier who has a number on file, pending included — a
+   pending record is somebody the line will message the moment it is
+   approved, which is exactly when the number must already be known.
+   Deduplicated on name and number together: one soldier with three records
+   is one contact, but two people sharing a phone stay two people. */
+function contactsVcf() {
+  const seen = new Set();
+  const cards = [];
+  for (const rec of S.recs.filter((r) => !r.damaged && r.data)) {
+    const d = rec.data;
+    const tel = vcfPhone(d.phone);
+    const name = String(d.name || '').trim();
+    if (!tel || !name) continue;
+    const key = `${name}|${tel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cards.push({ name, tel, note: [d.pn ? `מ״א ${d.pn}` : '', deptName(d.dept)].filter(Boolean).join(' · ') });
+  }
+  if (!cards.length) { toast('אין חיילים עם מספר טלפון ברשומה', true); return; }
+  cards.sort((a, b) => a.name.localeCompare(b.name, 'he'));
+
+  const lines = [];
+  for (const c of cards) {
+    lines.push(
+      'BEGIN:VCARD', 'VERSION:3.0',
+      `N:${vcfText(c.name)};;;;`,
+      `FN:${vcfText(c.name)}`,
+      `TEL;TYPE=CELL:${c.tel}`,
+      'ORG:מסייעת 951',
+      // groups them in the phone book, so the whole set can be found later
+      'CATEGORIES:מסייעת 951',
+      ...(c.note ? [`NOTE:${vcfText(c.note)}`] : []),
+      'END:VCARD'
+    );
+  }
+  saveFile(new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/vcard;charset=utf-8' }),
+           'tzayad-contacts.vcf');
+  toast(`${cards.length} אנשי קשר בקובץ`);
+}
+
+// How many the file would hold, for the sentence above the button.
+const contactsCount = () => new Set(
+  S.recs.filter((r) => !r.damaged && r.data && vcfPhone(r.data.phone) && String(r.data.name || '').trim())
+    .map((r) => `${String(r.data.name).trim()}|${vcfPhone(r.data.phone)}`)
+).size;
 
 // The quartermaster's ledger: one row per soldier, one column per item, so
 // "who is signed for what" is answerable at a glance. Respects the active
@@ -8425,6 +8495,12 @@ async function waRefresh() {
     if (S.wa.enabled && S.wa.reachable && S.wa.state === 'notAuthorized') await waQr();
   } catch (e) {
     S.wa.loaded = true;
+    /* A 502 means the provider did not answer — the settings are there, the
+       line is not. The old catch left `enabled` at its initial false, so an
+       unreachable service read on screen as "not configured at all" and sent
+       whoever saw it to check three settings that were perfectly correct.
+       The 502 body says which of the two it is; believe it. */
+    if (e && e.data && e.data.enabled !== undefined) S.wa.enabled = e.data.enabled !== false;
     S.wa.reachable = false;
     S.wa.err = (e && e.message) || 'השירות אינו מגיב';
   }
@@ -8462,7 +8538,13 @@ async function waProbe() {
     S.wa.state = r.state || '';
     S.wa.budget = r.budget || null;
     S.wa.until = r.suspendedUntil || null;
-  } catch { /* leaves waAuto() false, which is the wa.me path */ }
+  } catch (e) {
+    // waAuto() stays false either way — the wa.me path — but the screen still
+    // needs to tell "not configured" apart from "configured and not answering".
+    S.wa.loaded = true;
+    if (e && e.data && e.data.enabled !== undefined) S.wa.enabled = e.data.enabled !== false;
+    S.wa.reachable = false;
+  }
 }
 
 /* Fired by an approval rather than by somebody pressing a message button, so
@@ -8628,6 +8710,20 @@ const waTestSend = () =>
     toast('נשלח');
   });
 
+/* Nothing here depends on a line being linked, or on the provider answering —
+   it is a file built out of the vault for a phone to swallow. It sits on this
+   screen because the reason for it is what this screen is about, so it renders
+   in every state the screen has, the unconfigured one included. */
+const contactsPanel = () => `
+    <section class="panel">
+      <h2 class="panel-title">אנשי קשר לטלפון של הקו</h2>
+      <p class="panel-sub">מספר שכותב למי שכבר נמצא באנשי הקשר שלו אינו נראה כמו מספר שפותח שיחות עם זרים, וזו גם ההמלצה של הספק עצמו. הקובץ מייצא כל חייל שיש לו טלפון ברשומה — לייבוא <strong>בטלפון שמחזיק את הקו</strong>, לא בטלפון האישי שלכם.</p>
+      ${askBtn('wa-vcf', 'wa-vcf', `הורדת אנשי קשר (${contactsCount()})`,
+        'הקובץ אינו מוצפן ומכיל שמות ומספרי טלפון. להוריד?',
+        { yes: 'הורדה', cls: 'btn ghost wide' })}
+      <p class="field-hint mb0">הקובץ נבנה כאן בדפדפן מהנתונים המפוענחים; השרת אינו רואה אותו. בטלפון של הקו: פתיחת הקובץ ← ייבוא לאנשי הקשר. בזמן הגבלה וואטסאפ חוסמת הוספת אנשי קשר מתוך האפליקציה, וספר הטלפונים של המכשיר הוא הדרך שעובדת.</p>
+    </section>`;
+
 function renderWaTab() {
   if (!S.wa.loaded) return '<p class="loading">טוען…</p>';
 
@@ -8643,7 +8739,8 @@ function renderWaTab() {
             : 'שירות הוואטסאפ אינו מוגדר בהגדרות הפרויקט בקלאודפלייר.'
           } עד שיוגדר, כפתורי הוואטסאפ במסכים האחרים עובדים כרגיל.</p>
         </div>
-      </section>`;
+      </section>
+      ${contactsPanel()}`;
   }
 
   const st = waState();
@@ -8657,7 +8754,10 @@ function renderWaTab() {
         <span class="wa-status-text">
           <strong>${esc(st.label)}</strong>
           <span class="muted">${esc(S.wa.reachable ? st.hint : 'השירות אינו מגיב.')}</span>
-          ${S.wa.err ? `<span class="bad">${esc(S.wa.err)}</span>` : ''}
+          ${/* the error is usually the very sentence above it, and printing
+                "השירות אינו מגיב" twice in a row reads like two faults */
+            S.wa.err && S.wa.err.replace(/\.$/, '') !== 'השירות אינו מגיב'
+              ? `<span class="bad">${esc(S.wa.err)}</span>` : ''}
         </span>
       </div>
 
@@ -8686,6 +8786,8 @@ function renderWaTab() {
         <button class="btn ghost small" data-act="wa-refresh">רענון</button>
       </div>
     </section>
+
+    ${contactsPanel()}
 
     ${S.wa.state === 'authorized'
       ? `<section class="panel">
@@ -11143,6 +11245,7 @@ function dispatch(act, el) {
     case 'filter': S.filter = el.dataset.filter; S.page = {}; renderConsole(); break;
     // reports — one definition, two outputs
     case 'rep-csv': reportCsv(el.dataset.r); break;
+    case 'wa-vcf': contactsVcf(); break;
     case 'rep-pdf': reportPdf(el.dataset.r); break;
     case 'refresh': adminRefresh(); break;
     case 'lock': lock(); break;
