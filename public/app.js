@@ -5101,6 +5101,17 @@ function downloadCsv(lines, filename) {
    stays well under it, so there is nothing to fold. */
 const vcfText = (v) => String(v == null ? '' : v).replace(/[\;,]/g, '\\$&').replace(/\n/g, '\\n');
 
+/* An iPhone keeps a first name and a last name apart, and sorts on the last.
+   A vCard that puts the whole string in the family slot shows and sorts as
+   one blob — "בן שושן, ליאור" becomes "ליאור בן שושן," under ל. First token
+   given, everything after it family, which is how a Hebrew name divides. A
+   single-word name is a given name with no family, not the reverse. */
+function vcfName(full) {
+  const parts = String(full).split(/\s+/).filter(Boolean);
+  const given = parts.shift() || '';
+  return { given, family: parts.join(' ') };
+}
+
 // Local 05x to the international form WhatsApp matches on.
 function vcfPhone(raw) {
   const d = String(raw || '').replace(/\D/g, '');
@@ -5134,7 +5145,7 @@ function contactsVcf() {
   for (const c of cards) {
     lines.push(
       'BEGIN:VCARD', 'VERSION:3.0',
-      `N:${vcfText(c.name)};;;;`,
+      `N:${vcfText(vcfName(c.name).family)};${vcfText(vcfName(c.name).given)};;;`,
       `FN:${vcfText(c.name)}`,
       `TEL;TYPE=CELL:${c.tel}`,
       'ORG:מסייעת 951',
