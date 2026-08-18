@@ -120,6 +120,81 @@ async function sweepThrottle(db, now) {
   }
 }
 
+/* ── Pacing the unit's line ──────────────────────────────────────────
+   WhatsApp restricted the number. Twenty approvals under one press meant
+   twenty chats opened within a few seconds, nearly all of them with people
+   who had never written to that number — which is the shape their spam
+   detection looks for, and it was right about the shape.
+
+   Nothing here makes the detection go away. An unofficial gateway is not a
+   sanctioned sender and will not become one; only the official WhatsApp
+   Business API is. What is ours to fix is the burst, and it is fixed here
+   rather than only in the browser, because the browser can be reloaded,
+   opened twice, or closed mid-run, and none of those may reset the pace.
+
+   Three limits, read from wrangler.toml so they can be loosened later
+   without changing code:
+
+     WA_GAP_MS    the floor between any two messages   (default 15s)
+     WA_HOUR_MAX  messages in a rolling hour           (default 40)
+     WA_DAY_MAX   messages in a rolling day            (default 150)
+
+   Being refused is not a failure state. Every refusal hands the caller back
+   to the wa.me path — the chat opens on the sender's own phone, nothing
+   passes through the provider — which is where this project started and is
+   still the safer of the two. */
+const waPace = (env) => ({
+  gapMs:   Math.max(0, Number(env.WA_GAP_MS)   || 15000),
+  hourMax: Math.max(1, Number(env.WA_HOUR_MAX) || 40),
+  dayMax:  Math.max(1, Number(env.WA_DAY_MAX)  || 150),
+});
+
+/* Claims the next slot, or says how long until there is one. Conditional
+   upsert so two tabs cannot both believe the line is free: the UPDATE runs
+   only where the previous slot has already lapsed, and a claim that loses
+   returns no row. */
+async function waGapClaim(db, now, gapMs) {
+  if (gapMs <= 0) return { ok: true };
+  const won = await db
+    .prepare(
+      `INSERT INTO throttle (k, hits, until) VALUES ('wa:gap', 1, ?1)
+       ON CONFLICT(k) DO UPDATE SET until = ?1, hits = throttle.hits + 1
+         WHERE throttle.until <= ?2
+       RETURNING until`
+    )
+    .bind(now + gapMs, now)
+    .first();
+  if (won) return { ok: true };
+  const cur = await db.prepare("SELECT until FROM throttle WHERE k = 'wa:gap'").first();
+  return { ok: false, why: 'gap', waitMs: Math.max(0, ((cur && cur.until) || now) - now) };
+}
+
+// How many went out in the window that is still open. A lapsed window is nil,
+// not stale — the row simply has not been rewritten yet.
+async function waCount(db, k, now) {
+  const r = await db.prepare('SELECT hits, until FROM throttle WHERE k = ?1').bind(k).first();
+  return r && r.until > now ? r.hits : 0;
+}
+
+async function waBump(db, k, windowMs, now) {
+  await db
+    .prepare(
+      `INSERT INTO throttle (k, hits, until) VALUES (?1, 1, ?2)
+       ON CONFLICT(k) DO UPDATE SET
+         hits  = CASE WHEN throttle.until <= ?3 THEN 1 ELSE throttle.hits + 1 END,
+         until = CASE WHEN throttle.until <= ?3 THEN ?2 ELSE throttle.until END`
+    )
+    .bind(k, now + windowMs, now)
+    .run();
+}
+
+// When the hour or the day is full, the useful number is when it empties —
+// "try later" sends somebody back every two minutes to find out.
+async function waUntil(db, k, now) {
+  const r = await db.prepare('SELECT until FROM throttle WHERE k = ?1').bind(k).first();
+  return Math.max(0, ((r && r.until) || now) - now);
+}
+
 // admin  — everything, including users, audit and the trash
 // editor  — may read AND change, but only on the screens granted to them
 // viewer  — may read only, and only on the screens granted to them
@@ -1498,7 +1573,33 @@ export async function onRequest(context) {
         if (method === 'GET' && seg[2] === 'status') {
           const r = await call('getStateInstance');
           if (!r.ok) return json({ enabled: true, reachable: false, error: 'השירות אינו מגיב' }, 502);
-          return json({ enabled: true, reachable: true, state: (r.data && r.data.stateInstance) || 'unknown' });
+          const state = (r.data && r.data.stateInstance) || 'unknown';
+          const pace = waPace(env);
+          /* What is left of the hour and the day, so the screen can say it
+             before somebody presses approve on twenty rows rather than
+             after. Counting is free — reading the same rows the send path
+             writes — and asking the provider is not, so only the state that
+             carries a deadline asks. */
+          const budget = {
+            gapMs: pace.gapMs,
+            hourMax: pace.hourMax,
+            dayMax: pace.dayMax,
+            hour: await waCount(db, 'wa:hour', now),
+            day: await waCount(db, 'wa:day', now),
+          };
+          /* suspended is WhatsApp's own word: the number may still answer
+             and reply, but may not open a new chat — which is every message
+             this system sends. It lifts by itself, and the only fact worth
+             having is when. */
+          let until = null;
+          if (state === 'suspended') {
+            const w = await call('getWaSettings');
+            const raw = w.ok && w.data && w.data.suspendedUntil;
+            const n = Number(raw);
+            // unix seconds at the provider, milliseconds everywhere here
+            if (n > 0) until = n < 1e12 ? n * 1000 : n;
+          }
+          return json({ enabled: true, reachable: true, state, budget, suspendedUntil: until });
         }
 
         if (method === 'GET' && seg[2] === 'qr') {
@@ -1518,6 +1619,35 @@ export async function onRequest(context) {
           const intl = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
           if (!/^\d{9,15}$/.test(intl)) return err(400, 'מספר טלפון לא תקין');
           if (!text.trim() || text.length > 1200) return err(400, 'הודעה ריקה או ארוכה מדי');
+          /* The gate, before the provider is touched. A refused send is not
+             an error to be retried in a loop — it is the wa.me path, and the
+             answer says how long until the line is free so the caller can
+             wait rather than hammer. 429 rather than 503: the request was
+             fine, the rate was not. */
+          const pace = waPace(env);
+          const gap = await waGapClaim(db, now, pace.gapMs);
+          if (!gap.ok) {
+            return json({
+              paced: 'gap', waitMs: gap.waitMs,
+              error: `הקו שולח הודעה אחת כל ${Math.round(pace.gapMs / 1000)} שניות — עוד ${Math.ceil(gap.waitMs / 1000)} שניות`,
+            }, 429);
+          }
+          const hour = await waCount(db, 'wa:hour', now);
+          const day = await waCount(db, 'wa:day', now);
+          if (day >= pace.dayMax) {
+            return json({
+              paced: 'day', waitMs: await waUntil(db, 'wa:day', now),
+              error: `נשלחו היום ${day} הודעות מהקו — זו התקרה. שלחו את השאר ידנית, או המתינו למחר`,
+            }, 429);
+          }
+          if (hour >= pace.hourMax) {
+            return json({
+              paced: 'hour', waitMs: await waUntil(db, 'wa:hour', now),
+              error: `נשלחו בשעה האחרונה ${hour} הודעות מהקו — זו התקרה. שלחו את השאר ידנית, או המתינו`,
+            }, 429);
+          }
+          await waBump(db, 'wa:hour', 3600000, now);
+          await waBump(db, 'wa:day', 86400000, now);
           const r = await call('sendMessage', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

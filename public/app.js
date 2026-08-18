@@ -73,6 +73,7 @@ async function api(path, opts = {}) {
   if (!r.ok) {
     const e = new Error((data && data.error) || 'שגיאה בשרת');
     e.status = r.status;
+    e.data = data;   // a paced refusal carries how long until the line is free
     throw e;
   }
   return data;
@@ -278,7 +279,9 @@ const S = {
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
-        qr: null, err: null, to: '', body: '', busy: false },
+        qr: null, err: null, to: '', body: '', busy: false,
+        budget: null,               // how much of the hour and the day is spent
+        until: null },              // when WhatsApp's own restriction lifts
 
   creditAsk: '',                // rid whose "credit everything" question is open
   delAsk: '',                   // rid whose "delete this record" question is open
@@ -8353,6 +8356,8 @@ const WA_STATE = {
   notAuthorized: { label: 'לא מחובר',     tone: 'warn', hint: 'סרקו את הקוד מהטלפון של הקו שישמש לשליחה.' },
   starting:      { label: 'מתחיל…',       tone: 'warn', hint: 'המופע עולה אצל הספק. המתינו כמה שניות ורעננו.' },
   blocked:       { label: 'חסום',         tone: 'bad',  hint: 'המופע חסום אצל הספק — בדקו את החשבון שלכם שם.' },
+  suspended:     { label: 'מוגבל ע״י וואטסאפ', tone: 'bad',
+                   hint: 'אפשר להשיב לצ׳אט קיים, אי אפשר לפתוח חדש — וזה כל מה שהמערכת שולחת.' },
   sleepMode:     { label: 'במצב שינה',    tone: 'warn', hint: 'המופע נרדם מחוסר שימוש. רעננו כדי להעיר אותו.' },
   yellowCard:    { label: 'הוגבל זמנית',  tone: 'bad',  hint: 'הספק הגביל את המופע זמנית בשל קצב שליחה.' },
   unknown:       { label: 'לא ידוע',      tone: 'off',  hint: 'הספק החזיר מצב שאיננו מכירים.' },
@@ -8367,7 +8372,12 @@ const waState = () => WA_STATE[S.wa.state] || WA_STATE.unknown;
    is open and only until a line is linked. Once it says מחובר, the timer is
    gone. */
 const WA_POLL_MS = 5000;
+/* A QR code expires in seconds and whoever scans it is standing at the screen.
+   A restriction lasts hours and nobody is — asking every five seconds would
+   only spend the provider's quota watching a clock tick. */
+const WA_SLOW = ['suspended', 'blocked', 'yellowCard'];
 let waPoll = null;
+let waTick = 0;
 let waTabOpen = false;   // the wa screen is showing, so its state was asked for
 
 function waPollStop() {
@@ -8376,10 +8386,25 @@ function waPollStop() {
 
 function waPollStart() {
   if (waPoll) return;
+  waTick = 0;
   waPoll = setInterval(() => {
     if (S.tab !== 'wa' || !S.wa.enabled || S.wa.state === 'authorized') return waPollStop();
+    waTick++;
+    if (waTick % (WA_SLOW.includes(S.wa.state) ? 12 : 1)) return;
     if (!S.wa.busy) waRefresh();
   }, WA_POLL_MS);
+}
+
+// "עוד 12 שניות" and "עוד 3 שעות" out of the same milliseconds.
+function waDur(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 60) return sec === 1 ? 'שנייה' : `${sec} שניות`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return min === 1 ? 'דקה' : `${min} דקות`;
+  const hr = Math.floor(min / 60);
+  const rem = min % 60;
+  const h = hr === 1 ? 'שעה' : `${hr} שעות`;
+  return rem ? `${h} ו-${rem === 1 ? 'דקה' : `${rem} דקות`}` : h;
 }
 
 async function waRefresh() {
@@ -8392,6 +8417,8 @@ async function waRefresh() {
     S.wa.reachable = r.reachable !== false;
     S.wa.state = r.state || '';
     S.wa.err = r.error || null;
+    S.wa.budget = r.budget || null;
+    S.wa.until = r.suspendedUntil || null;
     // The code is only worth fetching when there is nothing linked; asking for
     // it while a line is connected returns "alreadyLogged" and nothing useful.
     S.wa.qr = null;
@@ -8433,6 +8460,8 @@ async function waProbe() {
     S.wa.missing = Array.isArray(r.missing) ? r.missing : [];
     S.wa.reachable = r.reachable !== false;
     S.wa.state = r.state || '';
+    S.wa.budget = r.budget || null;
+    S.wa.until = r.suspendedUntil || null;
   } catch { /* leaves waAuto() false, which is the wa.me path */ }
 }
 
@@ -8456,8 +8485,97 @@ async function waNotify(phone, message) {
     await api('/admin/wa/send', { method: 'POST', body: { phone: to, message } });
     return { sent: true };
   } catch (e) {
-    return { sent: false, why: 'failed', err: (e && e.message) || 'השליחה נכשלה' };
+    const paced = e && e.data && e.data.paced;
+    return {
+      sent: false,
+      why: paced ? 'paced' : 'failed',
+      waitMs: (e && e.data && e.data.waitMs) || 0,
+      err: (e && e.message) || 'השליחה נכשלה',
+    };
   }
+}
+
+/* ── The sending queue ────────────────────────────────────────────────
+   Approving twenty rows used to fire twenty messages in the time it took to
+   build them — twenty new chats opened in a few seconds, nearly all with
+   people who had never written to that number. WhatsApp restricted the
+   number for it, and it was reading the situation correctly.
+
+   The approvals still happen at once. They are ours, they are instant, and
+   no one should wait on a messaging service for them. Only the messages
+   queue, leaving one at a time at the gap the server names, while the
+   console stays usable underneath.
+
+   The queue lives in this tab. A reload loses whatever is still waiting, and
+   that is the safe direction to lose it in: a row is marked as notified only
+   after the provider took the message, so anything dropped simply keeps its
+   message button. */
+const WQ = { jobs: [], running: false, done: 0, sent: 0, total: 0, stopped: '' };
+const WQ_LEAD = 2000;   // a beat before the first one, so the approval toast can be read
+
+const waGap = () => (S.wa.budget && S.wa.budget.gapMs) || 15000;
+
+/* The queue talks through the same toast as everything else, so it yields:
+   it writes only over its own line or an empty one. A message somebody's own
+   press produced stays up. */
+let wqLine = '';
+function wqSay(msg) {
+  if ($toast.hidden || $toast.textContent === wqLine) { wqLine = msg; toast(msg); }
+}
+
+const wqRest = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* Waits, but keeps saying so — the gap is longer than a toast lives, and a
+   console that goes quiet for fifteen seconds looks stuck rather than paced. */
+async function wqWait(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await wqRest(Math.min(2500, end - Date.now()));
+    wqSay(`שולח הודעות… ${WQ.done} מתוך ${WQ.total} · הבאה בעוד ${waDur(end - Date.now())}`);
+  }
+}
+
+function waEnqueue(jobs) {
+  if (!jobs.length) return;
+  WQ.jobs.push(...jobs);
+  WQ.total += jobs.length;
+  if (!WQ.running) { WQ.running = true; wqDrain(); }
+}
+
+async function wqDrain() {
+  WQ.stopped = '';
+  await wqRest(WQ_LEAD);
+  while (WQ.jobs.length) {
+    const j = WQ.jobs.shift();
+    try {
+      await api('/admin/wa/send', { method: 'POST', body: { phone: j.phone, message: j.message } });
+      WQ.sent++;
+      markSent(j.rid, j.kind, 'auto');
+    } catch (e) {
+      const paced = e && e.data && e.data.paced;
+      if (paced === 'gap') {
+        // another tab, or a send by hand, took the slot. Wait it out and retry.
+        WQ.jobs.unshift(j);
+        await wqWait(((e.data && e.data.waitMs) || waGap()) + 500);
+        continue;
+      }
+      if (paced) { WQ.stopped = e.message; break; }
+      // one number that failed is no reason to drop the other nineteen
+    }
+    WQ.done++;
+    if (WQ.jobs.length) await wqWait(waGap());
+  }
+  const left = WQ.jobs.length;
+  const bad = !!WQ.stopped || WQ.sent < WQ.total;
+  wqLine = '';
+  toast(
+    WQ.stopped
+      ? `${WQ.sent} מתוך ${WQ.total} נשלחו · ${WQ.stopped}${left ? ` · ${left} נשארו — שלחו ידנית` : ''}`
+      : `${WQ.sent} מתוך ${WQ.total} הודעות נשלחו`,
+    bad
+  );
+  WQ.jobs = []; WQ.running = false; WQ.done = 0; WQ.sent = 0; WQ.total = 0;
+  renderConsole();
 }
 
 /* What to add to the toast an approval already shows. Silent when there is no
@@ -8466,6 +8584,7 @@ async function waNotify(phone, message) {
 const waNote = (r) =>
   r.sent ? ' · הודעה נשלחה'
     : r.why === 'nophone' ? ' · אין טלפון ברשומה — לא נשלחה הודעה'
+      : r.why === 'paced' ? ` · ${r.err}`
       : r.why === 'failed' ? ` · ההודעה לא נשלחה (${r.err})`
         : r.why === 'noline' ? ' · הקו אינו מחובר — ההודעה לא נשלחה'
           : r.why === 'unconfigured' ? ' — שלחו הודעה ידנית'
@@ -8541,6 +8660,20 @@ function renderWaTab() {
           ${S.wa.err ? `<span class="bad">${esc(S.wa.err)}</span>` : ''}
         </span>
       </div>
+
+      ${S.wa.state === 'suspended'
+        ? `<div class="callout risk">
+             <p class="callout-title">וואטסאפ הגבילה את המספר</p>
+             <p>המספר יכול להשיב לצ׳אטים קיימים ולא לפתוח חדשים — וכל הודעה שהמערכת שולחת היא צ׳אט חדש. ${S.wa.until
+               ? `ההגבלה יורדת בעוד <strong>${esc(waDur(S.wa.until - Date.now()))}</strong>, ב-${esc(fmtDate(S.wa.until))}.`
+               : 'הספק לא מסר מתי היא יורדת.'}</p>
+             <p class="mb0">אין מה לעשות מלבד להמתין; ניסיונות שליחה חוזרים רק מאריכים אותה. בינתיים כפתורי ההודעות פותחים צ׳אט מהמכשיר שלכם, כמו לפני שהיה קו.</p>
+           </div>`
+        : ''}
+
+      ${S.wa.budget
+        ? `<p class="field-hint">קצב השליחה: הודעה כל ${Math.round(S.wa.budget.gapMs / 1000)} שניות, עד ${S.wa.budget.hourMax} בשעה ו-${S.wa.budget.dayMax} ביום. נשלחו ${S.wa.budget.hour} בשעה האחרונה, ${S.wa.budget.day} ביממה.${WQ.running ? ` בתור כרגע: ${WQ.done} מתוך ${WQ.total}.` : ''}</p>`
+        : ''}
 
       ${S.wa.qr
         ? `<div class="wa-qr">
@@ -10030,7 +10163,7 @@ function bulkApproveNote() {
   // out separately" while every one of them is about to be sent is the kind of
   // sentence somebody presses a button on and then regrets.
   return `${head}לאשר ${rids.length} רישומים? ${waAuto()
-    ? `הודעה תישלח לכל אחד מהם מהקו של המסייעת, מיד עם האישור.`
+    ? `האישור מיידי. ההודעות יוצאות מהקו של המסייעת אחת כל ${Math.round(waGap() / 1000)} שניות — כ-${waDur(rids.length * waGap())} לכולן — כדי שוואטסאפ לא תזהה את זה כדיוור.`
     : 'ההודעות לחיילים נשלחות בנפרד ממעקב ציוד.'}`;
 }
 
@@ -10040,8 +10173,8 @@ const bulkApprove = () =>
     if (!rids.length) return;
     S.askDel = '';
     let ok = 0;
-    let sent = 0;
-    let unsent = 0;
+    let nophone = 0;
+    const jobs = [];
     const failedRids = [];
     for (const rid of rids) {
       toast(`מאשר ${ok + failedRids.length + 1} מתוך ${rids.length}…`);
@@ -10056,9 +10189,12 @@ const bulkApprove = () =>
         if (r.skipped) continue;
         ok++;
         S.picked.delete(rid);
+        /* Queued, not sent. The approval is finished either way; the message
+           leaves behind it, at the line's pace. */
         if (d && waAuto()) {
-          const w = await waNotify(d.phone, waSignMsg(d));
-          if (w.sent) { sent++; markSent(rid, 'notified', 'auto'); } else { unsent++; }
+          const phone = String(d.phone || '').trim();
+          if (phone) jobs.push({ rid, kind: 'notified', phone, message: waSignMsg(d) });
+          else nophone++;
         }
       } catch {
         failedRids.push(rid);
@@ -10067,11 +10203,12 @@ const bulkApprove = () =>
     renderConsole();
     toast(
       `${ok} רישומים אושרו` +
-        (sent ? ` · ${sent} הודעות נשלחו` : '') +
-        (unsent ? ` · ${unsent} ללא הודעה` : '') +
+        (jobs.length ? ` · ${jobs.length} הודעות בתור, כ-${waDur(jobs.length * waGap())}` : '') +
+        (nophone ? ` · ${nophone} ללא טלפון` : '') +
         (failedRids.length ? ` · ${failedRids.length} נכשלו ונשארו מסומנים` : ''),
       failedRids.length > 0
     );
+    waEnqueue(jobs);
   });
 
 const bulkDelete = () =>

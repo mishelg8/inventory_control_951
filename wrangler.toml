@@ -18,3 +18,13 @@ database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
 [vars]
 GREEN_API_URL = "https://7107.api.greenapi.com"
 GREEN_ID = "710722713591"
+
+# How fast the line is allowed to send. WhatsApp restricted this number once,
+# for approving twenty rows at once and firing twenty first-contact messages
+# inside a few seconds. The server holds these floors, not the browser, so a
+# reload or a second tab cannot reset them. Raise them slowly, and only after
+# the number has been sending quietly for a while — a fresh instance is the
+# most fragile it will ever be. Refusals fall back to the wa.me buttons.
+WA_GAP_MS = "15000"
+WA_HOUR_MAX = "40"
+WA_DAY_MAX = "150"
