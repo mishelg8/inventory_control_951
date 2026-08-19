@@ -53,7 +53,7 @@ function d1(sq) {
 
 const TOKEN = 'a'.repeat(64);
 
-async function waHarness({ hourMax = 3, dayMax = 5, state = 'authorized' } = {}) {
+async function waHarness({ hourMax = 3, dayMax = 5, state = 'authorized', httpStatus = 200 } = {}) {
   const { onRequest } = await import(join(root, 'functions/api/[[path]].js'));
   const sq = freshDb();
   sq.prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?,?,?,?,?)')
@@ -65,7 +65,7 @@ async function waHarness({ hourMax = 3, dayMax = 5, state = 'authorized' } = {})
     const body = String(u).includes('getStateInstance') ? { stateInstance: state }
       : String(u).includes('getWaSettings') ? { suspendedUntil: Math.floor(Date.now() / 1000) + 21600 }
         : { idMessage: 'X' };
-    return new Response(JSON.stringify(body), { status: 200 });
+    return new Response(JSON.stringify(httpStatus === 200 ? body : {}), { status: httpStatus });
   };
 
   const env = {
@@ -228,4 +228,60 @@ test('the queue yields the toast to a line somebody else put there', async () =>
   assert.equal(h.$toast.textContent, 'הרשומה נמחקה');
   await h.idle();
   assert.match(h.$toast.textContent, /3 מתוך 3/, 'its own summary still lands at the end');
+});
+
+/* ── Saying which fault it is ─────────────────────────────────────── */
+
+// Six different faults arrived on the screen as one sentence — "השירות אינו
+// מגיב" — and the commonest of them, a token still belonging to the previous
+// instance, is a sentence rather than a mystery. These pin the wording,
+// because the wording is the whole feature.
+
+test('a rejected token says so, and names the instance it was rejected for', async () => {
+  const wa = await waHarness({ httpStatus: 401 });
+  const r = await wa.status();
+  const j = await r.json();
+  assert.equal(r.status, 502);
+  assert.equal(j.providerStatus, 401);
+  assert.equal(j.instance, '1');
+  assert.match(j.error, /GREEN_TOKEN/);
+  assert.match(j.error, /1/);
+});
+
+test('an unknown instance points at the id, not at the token', async () => {
+  const j = await (await (await waHarness({ httpStatus: 404 })).status()).json();
+  assert.match(j.error, /GREEN_ID/);
+  assert.doesNotMatch(j.error, /GREEN_TOKEN/);
+});
+
+test("the provider's own outage is not blamed on the settings", async () => {
+  const j = await (await (await waHarness({ httpStatus: 503 })).status()).json();
+  assert.match(j.error, /503/);
+  assert.doesNotMatch(j.error, /GREEN_TOKEN|GREEN_ID/);
+});
+
+test('no answer at all reads as no answer, not as a bad token', async () => {
+  const { onRequest } = await import(join(root, 'functions/api/[[path]].js'));
+  const sq = freshDb();
+  sq.prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?,?,?,?,?)')
+    .run(TOKEN, Date.now() + 3600000, 'admin', 'admin.951', '*');
+  globalThis.fetch = async () => { throw new Error('network'); };
+  const r = await onRequest({
+    env: { DB: d1(sq), GREEN_API_URL: 'https://x.example', GREEN_ID: '1', GREEN_TOKEN: 't' },
+    params: { path: ['admin', 'wa', 'status'] },
+    request: new Request('https://tzayad.pages.dev/api/admin/wa/status', { headers: { Cookie: 'sid=' + TOKEN } }),
+  });
+  const j = await r.json();
+  assert.equal(j.providerStatus, 0);
+  assert.match(j.error, /אין תשובה מהספק/);
+});
+
+test('the answer never carries the token', async () => {
+  for (const httpStatus of [401, 404, 500]) {
+    const wa = await waHarness({ httpStatus });
+    const body = await (await wa.status()).text();
+    // GREEN_TOKEN is the literal 't' in this harness; the name may appear,
+    // the value may not, and neither may the URL that holds it.
+    assert.doesNotMatch(body, /waInstance/, `status ${httpStatus} leaked the URL`);
+  }
 });

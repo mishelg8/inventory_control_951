@@ -1570,9 +1570,35 @@ export async function onRequest(context) {
           }
         };
 
+        /* Six different faults used to arrive on the screen as one sentence,
+           "השירות אינו מגיב", and somebody stood in front of a console that
+           would not say which. The code the provider answered with is the
+           whole diagnosis, and the commonest one by far — a token that still
+           belongs to the previous instance — is a sentence, not a mystery.
+
+           The instance id is named in the answer because it is not a secret
+           and because the mistake is almost always that the two do not match.
+           The token never appears, in the answer or in a log line: it is in
+           the URL, so the URL is never one either. */
+        const waWhy = (r) =>
+          r.status === 401 || r.status === 403
+            ? `הספק דחה את הטוקן. ודאו ש-GREEN_TOKEN שייך למופע ${id} — טוקן של מופע קודם ייראה בדיוק כך`
+            : r.status === 404
+              ? `הספק לא מכיר מופע ${id} — בדקו את GREEN_ID ואת כתובת המארח`
+              : r.status === 429
+                ? 'הספק מגביל את קצב הפניות. המתינו רגע ונסו שוב'
+                : r.status === 0
+                  ? 'אין תשובה מהספק — פסק זמן או תקלת רשת'
+                  : r.status >= 500
+                    ? `הספק החזיר שגיאה (${r.status}) — תקלה בצד שלו`
+                    : `הספק החזיר ${r.status}`;
+
         if (method === 'GET' && seg[2] === 'status') {
           const r = await call('getStateInstance');
-          if (!r.ok) return json({ enabled: true, reachable: false, error: 'השירות אינו מגיב' }, 502);
+          if (!r.ok) {
+            console.error('wa status', r.status);   // no URL: the URL carries the token
+            return json({ enabled: true, reachable: false, instance: id, providerStatus: r.status, error: waWhy(r) }, 502);
+          }
           const state = (r.data && r.data.stateInstance) || 'unknown';
           const pace = waPace(env);
           /* What is left of the hour and the day, so the screen can say it
@@ -1599,12 +1625,18 @@ export async function onRequest(context) {
             // unix seconds at the provider, milliseconds everywhere here
             if (n > 0) until = n < 1e12 ? n * 1000 : n;
           }
-          return json({ enabled: true, reachable: true, state, budget, suspendedUntil: until });
+          // The instance id is not a secret, and "which instance is this
+          // talking to" is the question standing behind most of the faults
+          // above — so the screen gets to show it.
+          return json({ enabled: true, reachable: true, instance: id, state, budget, suspendedUntil: until });
         }
 
         if (method === 'GET' && seg[2] === 'qr') {
           const r = await call('qr');
-          if (!r.ok) return json({ enabled: true, reachable: false, error: 'השירות אינו מגיב' }, 502);
+          if (!r.ok) {
+            console.error('wa qr', r.status);
+            return json({ enabled: true, reachable: false, providerStatus: r.status, error: waWhy(r) }, 502);
+          }
           // { type: 'qrCode' | 'alreadyLogged' | 'error', message: <base64 png | text> }
           return json({ enabled: true, reachable: true, ...(r.data || {}) });
         }

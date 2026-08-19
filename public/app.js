@@ -279,7 +279,8 @@ const S = {
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
-        qr: null, err: null, to: '', body: '', busy: false,
+        qr: null, qrErr: null, err: null, to: '', body: '', busy: false,
+        instance: '',               // which instance the server is talking to
         budget: null,               // how much of the hour and the day is spent
         until: null },              // when WhatsApp's own restriction lifts
 
@@ -8512,6 +8513,7 @@ async function waRefresh() {
        whoever saw it to check three settings that were perfectly correct.
        The 502 body says which of the two it is; believe it. */
     if (e && e.data && e.data.enabled !== undefined) S.wa.enabled = e.data.enabled !== false;
+    if (e && e.data && e.data.instance) S.wa.instance = e.data.instance;
     S.wa.reachable = false;
     S.wa.err = (e && e.message) || 'השירות אינו מגיב';
   }
@@ -8519,11 +8521,24 @@ async function waRefresh() {
   renderConsole();
 }
 
+/* An empty space where a code should be is the least useful thing this screen
+   can show: the code is the whole reason somebody opened it, and the reasons
+   it is missing are all different. The provider answers 200 with a type that
+   is not a code — already linked, or its own error — and it answers 401 when
+   the token belongs to a different instance, which is the commonest one right
+   after an instance is replaced. Say which. */
 async function waQr() {
   try {
     const r = await api('/admin/wa/qr');
     S.wa.qr = r && r.type === 'qrCode' && r.message ? `data:image/png;base64,${r.message}` : null;
-  } catch { S.wa.qr = null; }
+    S.wa.qrErr = S.wa.qr ? null
+      : r && r.type === 'alreadyLogged' ? 'הספק אומר שהקו כבר מקושר. לחצו רענון.'
+        : r && r.message ? String(r.message).slice(0, 200)
+          : 'הספק לא החזיר קוד.';
+  } catch (e) {
+    S.wa.qr = null;
+    S.wa.qrErr = (e && e.message) || 'הבקשה לקוד נכשלה.';
+  }
 }
 
 /* Whether the row buttons send by themselves or hand the message to the
@@ -8549,6 +8564,7 @@ async function waProbe() {
     S.wa.state = r.state || '';
     S.wa.budget = r.budget || null;
     S.wa.until = r.suspendedUntil || null;
+    S.wa.instance = r.instance || '';
   } catch (e) {
     // waAuto() stays false either way — the wa.me path — but the screen still
     // needs to tell "not configured" apart from "configured and not answering".
@@ -8786,12 +8802,21 @@ function renderWaTab() {
         ? `<p class="field-hint">קצב השליחה: הודעה כל ${Math.round(S.wa.budget.gapMs / 1000)} שניות, עד ${S.wa.budget.hourMax} בשעה ו-${S.wa.budget.dayMax} ביום. נשלחו ${S.wa.budget.hour} בשעה האחרונה, ${S.wa.budget.day} ביממה.${WQ.running ? ` בתור כרגע: ${WQ.done} מתוך ${WQ.total}.` : ''}</p>`
         : ''}
 
+      ${S.wa.instance
+        ? `<p class="field-hint">מדבר עם מופע <span class="num">${esc(S.wa.instance)}</span> אצל הספק. אם זה לא המופע שאתם מסתכלים עליו בלוח של הספק — זה ההסבר.</p>`
+        : ''}
+
       ${S.wa.qr
         ? `<div class="wa-qr">
              <img class="wa-qr-img" src="${S.wa.qr}" alt="קוד QR לקישור הקו">
              <p class="field-hint mb0">בטלפון של הקו: וואטסאפ ← הגדרות ← מכשירים מקושרים ← קישור מכשיר. הקוד מתחלף — אם פג, לחצו רענון.</p>
            </div>`
-        : ''}
+        : S.wa.qrErr
+          ? `<div class="callout risk">
+               <p class="callout-title">אין קוד לסריקה</p>
+               <p class="mb0">${esc(S.wa.qrErr)}</p>
+             </div>`
+          : ''}
 
       <div class="rec-actions">
         <button class="btn ghost small" data-act="wa-refresh">רענון</button>
