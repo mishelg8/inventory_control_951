@@ -1540,6 +1540,24 @@ export async function onRequest(context) {
          not to a log line. They are, however, read by GREEN-API, which is the
          cost of not owning the machine. */
       if (seg[1] === 'wa' && seg.length === 3) {
+        /* The emergency stop. Read before anything else on this path, and
+           held on the server rather than in a tab: a pause that lives in a
+           browser is not a pause — reload it and sending resumes, and a
+           second console never knew about it. Pausing takes one press
+           because the moment you want it is not the moment for a dialogue;
+           resuming is the direction that asks. */
+        const paused = async () => {
+          const row = await db.prepare('SELECT wa_paused FROM config WHERE id = 1').first();
+          return !!(row && row.wa_paused);
+        };
+        if (method === 'POST' && (seg[2] === 'pause' || seg[2] === 'resume')) {
+          if (session.role !== 'admin') return err(403, 'אין הרשאה');
+          const on = seg[2] === 'pause' ? 1 : 0;
+          await db.prepare('UPDATE config SET wa_paused = ?1 WHERE id = 1').bind(on).run();
+          await audit(db, now, session, on ? 'wa-pause' : 'wa-resume', null, null);
+          return json({ ok: true, paused: !!on });
+        }
+
         const base = (env.GREEN_API_URL || '').replace(/\/+$/, '');
         const id = env.GREEN_ID || '';
         const token = env.GREEN_TOKEN || '';
@@ -1552,7 +1570,7 @@ export async function onRequest(context) {
           const missing = [
             !base && 'GREEN_API_URL', !id && 'GREEN_ID', !token && 'GREEN_TOKEN',
           ].filter(Boolean);
-          if (method === 'GET') return json({ enabled: false, missing });
+          if (method === 'GET') return json({ enabled: false, missing, paused: await paused() });
           return err(503, 'שירות הוואטסאפ אינו מוגדר');
         }
         const call = async (path, init) => {
@@ -1623,6 +1641,8 @@ export async function onRequest(context) {
             return json({
               enabled: true, reachable: false, instance: id, providerStatus: r.status,
               error: waWhy(r), said: waSaid(r.text), shape: waShape('getStateInstance'),
+              // the switch has to be visible even when the line is not
+              paused: await paused(),
             }, 502);
           }
           const state = (r.data && r.data.stateInstance) || 'unknown';
@@ -1654,7 +1674,10 @@ export async function onRequest(context) {
           // The instance id is not a secret, and "which instance is this
           // talking to" is the question standing behind most of the faults
           // above — so the screen gets to show it.
-          return json({ enabled: true, reachable: true, instance: id, state, budget, suspendedUntil: until });
+          return json({
+            enabled: true, reachable: true, instance: id, state, budget,
+            suspendedUntil: until, paused: await paused(),
+          });
         }
 
         if (method === 'GET' && seg[2] === 'qr') {
@@ -1664,6 +1687,7 @@ export async function onRequest(context) {
             return json({
               enabled: true, reachable: false, instance: id, providerStatus: r.status,
               error: waWhy(r), said: waSaid(r.text), shape: waShape('qr'),
+              paused: await paused(),
             }, 502);
           }
           // { type: 'qrCode' | 'alreadyLogged' | 'error', message: <base64 png | text> }
@@ -1680,6 +1704,35 @@ export async function onRequest(context) {
           const intl = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
           if (!/^\d{9,15}$/.test(intl)) return err(400, 'מספר טלפון לא תקין');
           if (!text.trim() || text.length > 1200) return err(400, 'הודעה ריקה או ארוכה מדי');
+          if (await paused()) {
+            return json({ paused: true, error: 'שליחת הוואטסאפ מושהית. בטלו את ההשהיה במסך וואטסאפ' }, 503);
+          }
+
+          /* "Was this exact message already sent." The tick on the row says a
+             message went out, but it only describes what happened — it never
+             stopped anything, so a loop, a double press, or the same job
+             queued twice sent the soldier the same sentence again. Two
+             identical messages are what spam detection is built to notice,
+             and the soldier who gets them is the one who presses report.
+
+             The key is the record id and the kind of message, both
+             identifiers — no name, no number, no text, the same rule the
+             audit table follows. Seven days: long enough to catch a bug that
+             surfaces tomorrow.
+
+             A deliberate second send says so, and the console only says so
+             from the one control that asks first. */
+          const key = typeof b.key === 'string' && /^[0-9a-f]{32}:(notified|returnNotified)$/.test(b.key)
+            ? `wa:sent:${b.key}` : '';
+          if (key && b.resend !== true) {
+            const seen = await db.prepare('SELECT until FROM throttle WHERE k = ?1').bind(key).first();
+            if (seen && seen.until > now) {
+              return json({
+                duplicate: true,
+                error: 'ההודעה הזו כבר נשלחה לחייל הזה. לשליחה חוזרת — דרך פירוט הרשומה',
+              }, 409);
+            }
+          }
           /* The gate, before the provider is touched. A refused send is not
              an error to be retried in a loop — it is the wa.me path, and the
              answer says how long until the line is free so the caller can
@@ -1714,6 +1767,9 @@ export async function onRequest(context) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: `${intl}@c.us`, message: text }),
           });
+          // Recorded only once the provider took it: a message that failed
+          // must not block the retry that would actually deliver it.
+          if (key && r.ok) await waBump(db, key, 604800000, now);
           // The number and the text are deliberately absent from the trail.
           await audit(db, now, session, 'wa-send', null, null);
           if (!r.ok) return json({ enabled: true, reachable: false, error: 'השליחה נכשלה' }, 502);

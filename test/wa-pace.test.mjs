@@ -58,6 +58,9 @@ async function waHarness({ hourMax = 3, dayMax = 5, state = 'authorized', httpSt
   const sq = freshDb();
   sq.prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?,?,?,?,?)')
     .run(TOKEN, Date.now() + 3600000, 'admin', 'admin.951', '*');
+  // the single settings row the pause switch lives on
+  sq.prepare(`INSERT INTO config (id, pub, salt, id_salt, verifier, key_iv, wrapped_key, created_at)
+              VALUES (1, '{}', 'x', 'x', 'x', 'x', 'x', 0)`).run();
 
   const provider = [];
   globalThis.fetch = async (u) => {
@@ -83,7 +86,8 @@ async function waHarness({ hourMax = 3, dayMax = 5, state = 'authorized', httpSt
   });
   return {
     provider,
-    send: () => hit('admin/wa/send', 'POST', { phone: '0501234567', message: 'בדיקה' }),
+    send: (body = {}) => hit('admin/wa/send', 'POST', { phone: '0501234567', message: 'בדיקה', ...body }),
+    pause: (on) => hit('admin/wa/' + (on ? 'pause' : 'resume'), 'POST', {}),
     status: () => hit('admin/wa/status'),
     // The gap is real time; the tests move the clock rather than wait on it.
     lapse: () => sq.prepare("UPDATE throttle SET until = ? WHERE k = 'wa:gap'").run(Date.now() - 1),
@@ -327,4 +331,87 @@ test("a long run of characters in the provider's answer is redacted before it is
   });
   const j = await r.json();
   assert.equal(j.said, 'bad token … here');
+});
+
+/* ── The stop switch, and sending the same thing twice ────────────── */
+
+test('paused means nothing leaves, and the provider is never called', async () => {
+  const wa = await waHarness();
+  assert.equal((await wa.send()).status, 200);
+
+  await wa.pause(true);
+  const before = wa.provider.length;
+  wa.lapse();
+  const r = await wa.send();
+  const j = await r.json();
+  assert.equal(r.status, 503);
+  assert.equal(j.paused, true);
+  assert.equal(wa.provider.length, before, 'a paused send still reached the provider');
+
+  // and the console can see the switch is down
+  assert.equal((await (await wa.status()).json()).paused, true);
+});
+
+test('resuming lets messages out again', async () => {
+  const wa = await waHarness();
+  await wa.pause(true);
+  wa.lapse();
+  assert.equal((await wa.send()).status, 503);
+  await wa.pause(false);
+  wa.lapse();
+  assert.equal((await wa.send()).status, 200);
+  assert.equal((await (await wa.status()).json()).paused, false);
+});
+
+test('the same message is not sent to the same soldier twice', async () => {
+  const wa = await waHarness();
+  const key = 'a'.repeat(32) + ':notified';
+  assert.equal((await wa.send({ key })).status, 200);
+
+  wa.lapse();
+  const before = wa.provider.length;
+  const r = await wa.send({ key });
+  const j = await r.json();
+  assert.equal(r.status, 409);
+  assert.equal(j.duplicate, true);
+  assert.equal(wa.provider.length, before, 'the repeat still reached the provider');
+});
+
+test('a deliberate resend says so, and goes', async () => {
+  const wa = await waHarness();
+  const key = 'b'.repeat(32) + ':returnNotified';
+  assert.equal((await wa.send({ key })).status, 200);
+  wa.lapse();
+  assert.equal((await wa.send({ key, resend: true })).status, 200);
+});
+
+test('two different soldiers are not each other, and neither are the two message kinds', async () => {
+  const wa = await waHarness({ hourMax: 40, dayMax: 40 });
+  const one = 'c'.repeat(32);
+  const two = 'd'.repeat(32);
+  for (const key of [`${one}:notified`, `${one}:returnNotified`, `${two}:notified`]) {
+    wa.lapse();
+    assert.equal((await wa.send({ key })).status, 200, key);
+  }
+});
+
+test('a send that failed is not remembered, so the retry can still deliver', async () => {
+  const wa = await waHarness({ httpStatus: 500 });
+  const key = 'e'.repeat(32) + ':notified';
+  assert.equal((await wa.send({ key })).status, 502);   // provider refused
+  wa.lapse();
+  const r = await wa.send({ key });
+  assert.notEqual(r.status, 409, 'a failed send blocked its own retry');
+});
+
+test('a key that is not a record and a kind is ignored, not stored', async () => {
+  const wa = await waHarness({ hourMax: 40, dayMax: 40 });
+  for (const key of ['../../etc', 'notified', 'zz:notified', 'a'.repeat(32) + ':whatever']) {
+    wa.lapse();
+    const r = await wa.send({ key });
+    assert.equal(r.status, 200, key);
+  }
+  // nothing was gated, so a repeat of the first is still allowed
+  wa.lapse();
+  assert.equal((await wa.send({ key: '../../etc' })).status, 200);
 });

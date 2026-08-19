@@ -282,6 +282,7 @@ const S = {
         qr: null, qrErr: null, err: null, to: '', body: '', busy: false,
         instance: '',               // which instance the server is talking to
         said: '',                   // what the provider answered, in its own words
+        paused: false,              // the emergency stop, held on the server
         shape: null,                // the request's shape, with the token described not shown
         budget: null,               // how much of the hour and the day is spent
         until: null },              // when WhatsApp's own restriction lifts
@@ -3849,17 +3850,29 @@ function trackDetail(rec) {
     ? `<ul class="dkit">${rows}</ul>`
     : '<p class="dempty">טרם חתם על ציוד. הפריטים יופיעו כאן אחרי החתימה.</p>';
 
-  const actions = `
-    <a class="dact" href="${esc(waLink(d))}" data-act="wa-sign"
-       data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
-      ${DICO.wa}<span>${d.notified ? 'הודעת רישום — שליחה חוזרת' : 'שליחת הודעת רישום'}${
-        waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>
-    ${anyBack
-      ? `<a class="dact" href="${esc(returnWaLink(d))}" data-act="wa-ret"
+  /* Sending the same message a second time is a real thing to want — the
+     soldier says it never arrived — but it is not a thing to do by brushing
+     the same control again. When one has already gone out this becomes the
+     only place that can send it, and it asks first. Everywhere else the
+     server refuses the repeat.
+
+     Only when the line sends by itself: the wa.me path opens a chat on the
+     admin's own phone and nothing has gone anywhere yet, so there is nothing
+     to guard. */
+  const waAct = (kind, sent, href, label) =>
+    waAuto() && sent
+      ? askBtn(`waresend:${rec.rid}:${kind}`, 'wa-resend',
+          `${DICO.wa}<span>${label} — שליחה חוזרת</span>`,
+          `${label} כבר נשלחה לחייל הזה. לשלוח שוב?`,
+          { data: { rid: rec.rid, kind }, yes: 'שליחה שוב', cls: 'dact' })
+      : `<a class="dact" href="${esc(href)}" data-act="${kind === 'notified' ? 'wa-sign' : 'wa-ret'}"
             data-rid="${esc(rec.rid)}" target="_blank" rel="noopener noreferrer">
-           ${DICO.wa}<span>${d.returnNotified ? 'הודעת זיכוי — שליחה חוזרת' : 'שליחת הודעת זיכוי'}${
-             waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`
-      : ''}
+           ${DICO.wa}<span>${sent ? `${label} — שליחה חוזרת` : `שליחת ${label}`}${
+             waAuto() ? ' <small class="dact-via">מהקו · יוצא מיד</small>' : ''}</span></a>`;
+
+  const actions = `
+    ${waAct('notified', !!d.notified, waLink(d), 'הודעת רישום')}
+    ${anyBack ? waAct('returnNotified', !!d.returnNotified, returnWaLink(d), 'הודעת זיכוי') : ''}
     <button class="dact" data-act="gear-add" data-rid="${esc(rec.rid)}">
       ${DICO.box}<span>החתמת ציוד</span></button>
     ${outstanding(d) > 0
@@ -8078,6 +8091,7 @@ const AUDIT_LABEL = {
   'session-end': 'ניתוק מכשיר', 'user-block': 'חסימת משתמש',
   'user-unblock': 'ביטול חסימה',
   wipe: 'מחיקת כל הנתונים', 'wa-send': 'שליחת וואטסאפ מהקו',
+  'wa-pause': 'עצירת שליחת וואטסאפ', 'wa-resume': 'חידוש שליחת וואטסאפ',
 };
 
 // Users. Every account carries its own copy of the private key, wrapped under
@@ -8503,6 +8517,8 @@ async function waRefresh() {
     S.wa.err = r.error || null;
     S.wa.budget = r.budget || null;
     S.wa.until = r.suspendedUntil || null;
+    S.wa.instance = r.instance || '';
+    S.wa.paused = r.paused === true;
     // The code is only worth fetching when there is nothing linked; asking for
     // it while a line is connected returns "alreadyLogged" and nothing useful.
     S.wa.qr = null;
@@ -8517,6 +8533,7 @@ async function waRefresh() {
     if (e && e.data && e.data.enabled !== undefined) S.wa.enabled = e.data.enabled !== false;
     if (e && e.data && e.data.instance) S.wa.instance = e.data.instance;
     S.wa.said = (e && e.data && e.data.said) || '';
+    if (e && e.data && e.data.paused !== undefined) S.wa.paused = e.data.paused === true;
     S.wa.shape = (e && e.data && e.data.shape) || null;
     S.wa.reachable = false;
     S.wa.err = (e && e.message) || 'השירות אינו מגיב';
@@ -8550,9 +8567,14 @@ async function waQr() {
    server refuses everyone else — and only when a line is actually linked, so
    anyone else, or any hitch, still gets the wa.me behaviour that has always
    been there rather than a button that does nothing. */
+/* Paused belongs here rather than at the send call: with the switch down the
+   buttons must go back to opening a chat on the sender's own phone, which is
+   what every other reason for not sending already does. A control that looks
+   like it will send and then refuses is worse than one that plainly does
+   something else. */
 const waAuto = () =>
   S.role === 'admin' && S.wa.loaded && S.wa.enabled && S.wa.reachable
-  && S.wa.state === 'authorized';
+  && S.wa.state === 'authorized' && !S.wa.paused;
 
 /* Asked once at sign-in so the buttons know which of the two they are before
    anybody presses one. Quiet on failure: not having an answer is the same as
@@ -8569,6 +8591,7 @@ async function waProbe() {
     S.wa.budget = r.budget || null;
     S.wa.until = r.suspendedUntil || null;
     S.wa.instance = r.instance || '';
+    S.wa.paused = r.paused === true;
   } catch (e) {
     // waAuto() stays false either way — the wa.me path — but the screen still
     // needs to tell "not configured" apart from "configured and not answering".
@@ -8583,7 +8606,11 @@ async function waProbe() {
    already saved by the time this runs, and a line that is down — or a soldier
    with no phone number on file — is not an error in the approval. It reports
    what happened and returns; the manual button is still there. */
-async function waNotify(phone, message) {
+/* `key` names the event — the record and which of the two messages — so the
+   server can refuse a second copy of the same one. Passing no key means no
+   gate, which is right for messages that are not tied to a record's own
+   "sent" tick. */
+async function waNotify(phone, message, key) {
   /* Why it did not send matters as much as that it did not. "שלחו הודעה
      במעקב ציוד" was the whole answer whatever the reason, so an approval that
      silently skipped the message looked identical to one that never had a
@@ -8595,13 +8622,14 @@ async function waNotify(phone, message) {
   const to = String(phone || '').trim();
   if (!to) return { sent: false, why: 'nophone' };
   try {
-    await api('/admin/wa/send', { method: 'POST', body: { phone: to, message } });
+    await api('/admin/wa/send', { method: 'POST', body: { phone: to, message, ...(key ? { key } : {}) } });
     return { sent: true };
   } catch (e) {
     const paced = e && e.data && e.data.paced;
+    const dup = e && e.data && e.data.duplicate;
     return {
       sent: false,
-      why: paced ? 'paced' : 'failed',
+      why: dup ? 'duplicate' : paced ? 'paced' : 'failed',
       waitMs: (e && e.data && e.data.waitMs) || 0,
       err: (e && e.message) || 'השליחה נכשלה',
     };
@@ -8661,10 +8689,19 @@ async function wqDrain() {
   while (WQ.jobs.length) {
     const j = WQ.jobs.shift();
     try {
-      await api('/admin/wa/send', { method: 'POST', body: { phone: j.phone, message: j.message } });
+      await api('/admin/wa/send', {
+        method: 'POST',
+        body: { phone: j.phone, message: j.message, key: `${j.rid}:${j.kind}` },
+      });
       WQ.sent++;
       markSent(j.rid, j.kind, 'auto');
     } catch (e) {
+      if (e && e.data && e.data.duplicate) {
+        // Already gone out. Not a failure, and not a reason to try again.
+        markSent(j.rid, j.kind, 'auto');
+        WQ.done++;
+        continue;
+      }
       const paced = e && e.data && e.data.paced;
       if (paced === 'gap') {
         // another tab, or a send by hand, took the slot. Wait it out and retry.
@@ -8697,6 +8734,7 @@ async function wqDrain() {
 const waNote = (r) =>
   r.sent ? ' · הודעה נשלחה'
     : r.why === 'nophone' ? ' · אין טלפון ברשומה — לא נשלחה הודעה'
+      : r.why === 'duplicate' ? ' · ההודעה כבר נשלחה קודם — לא נשלחה שוב'
       : r.why === 'paced' ? ` · ${r.err}`
       : r.why === 'failed' ? ` · ההודעה לא נשלחה (${r.err})`
         : r.why === 'noline' ? ' · הקו אינו מחובר — ההודעה לא נשלחה'
@@ -8707,17 +8745,35 @@ const waNote = (r) =>
    only after the provider has accepted it — a message that failed must not
    leave a ✓ behind, because the next person to look at the row would believe
    it and never send. */
-const waSendRec = (rid, kind) =>
+/* `resend` is true only from the control that asked first. Everything else —
+   the icon in the row, a second press, a queue that ran twice — arrives
+   without it and is refused by the server, which is the point: the tick on
+   the row described what had happened, it never prevented it happening
+   again. */
+const waSendRec = (rid, kind, resend = false) =>
   withBusy(async () => {
     const rec = findRec(rid);
     if (!rec || rec.damaged) return;
+    S.askDel = '';
     const d = rec.data;
     const phone = String(d.phone || '').trim();
     if (!phone) { toast('אין מספר טלפון ברשומה', true); return; }
     const message = kind === 'notified' ? waSignMsg(d) : waReturnMsg(d);
     try {
-      await api('/admin/wa/send', { method: 'POST', body: { phone, message } });
+      await api('/admin/wa/send', {
+        method: 'POST',
+        body: { phone, message, key: `${rid}:${kind}`, ...(resend ? { resend: true } : {}) },
+      });
     } catch (e) {
+      if (e && e.data && e.data.duplicate) {
+        /* Not a failure: the message did go out, earlier. The row may be
+           missing its tick — a save that lost a race, a different console —
+           so put it right rather than leave two screens disagreeing. */
+        markSent(rid, kind, 'auto');
+        renderConsole();
+        toast(e.message, true);
+        return;
+      }
       // The line can drop between the probe and the press. Say so plainly and
       // leave the record untouched.
       await waProbe();
@@ -8726,7 +8782,23 @@ const waSendRec = (rid, kind) =>
       return;
     }
     markSent(rid, kind, 'auto');
-    toast('ההודעה נשלחה');
+    toast(resend ? 'ההודעה נשלחה שוב' : 'ההודעה נשלחה');
+  });
+
+/* The switch. Everything else about sending can be argued with; this cannot,
+   so it is one call, and the screen redraws from what the server says rather
+   than from what was pressed. */
+const waPause = (on) =>
+  withBusy(async () => {
+    S.askDel = '';
+    try {
+      const r = await api(`/admin/wa/${on ? 'pause' : 'resume'}`, { method: 'POST' });
+      S.wa.paused = r.paused === true;
+      renderConsole();
+      toast(S.wa.paused ? 'שליחת הוואטסאפ מושהית' : 'שליחת הוואטסאפ חודשה');
+    } catch (e) {
+      toast((e && e.message) || 'הפעולה נכשלה', true);
+    }
   });
 
 const waTestSend = () =>
@@ -8804,6 +8876,24 @@ function renderWaTab() {
 
       ${S.wa.budget
         ? `<p class="field-hint">קצב השליחה: הודעה כל ${Math.round(S.wa.budget.gapMs / 1000)} שניות, עד ${S.wa.budget.hourMax} בשעה ו-${S.wa.budget.dayMax} ביום. נשלחו ${S.wa.budget.hour} בשעה האחרונה, ${S.wa.budget.day} ביממה.${WQ.running ? ` בתור כרגע: ${WQ.done} מתוך ${WQ.total}.` : ''}</p>`
+        : ''}
+
+      <div class="rec-actions">
+        ${S.wa.paused
+          /* Down is the safe direction, so coming back up is the one that
+             asks. Going down does not: the moment you want this is not the
+             moment for a dialogue. */
+          ? askBtn('wa-resume', 'wa-resume', 'חידוש שליחה',
+              'לחדש שליחת הודעות מהקו? כפתורי ההודעות יחזרו לשלוח מיד בלחיצה.',
+              { yes: 'חידוש', cls: 'btn ghost small' })
+          : `<button class="btn danger small" data-act="wa-pause">עצירת שליחה</button>`}
+      </div>
+
+      ${S.wa.paused
+        ? `<div class="callout risk">
+             <p class="callout-title">השליחה מושהית</p>
+             <p class="mb0">שום הודעה לא יוצאת מהקו. כפתורי ההודעות בכל המסכים פותחים צ׳אט מהמכשיר שלכם, כרגיל. ההשהיה נשמרת בשרת — היא נשארת גם אחרי רענון, וגם בקונסולה של מישהו אחר.</p>
+           </div>`
         : ''}
 
       ${S.wa.instance
@@ -10293,7 +10383,7 @@ const adminApprove = (rid) =>
     // The approval is saved; the message is a consequence of it, not a
     // condition for it. Sent from the copy taken before approval, because
     // approveCore may have merged the submission away.
-    const w = d ? await waNotify(d.phone, waSignMsg(d)) : { sent: false, why: 'skip' };
+    const w = d ? await waNotify(d.phone, waSignMsg(d), `${rid}:notified`) : { sent: false, why: 'skip' };
     if (w.sent) markSent(rid, 'notified', 'auto');
     renderConsole();
     toast((r.merged
@@ -10350,7 +10440,7 @@ const bulkApprove = () =>
         S.picked.delete(rid);
         /* Queued, not sent. The approval is finished either way; the message
            leaves behind it, at the line's pace. */
-        if (d && waAuto()) {
+        if (d && waAuto() && !d.notified) {
           const phone = String(d.phone || '').trim();
           if (phone) jobs.push({ rid, kind: 'notified', phone, message: waSignMsg(d) });
           else nophone++;
@@ -10646,7 +10736,7 @@ const adminCreditAll = (rid) =>
     rec.data.log.push({ a: 'credit', t: Date.now() });
     await saveRec(rec, 'זיכוי');
     renderConsole();
-    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited));
+    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited), `${rid}:returnNotified`);
     if (w.sent) markSent(rid, 'returnNotified', 'auto');
     renderConsole();
     toast(`זוכה במלואו: ${rec.data.name}${waNote(w)}`);
@@ -11278,6 +11368,9 @@ function dispatch(act, el) {
     case 'lic-clear': licClear(el.dataset.kind); break;
     case 'lic-shared': licUseShared(el.dataset.kind); break;
     case 'wa-refresh': waRefresh(); break;
+    case 'wa-pause': waPause(true); break;
+    case 'wa-resend': waSendRec(el.dataset.rid, el.dataset.kind, true); break;
+    case 'wa-resume': waPause(false); break;
     case 'wa-test-send': waTestSend(); break;
     // admin console
     // Moving between screens keeps a trail, so "חזרה" goes back the way you
