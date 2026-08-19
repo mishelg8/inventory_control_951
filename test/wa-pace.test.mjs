@@ -248,9 +248,11 @@ test('a rejected token says so, and names the instance it was rejected for', asy
   assert.match(j.error, /1/);
 });
 
-test('an unknown instance points at the id, not at the token', async () => {
+test('a 404 points at the host, since the service answers 401 for a bad id', async () => {
+  // 7107.api.greenapi.com returns 401 for an instance that does not exist, so
+  // 404 is not the unknown-instance case and must not be worded as one.
   const j = await (await (await waHarness({ httpStatus: 404 })).status()).json();
-  assert.match(j.error, /GREEN_ID/);
+  assert.match(j.error, /GREEN_API_URL/);
   assert.doesNotMatch(j.error, /GREEN_TOKEN/);
 });
 

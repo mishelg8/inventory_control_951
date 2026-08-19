@@ -1582,9 +1582,14 @@ export async function onRequest(context) {
            the URL, so the URL is never one either. */
         const waWhy = (r) =>
           r.status === 401 || r.status === 403
-            ? `הספק דחה את הטוקן. ודאו ש-GREEN_TOKEN שייך למופע ${id} — טוקן של מופע קודם ייראה בדיוק כך`
+            /* Measured against the real service, not guessed: 7107.api.greenapi.com
+               answers 401 both for a token that does not match the instance and
+               for an instance that does not exist. One code, two causes — so the
+               sentence names both, likeliest first, and prints the id it is
+               actually using so the second can be ruled out by looking. */
+            ? `הספק דחה את הפנייה (401). כמעט תמיד: GREEN_TOKEN אינו הטוקן של מופע ${id}. אותו קוד חוזר גם אם המזהה עצמו שגוי — ${id} הוא מה שמוגדר כאן`
             : r.status === 404
-              ? `הספק לא מכיר מופע ${id} — בדקו את GREEN_ID ואת כתובת המארח`
+              ? `הספק לא מכיר את הנתיב — בדקו את GREEN_API_URL`
               : r.status === 429
                 ? 'הספק מגביל את קצב הפניות. המתינו רגע ונסו שוב'
                 : r.status === 0
