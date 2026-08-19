@@ -8654,7 +8654,7 @@ async function waNotify(phone, message, key) {
 const WQ = { jobs: [], running: false, done: 0, sent: 0, total: 0, stopped: '' };
 const WQ_LEAD = 2000;   // a beat before the first one, so the approval toast can be read
 
-const waGap = () => (S.wa.budget && S.wa.budget.gapMs) || 15000;
+const waGap = () => (S.wa.budget && S.wa.budget.gapMs) || 60000;
 
 /* The queue talks through the same toast as everything else, so it yields:
    it writes only over its own line or an empty one. A message somebody's own

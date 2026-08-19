@@ -19,12 +19,22 @@ database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
 GREEN_API_URL = "https://7107.api.greenapi.com"
 GREEN_ID = "710722713591"
 
-# How fast the line is allowed to send. WhatsApp restricted this number once,
-# for approving twenty rows at once and firing twenty first-contact messages
-# inside a few seconds. The server holds these floors, not the browser, so a
-# reload or a second tab cannot reset them. Raise them slowly, and only after
-# the number has been sending quietly for a while — a fresh instance is the
-# most fragile it will ever be. Refusals fall back to the wa.me buttons.
-WA_GAP_MS = "15000"
-WA_HOUR_MAX = "40"
-WA_DAY_MAX = "150"
+# How fast the line is allowed to send. WhatsApp has now restricted this
+# number twice: the first time for approving twenty rows at once and firing
+# twenty first-contact messages inside a few seconds, the second time on
+# 19.8.2026 for a single message sent minutes after re-linking a fresh
+# instance — six hours, and the account could not open a new chat by hand
+# either. A number with that history is not a number to send bursts from.
+#
+# These are the provider's own figures for a number that is new or has just
+# been restricted: at most one message a minute, at most twenty new contacts
+# in a day. The server holds the floors, not the browser, so a reload or a
+# second tab cannot reset them.
+#
+# Raising them is a decision, not a default. Give the number weeks of quiet
+# ordinary use first — the counters below are the last thing standing between
+# a busy morning and a third restriction. Refusals fall back to the wa.me
+# buttons, which is not a failure: the chat opens on the sender's own phone.
+WA_GAP_MS = "60000"
+WA_HOUR_MAX = "10"
+WA_DAY_MAX = "20"

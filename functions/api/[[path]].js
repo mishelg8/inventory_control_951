@@ -135,18 +135,23 @@ async function sweepThrottle(db, now) {
    Three limits, read from wrangler.toml so they can be loosened later
    without changing code:
 
-     WA_GAP_MS    the floor between any two messages   (default 15s)
-     WA_HOUR_MAX  messages in a rolling hour           (default 40)
-     WA_DAY_MAX   messages in a rolling day            (default 150)
+     WA_GAP_MS    the floor between any two messages   (default 60s)
+     WA_HOUR_MAX  messages in a rolling hour           (default 10)
+     WA_DAY_MAX   messages in a rolling day            (default 20)
+
+   The defaults are the provider's figures for a number that is new or has
+   just been restricted, which is what this one is. They are deliberately
+   the same as wrangler.toml: a deploy that loses the vars should get the
+   careful pace, not the fast one.
 
    Being refused is not a failure state. Every refusal hands the caller back
    to the wa.me path — the chat opens on the sender's own phone, nothing
    passes through the provider — which is where this project started and is
    still the safer of the two. */
 const waPace = (env) => ({
-  gapMs:   Math.max(0, Number(env.WA_GAP_MS)   || 15000),
-  hourMax: Math.max(1, Number(env.WA_HOUR_MAX) || 40),
-  dayMax:  Math.max(1, Number(env.WA_DAY_MAX)  || 150),
+  gapMs:   Math.max(0, Number(env.WA_GAP_MS)   || 60000),
+  hourMax: Math.max(1, Number(env.WA_HOUR_MAX) || 10),
+  dayMax:  Math.max(1, Number(env.WA_DAY_MAX)  || 20),
 });
 
 /* Claims the next slot, or says how long until there is one. Conditional
