@@ -278,12 +278,53 @@ test('no answer at all reads as no answer, not as a bad token', async () => {
   assert.match(j.error, /אין תשובה מהספק/);
 });
 
-test('the answer never carries the token', async () => {
+test('the answer names the shape of the request but never the token', async () => {
+  // The URL is shown on purpose — it is the evidence — with the secret
+  // replaced by the word <token>. What must never appear is the value.
   for (const httpStatus of [401, 404, 500]) {
     const wa = await waHarness({ httpStatus });
     const body = await (await wa.status()).text();
-    // GREEN_TOKEN is the literal 't' in this harness; the name may appear,
-    // the value may not, and neither may the URL that holds it.
-    assert.doesNotMatch(body, /waInstance/, `status ${httpStatus} leaked the URL`);
+    assert.match(body, /waInstance1\/getStateInstance\/<token>/, `status ${httpStatus} lost the shape`);
+    assert.doesNotMatch(body, /getStateInstance\/t["/]/, `status ${httpStatus} leaked the token`);
   }
+});
+
+test('the evidence block describes the token and never prints it', async () => {
+  const { onRequest } = await import(join(root, 'functions/api/[[path]].js'));
+  const sq = freshDb();
+  sq.prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?,?,?,?,?)')
+    .run(TOKEN, Date.now() + 3600000, 'admin', 'admin.951', '*');
+  const secret = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 ';   // note the trailing space
+  globalThis.fetch = async () => new Response('{"message":"Not Found"}', { status: 404 });
+  const r = await onRequest({
+    env: { DB: d1(sq), GREEN_API_URL: 'https://x.example', GREEN_ID: '77', GREEN_TOKEN: secret },
+    params: { path: ['admin', 'wa', 'status'] },
+    request: new Request('https://tzayad.pages.dev/api/admin/wa/status', { headers: { Cookie: 'sid=' + TOKEN } }),
+  });
+  const body = await r.text();
+  const j = JSON.parse(body);
+
+  assert.ok(!body.includes(secret.trim()), 'the token was printed');
+  assert.ok(!body.includes('/waInstance77/getStateInstance/a1b2'), 'the real URL was printed');
+  assert.equal(j.shape.url, 'https://x.example/waInstance77/getStateInstance/<token>');
+  assert.equal(j.shape.tokenLen, secret.length);
+  // a space that came along with a paste is the thing worth spotting
+  assert.equal(j.shape.tokenPlain, false);
+  assert.match(j.said, /Not Found/);
+});
+
+test("a long run of characters in the provider's answer is redacted before it is shown", async () => {
+  const { onRequest } = await import(join(root, 'functions/api/[[path]].js'));
+  const sq = freshDb();
+  sq.prepare('INSERT INTO sessions (token, expires, role, username, tabs) VALUES (?,?,?,?,?)')
+    .run(TOKEN, Date.now() + 3600000, 'admin', 'admin.951', '*');
+  const echoed = 'bad token abcdefghijklmnopqrstuvwxyz012345 here';
+  globalThis.fetch = async () => new Response(echoed, { status: 401 });
+  const r = await onRequest({
+    env: { DB: d1(sq), GREEN_API_URL: 'https://x.example', GREEN_ID: '77', GREEN_TOKEN: 'tok' },
+    params: { path: ['admin', 'wa', 'status'] },
+    request: new Request('https://tzayad.pages.dev/api/admin/wa/status', { headers: { Cookie: 'sid=' + TOKEN } }),
+  });
+  const j = await r.json();
+  assert.equal(j.said, 'bad token … here');
 });

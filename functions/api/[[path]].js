@@ -1564,11 +1564,29 @@ export async function onRequest(context) {
             const text = await r.text();
             let data;
             try { data = JSON.parse(text); } catch { data = null; }
-            return { ok: r.ok, status: r.status, data };
+            return { ok: r.ok, status: r.status, data, text };
           } catch {
-            return { ok: false, status: 0, data: null };
+            return { ok: false, status: 0, data: null, text: '' };
           }
         };
+
+        /* What the provider actually said, safe to put on a screen.
+           Any long run of letters and digits is replaced before it leaves
+           here: the service does not echo the token in its errors, but a
+           diagnostic that could ever print a secret is not one worth having.
+           Trimmed hard, because this is a hint under a sentence, not a log. */
+        const waSaid = (t) =>
+          String(t || '').replace(/[A-Za-z0-9]{20,}/g, '…').replace(/\s+/g, ' ').trim().slice(0, 180);
+
+        /* The shape of the request, with the token replaced by a description
+           of itself. Length and character class are not the secret, and they
+           answer the two questions a wrong token actually raises: is anything
+           there at all, and did a newline or a space come along with it. */
+        const waShape = (method) => ({
+          url: `${base}/waInstance${id}/${method}/<token>`,
+          tokenLen: token.length,
+          tokenPlain: /^[A-Za-z0-9]+$/.test(token),
+        });
 
         /* Six different faults used to arrive on the screen as one sentence,
            "השירות אינו מגיב", and somebody stood in front of a console that
@@ -1601,8 +1619,11 @@ export async function onRequest(context) {
         if (method === 'GET' && seg[2] === 'status') {
           const r = await call('getStateInstance');
           if (!r.ok) {
-            console.error('wa status', r.status);   // no URL: the URL carries the token
-            return json({ enabled: true, reachable: false, instance: id, providerStatus: r.status, error: waWhy(r) }, 502);
+            console.error('wa status', r.status, waSaid(r.text));   // no URL: the URL carries the token
+            return json({
+              enabled: true, reachable: false, instance: id, providerStatus: r.status,
+              error: waWhy(r), said: waSaid(r.text), shape: waShape('getStateInstance'),
+            }, 502);
           }
           const state = (r.data && r.data.stateInstance) || 'unknown';
           const pace = waPace(env);
@@ -1639,8 +1660,11 @@ export async function onRequest(context) {
         if (method === 'GET' && seg[2] === 'qr') {
           const r = await call('qr');
           if (!r.ok) {
-            console.error('wa qr', r.status);
-            return json({ enabled: true, reachable: false, providerStatus: r.status, error: waWhy(r) }, 502);
+            console.error('wa qr', r.status, waSaid(r.text));
+            return json({
+              enabled: true, reachable: false, instance: id, providerStatus: r.status,
+              error: waWhy(r), said: waSaid(r.text), shape: waShape('qr'),
+            }, 502);
           }
           // { type: 'qrCode' | 'alreadyLogged' | 'error', message: <base64 png | text> }
           return json({ enabled: true, reachable: true, ...(r.data || {}) });

@@ -281,6 +281,8 @@ const S = {
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
         qr: null, qrErr: null, err: null, to: '', body: '', busy: false,
         instance: '',               // which instance the server is talking to
+        said: '',                   // what the provider answered, in its own words
+        shape: null,                // the request's shape, with the token described not shown
         budget: null,               // how much of the hour and the day is spent
         until: null },              // when WhatsApp's own restriction lifts
 
@@ -8514,6 +8516,8 @@ async function waRefresh() {
        The 502 body says which of the two it is; believe it. */
     if (e && e.data && e.data.enabled !== undefined) S.wa.enabled = e.data.enabled !== false;
     if (e && e.data && e.data.instance) S.wa.instance = e.data.instance;
+    S.wa.said = (e && e.data && e.data.said) || '';
+    S.wa.shape = (e && e.data && e.data.shape) || null;
     S.wa.reachable = false;
     S.wa.err = (e && e.message) || 'השירות אינו מגיב';
   }
@@ -8804,6 +8808,23 @@ function renderWaTab() {
 
       ${S.wa.instance
         ? `<p class="field-hint">מדבר עם מופע <span class="num">${esc(S.wa.instance)}</span> אצל הספק. אם זה לא המופע שאתם מסתכלים עליו בלוח של הספק — זה ההסבר.</p>`
+        : ''}
+
+      ${!S.wa.reachable && S.wa.shape
+        /* The provider's own words, and the shape of what was sent to it.
+           A mapped sentence is a guess about a status code; this is the
+           evidence. The token is described — how long, and whether anything
+           other than letters and digits came along with it — and never
+           printed. */
+        ? `<div class="callout">
+             <p class="callout-title">מה בדיוק נשלח ומה חזר</p>
+             <p>נשלח אל <code>${esc(S.wa.shape.url)}</code></p>
+             <p>הטוקן שמוגדר: <strong>${S.wa.shape.tokenLen}</strong> תווים${
+               S.wa.shape.tokenPlain ? ', אותיות וספרות בלבד' : ' — <strong>ומכיל תו שאינו אות או ספרה</strong> (רווח או שורה חדשה שנדבקו בהעתקה)'}.</p>
+             <p class="mb0">${S.wa.said
+               ? `הספק ענה: <code>${esc(S.wa.said)}</code>`
+               : 'הספק לא צירף הסבר לתשובה.'}</p>
+           </div>`
         : ''}
 
       ${S.wa.qr
