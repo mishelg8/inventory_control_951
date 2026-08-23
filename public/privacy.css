@@ -1,0 +1,66 @@
+/* The privacy page, and only it.
+ *
+ * A separate sheet rather than lines added to styles.css: this page is one
+ * long column of prose, which the console never is, and the console's own
+ * sheet should not grow rules that exist for a document nobody reads twice.
+ * The tokens are shared, so it inherits the palette and the type scale.
+ *
+ * No inline styles anywhere — test/csp-check.mjs refuses them, and the app
+ * ships under `style-src 'self'`. */
+
+.doc {
+  max-width: 46rem;
+  margin-block: 1.5rem 3rem;
+  color: var(--ink-2);
+  line-height: 1.75;
+}
+
+.doc-date {
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  margin-block-end: 1.5rem;
+}
+
+.doc section { margin-block-end: 2rem; }
+
+.doc h2 {
+  font-size: var(--t-lg);
+  color: var(--ink);
+  margin-block-end: 0.5rem;
+}
+
+.doc p { margin-block: 0 0.85rem; }
+
+.doc ul {
+  margin-block: 0 0.85rem;
+  padding-inline-start: 1.25rem;
+}
+
+.doc li { margin-block-end: 0.3rem; }
+
+/* The opening summary carries the one fact that matters, so it is given the
+   weight of a card rather than a paragraph. */
+.doc-lead {
+  background: var(--surface);
+  border: 1px solid var(--bg-2);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+}
+
+.doc-lead h2 { margin-block-start: 0; }
+.doc-lead p:last-child { margin-block-end: 0; }
+
+.doc-rule {
+  border: 0;
+  border-block-start: 1px solid var(--bg-2);
+  margin-block: 2.5rem;
+}
+
+/* The English half runs left-to-right inside a right-to-left document. */
+.doc-en { text-align: left; }
+
+.doc-foot {
+  margin-block-start: 2.5rem;
+  padding-block-start: 1.25rem;
+  border-block-start: 1px solid var(--bg-2);
+}

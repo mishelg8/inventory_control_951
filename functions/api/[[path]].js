@@ -1,6 +1,19 @@
 // Single catch-all API handler for /api/*.
 // The server stores ciphertext only: no name, personal number, or phone ever
 // arrives here in plaintext. See PLAN.md §4 and §6 for the contract.
+//
+// The WhatsApp Cloud integration is the one place that receives plaintext
+// from outside — Meta sends it — and it seals what it receives before writing
+// it down. The contract above still holds for anything that reaches storage.
+// Its infrastructure lives under lib/whatsapp/; this file only routes to it.
+
+import { waConfig } from '../../lib/whatsapp/config.js';
+import { waCloudContext, sendTextMessage, sendTemplateMessage } from '../../lib/whatsapp/service.js';
+import {
+  listConversations, listMessages, getConversation, clearUnread, getMediaRow,
+} from '../../lib/whatsapp/store.js';
+import { waClient } from '../../lib/whatsapp/client.js';
+import { userMessage as userFacingMeta } from '../../lib/whatsapp/errors.js';
 
 const SESSION_MS = 60 * 60 * 1000;        // 1 hour, refreshed on each authed request
 // ...but not forever. A console that is used all day used to hold its session
@@ -203,6 +216,22 @@ async function waUntil(db, k, now) {
 // admin  — everything, including users, audit and the trash
 // editor  — may read AND change, but only on the screens granted to them
 // viewer  — may read only, and only on the screens granted to them
+/* How many {{n}} placeholders a template body expects.
+   Meta returns the components as authored, and a template sent with the wrong
+   number of parameters is rejected with 132000 — after the round trip, and
+   after the console has already told someone it was sent. Counting here lets
+   the screen ask for the right number of values in the first place. */
+function countTemplateParams(components) {
+  let n = 0;
+  for (const c of Array.isArray(components) ? components : []) {
+    if (!c || c.type !== 'BODY' || typeof c.text !== 'string') continue;
+    const seen = new Set();
+    for (const m of c.text.matchAll(/\{\{(\d+)\}\}/g)) seen.add(m[1]);
+    n = Math.max(n, seen.size);
+  }
+  return n;
+}
+
 const ROLES = ['admin', 'editor', 'viewer'];
 const isRestricted = (role) => role === 'editor' || role === 'viewer';
 
@@ -1544,6 +1573,164 @@ export async function onRequest(context) {
          on their way out and are not written down on this side: not to D1,
          not to a log line. They are, however, read by GREEN-API, which is the
          cost of not owning the machine. */
+      /* ── The official Cloud API ──────────────────────────────────────
+         Meta's own platform, beside the gateway rather than instead of it.
+         Everything personal that comes back from here is sealed on arrival
+         by the webhook, so these endpoints hand the console ciphertext and
+         the console opens it — the same shape as every other read in this
+         file. The access token is never among the things returned. */
+      if (seg[1] === 'wa' && seg[2] === 'cloud' && seg.length >= 4) {
+        if (session.role !== 'admin') return err(403, 'אין הרשאה');
+        const act = seg[3];
+
+        // GET /api/admin/wa/cloud/status
+        if (method === 'GET' && act === 'status' && seg.length === 4) {
+          const { cfg, client, paused } = await waCloudContext(db, env);
+          if (!cfg.ready) {
+            return json({
+              ready: false, missing: cfg.missing, paused,
+              version: cfg.version, phoneNumberId: cfg.phoneNumberId || null,
+              wabaId: cfg.wabaId || null,
+              templates: cfg.templates, templateLang: cfg.templateLang,
+            });
+          }
+          /* Two questions worth answering on a diagnostics screen, and both
+             are questions about identity: is this the number I think it is,
+             and is it on the account I think it is. Answered by asking Meta,
+             because the alternative is trusting the same environment
+             variable that would be wrong. */
+          const [num, waba] = await Promise.all([client.getPhoneNumber(), client.listWabaNumbers()]);
+          const listed = (waba.ok && waba.data && Array.isArray(waba.data.data) ? waba.data.data : [])
+            .map((n) => ({ id: String(n.id || ''), display: String(n.display_phone_number || '') }));
+          return json({
+            ready: true, paused, version: cfg.version,
+            wabaId: cfg.wabaId,
+            phoneNumberId: cfg.phoneNumberId,
+            reachable: num.ok,
+            error: num.ok ? null : userFacingMeta(num.err),
+            phone: num.ok && num.data ? {
+              id: String(num.data.id || ''),
+              display: String(num.data.display_phone_number || ''),
+              name: String(num.data.verified_name || ''),
+              quality: String(num.data.quality_rating || ''),
+            } : null,
+            // Does the configured number actually belong to the configured
+            // account? A yes here is what rules out the duplicate WABA.
+            onWaba: listed.some((n) => n.id === cfg.phoneNumberId),
+            numbers: listed,
+            pace: cfg.pace,
+            templates: cfg.templates,
+            templateLang: cfg.templateLang,
+          }, num.ok ? 200 : 502);
+        }
+
+        // GET /api/admin/wa/cloud/templates — what Meta has actually approved
+        if (method === 'GET' && act === 'templates' && seg.length === 4) {
+          const cfg = waConfig(env);
+          if (!cfg.ready) return json({ ready: false, missing: cfg.missing });
+          const r = await waClient(cfg).listTemplates();
+          if (!r.ok) return json({ ready: true, error: userFacingMeta(r.err) }, 502);
+          const rows = (r.data && Array.isArray(r.data.data) ? r.data.data : []).map((t) => ({
+            name: String(t.name || ''),
+            status: String(t.status || ''),
+            category: String(t.category || ''),
+            language: String(t.language || ''),
+            // How many {{n}} the body expects, so the console can ask for
+            // exactly that many and not discover the mismatch from Meta.
+            params: countTemplateParams(t.components),
+          }));
+          return json({ ready: true, templates: rows });
+        }
+
+        // GET /api/admin/wa/cloud/conversations
+        if (method === 'GET' && act === 'conversations' && seg.length === 4) {
+          const r = await listConversations(db, 60);
+          return json({ conversations: (r && r.results) || [] });
+        }
+
+        // GET /api/admin/wa/cloud/messages/<conv>
+        if (method === 'GET' && act === 'messages' && seg.length === 5) {
+          if (!isHex(seg[4], HEX32)) return err(400, 'בקשה לא תקינה');
+          const conv = await getConversation(db, seg[4]);
+          if (!conv) return err(404, 'שיחה לא נמצאה');
+          const r = await listMessages(db, seg[4], 200);
+          return json({
+            conv: {
+              id: conv.id,
+              windowExpires: conv.window_expires,
+              lastInboundAt: conv.last_inbound_at,
+              unread: conv.unread,
+            },
+            messages: (r && r.results) || [],
+          });
+        }
+
+        // GET /api/admin/wa/cloud/media/<mediaId> — sealed bytes, never Meta's URL
+        if (method === 'GET' && act === 'media' && seg.length === 5) {
+          if (!/^[A-Za-z0-9_.-]{1,200}$/.test(seg[4])) return err(400, 'בקשה לא תקינה');
+          const row = await getMediaRow(db, seg[4]);
+          if (!row) return err(404, 'המדיה אינה שמורה');
+          return json({ mime: row.mime, bytes: row.bytes, ek: row.ek, iv: row.iv, ct: row.ct });
+        }
+
+        // POST /api/admin/wa/cloud/read/<conv>
+        if (method === 'POST' && act === 'read' && seg.length === 5) {
+          if (!isHex(seg[4], HEX32)) return err(400, 'בקשה לא תקינה');
+          await clearUnread(db, seg[4]);
+          return json({ ok: true });
+        }
+
+        /* "Has this exact message already gone to this soldier."
+           Built for the gateway, and the reason for it never had anything to
+           do with which channel carries the text: a double press, a loop or
+           a queued job that ran twice sends the same sentence again, and two
+           identical messages are what a recipient reports. The key is the
+           record id and the message kind — identifiers only, no name, no
+           number, no text — and it is recorded only once the send succeeded,
+           so a failure does not block the retry that would deliver. */
+        const dupKey = async (b) => {
+          const k = typeof b.key === 'string' && /^[0-9a-f]{32}:(notified|returnNotified)$/.test(b.key)
+            ? `wa:sent:${b.key}` : '';
+          if (!k || b.resend === true) return { k, blocked: false };
+          const seen = await db.prepare('SELECT until FROM throttle WHERE k = ?1').bind(k).first();
+          return { k, blocked: !!(seen && seen.until > now) };
+        };
+
+        // POST /api/admin/wa/cloud/send — free text, inside the window only
+        if (method === 'POST' && act === 'send' && seg.length === 4) {
+          const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const dup = await dupKey(b);
+          if (dup.blocked) {
+            return json({ duplicate: true, error: 'ההודעה הזו כבר נשלחה לחייל הזה. לשליחה חוזרת — דרך פירוט הרשומה' }, 409);
+          }
+          const r = await sendTextMessage(db, env, b.to, b.text, {
+            replyTo: typeof b.replyTo === 'string' ? b.replyTo.slice(0, 200) : undefined,
+          });
+          if (dup.k && r.ok) await waBump(db, dup.k, 604800000, now);
+          await audit(db, now, session, 'wa-cloud-send', null, null);
+          return json(r, r.ok ? 200 : (r.status || 502));
+        }
+
+        // POST /api/admin/wa/cloud/template — the business-initiated path
+        if (method === 'POST' && act === 'template' && seg.length === 4) {
+          const b = await readBody(request);
+          if (!b) return err(400, 'בקשה לא תקינה');
+          const dup = await dupKey(b);
+          if (dup.blocked) {
+            return json({ duplicate: true, error: 'ההודעה הזו כבר נשלחה לחייל הזה. לשליחה חוזרת — דרך פירוט הרשומה' }, 409);
+          }
+          const r = await sendTemplateMessage(db, env, b.to, b.name, b.language, b.components, {
+            replyTo: typeof b.replyTo === 'string' ? b.replyTo.slice(0, 200) : undefined,
+          });
+          if (dup.k && r.ok) await waBump(db, dup.k, 604800000, now);
+          await audit(db, now, session, 'wa-cloud-template', null, null);
+          return json(r, r.ok ? 200 : (r.status || 502));
+        }
+
+        return err(404, 'נתיב לא קיים');
+      }
+
       if (seg[1] === 'wa' && seg.length === 3) {
         /* The emergency stop. Read before anything else on this path, and
            held on the server rather than in a tab: a pause that lives in a

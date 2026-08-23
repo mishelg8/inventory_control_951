@@ -7,34 +7,68 @@ binding = "DB"
 database_name = "tzayad"
 database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
 
-# The WhatsApp service (GREEN-API). The instance id and its host are not
-# secrets — they identify which instance, and the API refuses every call that
-# does not also carry the token. The token itself is an encrypted secret set
-# with `wrangler pages secret put GREEN_TOKEN`, and it must never appear here.
-#
-# With any of the three missing the console says so plainly and the wa.me
-# buttons keep working, which is the state this project was in before and the
-# state it falls back to.
 [vars]
-GREEN_API_URL = "https://7107.api.greenapi.com"
-GREEN_ID = "710722713591"
 
-# How fast the line is allowed to send. WhatsApp has now restricted this
-# number twice: the first time for approving twenty rows at once and firing
-# twenty first-contact messages inside a few seconds, the second time on
-# 19.8.2026 for a single message sent minutes after re-linking a fresh
-# instance — six hours, and the account could not open a new chat by hand
-# either. A number with that history is not a number to send bursts from.
+# ── WhatsApp, official ────────────────────────────────────────────────
+# Meta's WhatsApp Cloud API. The account and the number are identifiers, not
+# secrets: every call must also carry the access token, and the token is a
+# Pages secret that never appears in this file or in any URL.
 #
-# These are the provider's own figures for a number that is new or has just
-# been restricted: at most one message a minute, at most twenty new contacts
-# in a day. The server holds the floors, not the browser, so a reload or a
-# second tab cannot reset them.
+#   WHATSAPP_ACCESS_TOKEN    a system-user token, set with
+#                            `wrangler pages secret put WHATSAPP_ACCESS_TOKEN`
+#   WHATSAPP_VERIFY_TOKEN    the string Meta echoes back during the webhook
+#                            handshake; the same value goes in both places
+#   WHATSAPP_APP_SECRET      signs every incoming webhook. Without it the
+#                            endpoint accepts nothing at all — see
+#                            functions/whatsapp/webhook.js
 #
-# Raising them is a decision, not a default. Give the number weeks of quiet
-# ordinary use first — the counters below are the last thing standing between
-# a busy morning and a third restriction. Refusals fall back to the wa.me
-# buttons, which is not a failure: the chat opens on the sender's own phone.
+# All three are secrets. A Pages secret only reaches the running Worker on a
+# NEW deployment, so setting one and stopping there changes nothing.
+WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
+WHATSAPP_BUSINESS_ACCOUNT_ID = "28252667600994107"
+
+# One version string for the whole integration. Measured rather than assumed:
+# v26.0 is the newest version that still resolves a versioned Graph path.
+META_GRAPH_API_VERSION = "v26.0"
+
+# Default country for a bare local number. Not an assumption about people —
+# public/lib/phone.js takes any region, and a number that arrives with a plus
+# is never touched.
+WHATSAPP_DEFAULT_REGION = "IL"
+
+# Which approved template carries which message. Names, not text: the wording
+# lives at Meta and is reviewed by Meta, and a template that gets rejected is
+# resubmitted under a new name — Meta reserves a deleted name for 30 days —
+# without touching a line of code.
+#
+#   SIGNED   a registration was accepted        {{1}} name, {{2}} kit
+#   CREDIT   equipment came back                {{1}} name, {{2}} credited, {{3}} what is left
+#   UPDATE   everything else, one sentence      {{1}} name, {{2}} the sentence
+WA_TPL_SIGNED = "tzayad_signed"
+WA_TPL_CREDIT = "tzayad_credit"
+WA_TPL_UPDATE = "tzayad_update"
+WA_TPL_LANG = "he"
+
+# Pacing for the official channel. Meta's own messaging tier is the real
+# limit and it is generous; these exist so a loop in the console cannot spend
+# a day's budget in a minute. They are NOT the gateway's numbers below, which
+# were set by what gets an unofficial line restricted.
+WA_CLOUD_GAP_MS = "1000"
+WA_CLOUD_HOUR_MAX = "200"
+WA_CLOUD_DAY_MAX = "1000"
+
+# ── WhatsApp, the old gateway ─────────────────────────────────────────
+# GREEN-API is retired. The number that ran through it, +972-52-239-8415, is
+# now registered on the Cloud API above, and a number cannot be on both — so
+# the instance was dead the moment it was registered, not when these lines
+# were removed.
+#
+# The code path is still here and still works: without GREEN_API_URL, GREEN_ID
+# and GREEN_TOKEN it reports itself unconfigured and the wa.me buttons carry
+# on, which is the state this project ran in for its first year. To bring a
+# gateway back, set the three values and deploy.
+#
+# The floors below still apply to it if it ever returns.
 WA_GAP_MS = "60000"
 WA_HOUR_MAX = "10"
 WA_DAY_MAX = "20"

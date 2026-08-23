@@ -10,6 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // being listed here would be the one place an inline style could slip back in.
 const files = [
   'public/app.js', 'public/index.html', 'public/styles.css', 'public/sw.js',
+  'public/privacy.html', 'public/privacy.css',
   ...readdirSync(join(root, 'public/lib')).filter((f) => f.endsWith('.js')).map((f) => `public/lib/${f}`),
 ];
 const problems = [];

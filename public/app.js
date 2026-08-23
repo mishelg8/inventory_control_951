@@ -278,6 +278,12 @@ const S = {
   licExp: '',                   // civilian licence expiry, ISO yyyy-mm-dd
   licPhoto: {},                 // kind -> { bytes, size, preview } pending upload
   sharedPhoto: null,            // a picture handed over by Android's share sheet
+  /* The official channel, beside the gateway's own state above. Kept
+     separate rather than folded in: they fail in different ways and for
+     different reasons, and a screen that says "not connected" without saying
+     which one is a screen that sends somebody to check the wrong thing. */
+  wac: { loaded: false, ready: false, reachable: false, paused: false, missing: [],
+         templates: {}, lang: 'he', phone: null, onWaba: false, err: null },
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
         qr: null, qrErr: null, err: null, to: '', body: '', busy: false,
         instance: '',               // which instance the server is talking to
@@ -3315,6 +3321,65 @@ const signBody = (d) => {
 const waSignMsg = (d) =>
   waMsg(SIGN_BODY[d.kind] ? d.kind : 'full', d.name, signBody(d));
 
+/* ── The same messages, as approved templates ──────────────────────────
+   The official platform will not carry the text above to somebody who has
+   not written first. What it carries is a template Meta has read and
+   approved, with the changing parts passed as parameters — so every message
+   here exists twice: once as the sentence a person wrote, and once as the
+   values that fill the sentence Meta approved.
+
+   Two rules shape the parameters, and both come from Meta rather than from
+   taste. A parameter may not contain a line break, so the kit list that
+   reads as bullets over several lines becomes one line separated by dots.
+   And a parameter may not be empty, so every one of them has something to
+   fall back on. Breaking either is error 132000, after the round trip, on a
+   message the console has already said it sent. */
+const tplVal = (v, fallback) => {
+  const flat = String(v == null ? '' : v)
+    .replace(/\s*\n\s*/g, ' • ')     // bullets over lines become one line
+    .replace(/\s{2,}/g, ' ')         // four spaces in a row is also refused
+    .trim();
+  return flat || fallback;
+};
+
+// The greeting is a first name. It is what the old message used, and a
+// template parameter is not the place to widen what is sent about a person.
+const tplName = (name) => tplVal(String(name || '').split(/\s+/)[0], 'חייל');
+
+const tplItems = (pairs) =>
+  pairs.map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' • ');
+
+const tplBody = (values) => [
+  { type: 'body', parameters: values.map((text) => ({ type: 'text', text })) },
+];
+
+/* Which template carries which event, and with what.
+   `update` is the catch-all: one sentence, the same sentence the gateway
+   message would have carried, minus its heading. */
+const tplSigned = (d) => ({
+  tpl: 'signed',
+  values: [tplName(d.name), tplVal(tplItems(signedItems(d)), 'אין פריטים רשומים')],
+});
+
+const tplCredit = (d, credited) => {
+  const left = heldItems(d);
+  return {
+    tpl: 'credit',
+    values: [
+      tplName(d.name),
+      tplVal(tplItems(credited || []), 'הציוד שהוחזר'),
+      left.length
+        ? tplVal(`עדיין רשום עליך ${tplItems(left)}`, 'עדיין רשום עליך ציוד')
+        : 'אין ציוד נוסף הרשום עליך — החשבון סגור',
+    ],
+  };
+};
+
+const tplUpdate = (d, sentence) => ({
+  tpl: 'update',
+  values: [tplName(d.name), tplVal(sentence, 'יש עדכון ברישום הציוד שלך')],
+});
+
 /* Kit added from the console after the soldier has left. He is not standing
    there to see it written down, which is exactly why he is told — and why the
    message names what was added rather than sending him to ask. */
@@ -5903,7 +5968,8 @@ const depApprove = (id) =>
       toast('הפריטים נקלטו אך סימון הבקשה נכשל — רעננו ונסו שוב', true);
       throw e;
     }
-    const w = await waNotify(d.phone, waDepositMsg(d));
+    const w = await waNotify(d.phone, waDepositMsg(d), null,
+      tplUpdate(d, 'הנשק שאפסנת נקלט בארמון ורשום שם על שמך'));
     toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון${waNote(w)}`);
   });
 
@@ -7915,7 +7981,9 @@ const fltSetState = (id, next) =>
     // Only the two states that are an answer to the soldier are worth a
     // message. Reopening is an internal move and nobody is waiting to hear it.
     const w = (next === 'done' || next === 'partial')
-      ? await waNotify(rec.data && rec.data.phone, waFaultMsg(rec.data || {}, next))
+      ? await waNotify(rec.data && rec.data.phone, waFaultMsg(rec.data || {}, next), null,
+          tplUpdate(rec.data || {},
+            next === 'done' ? 'התקלה שדיווחת טופלה' : 'התקלה שדיווחת הועברה לטיפול'))
       : { sent: false, why: 'skip' };
     toast((next === 'done' ? 'התקלה סומנה כטופלה'
       : next === 'partial' ? 'סומן כהועבר לטיפול'
@@ -8572,15 +8640,58 @@ async function waQr() {
    what every other reason for not sending already does. A control that looks
    like it will send and then refuses is worse than one that plainly does
    something else. */
-const waAuto = () =>
-  S.role === 'admin' && S.wa.loaded && S.wa.enabled && S.wa.reachable
+/* "Will a press send by itself, or open a chat on this phone."
+   True when either channel can carry it. Everything on the screens below asks
+   this and does not care which one answers — the choice is made once, in
+   waNotify, and the wa.me fallback is the same fallback it always was. */
+const waGatewayAuto = () =>
+  S.wa.loaded && S.wa.enabled && S.wa.reachable
   && S.wa.state === 'authorized' && !S.wa.paused;
+
+const waAuto = () => S.role === 'admin' && (wacReady() || waGatewayAuto());
 
 /* Asked once at sign-in so the buttons know which of the two they are before
    anybody presses one. Quiet on failure: not having an answer is the same as
    "no automatic line", which is the safe direction to be wrong in. */
+/* The official channel's own status. Cheap enough to ask beside the
+   gateway's, and the answer decides whether a press sends a template or opens
+   a chat on the admin's phone. */
+async function wacProbe() {
+  if (S.role !== 'admin') return;
+  try {
+    const r = await api('/admin/wa/cloud/status');
+    S.wac.loaded = true;
+    S.wac.ready = r.ready === true;
+    S.wac.reachable = r.reachable === true;
+    S.wac.paused = r.paused === true;
+    S.wac.missing = Array.isArray(r.missing) ? r.missing : [];
+    S.wac.templates = r.templates || {};
+    S.wac.lang = r.templateLang || 'he';
+    S.wac.phone = r.phone || null;
+    S.wac.onWaba = r.onWaba === true;
+    S.wac.err = r.error || null;
+  } catch (e) {
+    S.wac.loaded = true;
+    S.wac.ready = !!(e && e.data && e.data.ready);
+    S.wac.reachable = false;
+    S.wac.paused = !!(e && e.data && e.data.paused);
+    S.wac.missing = (e && e.data && e.data.missing) || [];
+    S.wac.templates = (e && e.data && e.data.templates) || {};
+    S.wac.lang = (e && e.data && e.data.templateLang) || 'he';
+    S.wac.err = (e && e.message) || 'השירות אינו מגיב';
+  }
+}
+
+/* Sending on the official channel is possible when it is configured, Meta
+   answers, and nobody has pulled the switch. The templates being approved is
+   not something this can see — Meta says so only when a send is refused —
+   so a rejected template surfaces as a failed send with Meta's own reason,
+   which is the honest place for it. */
+const wacReady = () => S.wac.ready && S.wac.reachable && !S.wac.paused;
+
 async function waProbe() {
   if (S.role !== 'admin') return;
+  await wacProbe();
   try {
     const r = await api('/admin/wa/status');
     S.wa.loaded = true;
@@ -8610,7 +8721,7 @@ async function waProbe() {
    server can refuse a second copy of the same one. Passing no key means no
    gate, which is right for messages that are not tied to a record's own
    "sent" tick. */
-async function waNotify(phone, message, key) {
+async function waNotify(phone, message, key, tpl) {
   /* Why it did not send matters as much as that it did not. "שלחו הודעה
      במעקב ציוד" was the whole answer whatever the reason, so an approval that
      silently skipped the message looked identical to one that never had a
@@ -8622,7 +8733,26 @@ async function waNotify(phone, message, key) {
   const to = String(phone || '').trim();
   if (!to) return { sent: false, why: 'nophone' };
   try {
-    await api('/admin/wa/send', { method: 'POST', body: { phone: to, message, ...(key ? { key } : {}) } });
+    /* Two channels, one decision, made here so that nothing above this line
+       has to know which is carrying the message.
+
+       The official platform goes first when it is up, and it goes as a
+       template: a business-initiated message to somebody who has not written
+       first is not allowed to be free text, and no arrangement of ours
+       changes that. `message` is still built and still used — by the gateway
+       if it is the one answering, and by the wa.me link if neither is. */
+    const name = tpl && S.wac.templates && S.wac.templates[tpl.tpl];
+    if (wacReady() && name) {
+      await api('/admin/wa/cloud/template', {
+        method: 'POST',
+        body: {
+          to, name, language: S.wac.lang, components: tplBody(tpl.values),
+          ...(key ? { key } : {}),
+        },
+      });
+    } else {
+      await api('/admin/wa/send', { method: 'POST', body: { phone: to, message, ...(key ? { key } : {}) } });
+    }
     return { sent: true };
   } catch (e) {
     const paced = e && e.data && e.data.paced;
@@ -8759,10 +8889,17 @@ const waSendRec = (rid, kind, resend = false) =>
     const phone = String(d.phone || '').trim();
     if (!phone) { toast('אין מספר טלפון ברשומה', true); return; }
     const message = kind === 'notified' ? waSignMsg(d) : waReturnMsg(d);
+    const tpl = kind === 'notified' ? tplSigned(d) : tplCredit(d, null);
+    const tplName = wacReady() && S.wac.templates && S.wac.templates[tpl.tpl];
     try {
-      await api('/admin/wa/send', {
+      await api(tplName ? '/admin/wa/cloud/template' : '/admin/wa/send', {
         method: 'POST',
-        body: { phone, message, key: `${rid}:${kind}`, ...(resend ? { resend: true } : {}) },
+        body: tplName
+          ? {
+              to: phone, name: tplName, language: S.wac.lang, components: tplBody(tpl.values),
+              key: `${rid}:${kind}`, ...(resend ? { resend: true } : {}),
+            }
+          : { phone, message, key: `${rid}:${kind}`, ...(resend ? { resend: true } : {}) },
       });
     } catch (e) {
       if (e && e.data && e.data.duplicate) {
@@ -8827,13 +8964,73 @@ const contactsPanel = () => `
       <p class="field-hint mb0">הקובץ נבנה כאן בדפדפן מהנתונים המפוענחים; השרת אינו רואה אותו. בטלפון של הקו: פתיחת הקובץ ← ייבוא לאנשי הקשר. בזמן הגבלה וואטסאפ חוסמת הוספת אנשי קשר מתוך האפליקציה, וספר הטלפונים של המכשיר הוא הדרך שעובדת.</p>
     </section>`;
 
+/* The official channel, at the top of the screen, because it is now the one
+   that sends. The gateway panel below it stays as it was — unconfigured is a
+   state it has always been able to report, and saying so plainly is better
+   than hiding a channel that could come back. */
+function cloudPanel() {
+  if (!S.wac.loaded) return '';
+
+  const ok = wacReady();
+  const tone = ok ? 'ok' : S.wac.ready ? 'bad' : 'off';
+  const label = ok ? 'מחובר' : S.wac.paused ? 'מושהה' : S.wac.ready ? 'אינו מגיב' : 'אינו מוגדר';
+
+  const hint = ok
+    ? 'הודעות נשלחות מכאן, כתבנית מאושרת.'
+    : S.wac.paused
+      ? 'השליחה מושהית. כפתורי ההודעות פותחים צ׳אט מהמכשיר שלכם.'
+      : S.wac.ready
+        ? 'Meta אינה עונה. כפתורי ההודעות פותחים צ׳אט מהמכשיר שלכם.'
+        : 'כפתורי ההודעות פותחים צ׳אט מהמכשיר שלכם, כרגיל.';
+
+  const names = Object.entries(S.wac.templates || {});
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">וואטסאפ רשמי — Meta Cloud API</h2>
+      <p class="panel-sub">הפלטפורמה הרשמית של Meta. הודעות יזומות נשלחות כתבנית מאושרת בלבד.</p>
+
+      <div class="wa-status">
+        <span class="wa-dot ${tone}" aria-hidden="true"></span>
+        <span class="wa-status-text">
+          <strong>${esc(label)}</strong>
+          <span class="muted">${esc(hint)}</span>
+          ${S.wac.err ? `<span class="bad">${esc(S.wac.err)}</span>` : ''}
+        </span>
+      </div>
+
+      ${!S.wac.ready && S.wac.missing && S.wac.missing.length
+        ? `<div class="callout">
+             <p class="callout-title">חסרות הגדרות</p>
+             <p class="mb0">${S.wac.missing.map((k) => `<code>${esc(k)}</code>`).join(', ')}
+                — בהגדרות הפרויקט בקלאודפלייר. סוד נכנס לתוקף רק בפריסה חדשה.</p>
+           </div>`
+        : ''}
+
+      ${S.wac.phone
+        ? `<p class="field-hint">שולח מהמספר <span class="num">${esc(S.wac.phone.display || '')}</span>${
+             S.wac.phone.name ? ` · ${esc(S.wac.phone.name)}` : ''
+           }${S.wac.phone.quality ? ` · איכות: ${esc(S.wac.phone.quality)}` : ''}.
+           ${S.wac.onWaba
+             ? 'המספר שייך לחשבון העסקי המוגדר.'
+             : '<strong>המספר אינו מופיע תחת החשבון העסקי המוגדר — בדקו שלא מדובר בחשבון כפול.</strong>'}</p>`
+        : ''}
+
+      ${names.length
+        ? `<p class="field-hint">תבניות: ${names
+             .map(([k, v]) => `${esc(k)} → <code>${esc(v)}</code>`).join(' · ')}.
+           תבנית שנדחתה מוחלפת בשם אחר בהגדרות, בלי שינוי בקוד.</p>`
+        : ''}
+    </section>`;
+}
+
 function renderWaTab() {
   if (!S.wa.loaded) return '<p class="loading">טוען…</p>';
 
   if (!S.wa.enabled) {
-    return `
+    const gone = `
       <section class="panel">
-        <h2 class="panel-title">וואטסאפ</h2>
+        <h2 class="panel-title">וואטסאפ — השער הישן</h2>
         <div class="callout">
           <p class="callout-title">אינו מוגדר</p>
           <p class="mb0">${S.wa.missing && S.wa.missing.length
@@ -8844,12 +9041,13 @@ function renderWaTab() {
         </div>
       </section>
       ${contactsPanel()}`;
+    return cloudPanel() + gone;
   }
 
   const st = waState();
-  return `
+  return cloudPanel() + `
     <section class="panel">
-      <h2 class="panel-title">וואטסאפ</h2>
+      <h2 class="panel-title">וואטסאפ — השער הישן</h2>
       <p class="panel-sub">הקו שממנו נשלחות הודעות השירות. וואטסאפ־ווב רץ אצל הספק, לא כאן.</p>
 
       <div class="wa-status">
@@ -9110,7 +9308,11 @@ const repSetState = (id, next) =>
       throw e;
     }
     const w = (next === 'done' || next === 'partial')
-      ? await waNotify(rec.data && rec.data.phone, waReportMsg(rec.data || {}, next))
+      ? await waNotify(rec.data && rec.data.phone, waReportMsg(rec.data || {}, next), null,
+          tplUpdate(rec.data || {},
+            next === 'done'
+              ? 'הבקשה שהגשת טופלה במלואה'
+              : 'הבקשה שהגשת טופלה חלקית — היתרה תושלם בהמשך'))
       : { sent: false, why: 'skip' };
     if (w.sent) repMarkSent(id);
     const head = next === 'done' ? 'סומן כטופל'
@@ -10383,7 +10585,9 @@ const adminApprove = (rid) =>
     // The approval is saved; the message is a consequence of it, not a
     // condition for it. Sent from the copy taken before approval, because
     // approveCore may have merged the submission away.
-    const w = d ? await waNotify(d.phone, waSignMsg(d), `${rid}:notified`) : { sent: false, why: 'skip' };
+    const w = d
+      ? await waNotify(d.phone, waSignMsg(d), `${rid}:notified`, tplSigned(d))
+      : { sent: false, why: 'skip' };
     if (w.sent) markSent(rid, 'notified', 'auto');
     renderConsole();
     toast((r.merged
@@ -10577,7 +10781,10 @@ const gearAddSave = (rid) =>
     const addedNames = added
       .map(([id, q]) => [itemById(id) && itemById(id).name, q])
       .filter(([name]) => name);
-    const w = await waNotify(rec.data.phone, waGearAddMsg(rec.data, addedNames));
+    const w = await waNotify(rec.data.phone, waGearAddMsg(rec.data, addedNames), null,
+      tplUpdate(rec.data, addedNames && addedNames.length
+        ? `נוסף ציוד לרישום שלך: ${tplItems(addedNames)}`
+        : 'נוסף ציוד לרישום שלך. לפירוט פנו למנהל הציוד'));
     toast(`נוסף ציוד ל${rec.data.name}${waNote(w)}`);
   });
 
@@ -10736,7 +10943,8 @@ const adminCreditAll = (rid) =>
     rec.data.log.push({ a: 'credit', t: Date.now() });
     await saveRec(rec, 'זיכוי');
     renderConsole();
-    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited), `${rid}:returnNotified`);
+    const w = await waNotify(rec.data.phone, waReturnMsg(rec.data, credited),
+      `${rid}:returnNotified`, tplCredit(rec.data, credited));
     if (w.sent) markSent(rid, 'returnNotified', 'auto');
     renderConsole();
     toast(`זוכה במלואו: ${rec.data.name}${waNote(w)}`);
