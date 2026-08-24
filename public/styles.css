@@ -3227,3 +3227,14 @@ body.printing .printdoc {
 }
 
 .tpl-table code { word-break: break-all; }
+
+/* The status dot is a flex item on the panel above, which is what gave it a
+   width. In a table cell it is plain inline content, where width and height
+   do not apply — so it collapsed to a one-pixel sliver beside the word.
+   Inside the table it gets a box of its own. */
+.tpl-table .wa-dot {
+  display: inline-block;
+  margin-top: 0;
+  margin-inline-end: 0.35rem;
+  vertical-align: -1px;
+}
