@@ -4702,6 +4702,61 @@ const regLoanReport = (reg, name, file) => ({
   },
 });
 
+/* The shortage form asks for a name, a phone if the soldier feels like it,
+   and what is missing. It does not ask for a personal number, so the column
+   for one is empty on most requests — and the person chasing the request ends
+   up looking the soldier up by hand.
+ *
+ * The console holds the roster decrypted, so it can look them up instead. It
+ * matches on the name, which is a guess, and the guess is only safe when it
+ * is unambiguous: two soldiers called the same thing means either could be
+ * the one who wrote, and filling in one of their phone numbers would send the
+ * store-keeper to the wrong person with more confidence than the data
+ * deserves. So a duplicate name fills nothing and says why.
+ *
+ * Whatever the soldier wrote himself always wins. This only fills blanks. */
+const nameKey = (v) => String(v == null ? '' : v)
+  .replace(/[\u05F3\u05F4'"`׳״]/g, '')      // geresh, gershayim and their ASCII stand-ins
+  .replace(/[-־–—]/g, ' ')                   // hyphen spellings of the same name
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toLowerCase();
+
+function rosterByName() {
+  const by = new Map();
+  for (const r of S.recs || []) {
+    if (r.damaged || !r.data || !r.data.name) continue;
+    const k = nameKey(r.data.name);
+    if (!k) continue;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(r.data);
+  }
+  return by;
+}
+
+function fillFromRoster(d, roster) {
+  const own = { pn: d.pn || '', phone: d.phone || '', dept: d.dept ? deptName(d.dept) : '' };
+  const complete = own.pn && own.phone;
+  if (complete) return { ...own, source: 'מהבקשה' };
+
+  const hits = roster.get(nameKey(d.name)) || [];
+  if (!hits.length) {
+    return { ...own, source: own.pn || own.phone ? 'מהבקשה · חלקי' : 'לא נמצא ברישומים' };
+  }
+  if (hits.length > 1) {
+    return { ...own, source: `${hits.length} חיילים בשם הזה — לא הושלם` };
+  }
+
+  const m = hits[0];
+  const filled = {
+    pn: own.pn || m.pn || '',
+    phone: own.phone || m.phone || '',
+    dept: own.dept || (m.dept ? deptName(m.dept) : ''),
+  };
+  const added = (!own.pn && filled.pn) || (!own.phone && filled.phone) || (!own.dept && filled.dept);
+  return { ...filled, source: added ? 'הושלם לפי שם' : 'מהבקשה' };
+}
+
 const REPORTS = {
   stock: {
     name: 'מלאי ציוד', file: 'tzayad-stock',
@@ -4905,14 +4960,15 @@ const REPORTS = {
       const at = (r) => Number((r.data && r.data.createdAt) || 0);
       const ordered = [...rows].sort((a, b) => at(b) - at(a));
       const st = (r) => (r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open');
+      const roster = rosterByName();
       return {
-        head: ['דווח', 'שם', 'מ״א', 'מחלקה', 'טלפון', 'סטטוס', 'הבקשה'],
+        head: ['דווח', 'שם', 'מ״א', 'מחלקה', 'טלפון', 'סטטוס', 'הבקשה', 'מקור הפרטים'],
         rows: ordered.map((r) => {
           const d = r.data;
+          const f = fillFromRoster(d, roster);
           return [
-            fmtDate(d.createdAt), d.name || '', d.pn || '',
-            d.dept ? deptName(d.dept) : '', d.phone || '',
-            REP_LABEL[st(r)], d.text || '',
+            fmtDate(d.createdAt), d.name || '', f.pn, f.dept, f.phone,
+            REP_LABEL[st(r)], d.text || '', f.source,
           ];
         }),
         summary: `${ordered.filter((r) => st(r) === 'open').length} טרם טופלו · ` +
@@ -7827,7 +7883,7 @@ function renderReportsTab() {
       ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
       ${pager('reports', pgReports)}
       ${reportButtons('shortages')}
-      <p class="field-hint">הייצוא כולל את <strong>כל</strong> הבקשות, לא רק את מה שמסונן על המסך — עמודת הסטטוס מאפשרת לסנן בגיליון.</p>
+      <p class="field-hint">הייצוא כולל את <strong>כל</strong> הבקשות, לא רק את מה שמסונן על המסך — עמודת הסטטוס מאפשרת לסנן בגיליון. מ״א וטלפון שחסרים בבקשה מושלמים מהרישומים לפי שם החייל, ורק כשיש התאמה יחידה; עמודת <strong>מקור הפרטים</strong> אומרת על כל שורה מאיפה הגיעו.</p>
     </section>`;
 }
 

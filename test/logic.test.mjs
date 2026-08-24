@@ -492,3 +492,85 @@ test('an item that is not held, or a nonsense count, changes nothing', () => {
   assert.deepEqual(gearRemoved(before, [['vest', 0]]), before);
   assert.deepEqual(gearRemoved(before, [['vest', -3]]), before);
 });
+
+/* ── Completing a shortage request from the roster ────────────────────
+   The shortage form never asks for a personal number, so the column is empty
+   on most requests and somebody looks the soldier up by hand. The console
+   holds the roster decrypted and can do it instead — but matching on a name
+   is a guess, and the guess is only safe when it is unambiguous. Two soldiers
+   with the same name must fill nothing: a wrong phone number sends the
+   store-keeper to the wrong person with more confidence than the data
+   deserves. */
+
+function liftRoster() {
+  const src = readFileSync(join(root, 'public/app.js'), 'utf8');
+  const from = src.indexOf('const nameKey =');
+  const to = src.indexOf('const REPORTS = {');
+  if (from < 0 || to < 0 || to < from) throw new Error('roster helpers not found in app.js');
+  const make = new Function('S', 'deptName',
+    `${src.slice(from, to)}\n return { nameKey, rosterByName, fillFromRoster };`);
+  return (recs) => make({ recs }, (id) => `מחלקה ${id}`);
+}
+
+const rec = (name, pn, phone, dept) => ({ data: { name, pn, phone, dept } });
+
+test('a request missing its personal number is completed from the roster', () => {
+  const R = liftRoster()([rec('דוד לוי', '8000001', '0501112222', 'p1')]);
+  const out = R.fillFromRoster({ name: 'דוד לוי', text: 'חסר' }, R.rosterByName());
+  assert.equal(out.pn, '8000001');
+  assert.equal(out.phone, '0501112222');
+  assert.equal(out.source, 'הושלם לפי שם');
+});
+
+test('what the soldier wrote himself is never overwritten', () => {
+  const R = liftRoster()([rec('דוד לוי', '8000001', '0501112222', 'p1')]);
+  const out = R.fillFromRoster({ name: 'דוד לוי', pn: '9999999', phone: '0509998888' }, R.rosterByName());
+  assert.equal(out.pn, '9999999');
+  assert.equal(out.phone, '0509998888');
+  assert.equal(out.source, 'מהבקשה');
+});
+
+test('two soldiers with the same name fill nothing, and the sheet says so', () => {
+  const R = liftRoster()([
+    rec('דוד לוי', '8000001', '0501112222', 'p1'),
+    rec('דוד לוי', '8000002', '0503334444', 'p2'),
+  ]);
+  const out = R.fillFromRoster({ name: 'דוד לוי' }, R.rosterByName());
+  assert.equal(out.pn, '', 'a guess between two people is not made');
+  assert.equal(out.phone, '');
+  assert.match(out.source, /2 חיילים בשם הזה/);
+});
+
+test('a name with no record says so rather than looking complete', () => {
+  const R = liftRoster()([rec('דוד לוי', '8000001', '0501112222', 'p1')]);
+  const out = R.fillFromRoster({ name: 'מישהו אחר' }, R.rosterByName());
+  assert.equal(out.source, 'לא נמצא ברישומים');
+});
+
+test('the same name spelled with a hyphen or a geresh still matches', () => {
+  const R = liftRoster()([rec('ליאור בן־שושן', '8000011', '0501234567', 'p3')]);
+  const idx = R.rosterByName();
+  for (const written of ['ליאור בן שושן', 'ליאור בן-שושן', 'ליאור בן־שושן', '  ליאור   בן שושן ']) {
+    const out = R.fillFromRoster({ name: written }, idx);
+    assert.equal(out.pn, '8000011', `did not match: ${written}`);
+  }
+});
+
+test('a partial request with no matching record keeps what it has', () => {
+  const R = liftRoster()([]);
+  const out = R.fillFromRoster({ name: 'לא במאגר', phone: '0501112222' }, R.rosterByName());
+  assert.equal(out.phone, '0501112222');
+  assert.equal(out.source, 'מהבקשה · חלקי');
+});
+
+test('a damaged or nameless record cannot poison the index', () => {
+  const R = liftRoster()([
+    { damaged: true, data: { name: 'דוד לוי', pn: 'X' } },
+    { data: null },
+    rec('', '8000003', '0505556666', 'p1'),
+    rec('דוד לוי', '8000001', '0501112222', 'p1'),
+  ]);
+  const out = R.fillFromRoster({ name: 'דוד לוי' }, R.rosterByName());
+  assert.equal(out.pn, '8000001', 'the damaged duplicate was not counted as a second soldier');
+  assert.equal(out.source, 'הושלם לפי שם');
+});
