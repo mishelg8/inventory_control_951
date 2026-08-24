@@ -3203,3 +3203,27 @@ body.printing .printdoc {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
 }
+
+/* The template roll-call on the WhatsApp screen. Three columns, and the only
+   one anybody reads is the last — so it stays legible at the narrow end
+   rather than collapsing the name into an ellipsis. */
+.tpl-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-block: 0.75rem;
+  font-size: var(--t-2xs);
+}
+
+.tpl-table th,
+.tpl-table td {
+  text-align: start;
+  padding: 0.4rem 0.5rem;
+  border-block-end: 1px solid var(--bg-2);
+}
+
+.tpl-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.tpl-table code { word-break: break-all; }

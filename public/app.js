@@ -283,7 +283,8 @@ const S = {
      different reasons, and a screen that says "not connected" without saying
      which one is a screen that sends somebody to check the wrong thing. */
   wac: { loaded: false, ready: false, reachable: false, paused: false, missing: [],
-         templates: {}, lang: 'he', phone: null, onWaba: false, err: null },
+         templates: {}, lang: 'he', phone: null, onWaba: false, err: null,
+         approved: null, tplErr: null },
   wa: { loaded: false, enabled: false, missing: [], reachable: false, state: '',
         qr: null, qrErr: null, err: null, to: '', body: '', busy: false,
         instance: '',               // which instance the server is talking to
@@ -8670,6 +8671,22 @@ async function wacProbe() {
     S.wac.phone = r.phone || null;
     S.wac.onWaba = r.onWaba === true;
     S.wac.err = r.error || null;
+
+    /* What Meta has actually approved, by name. Worth a second call: the
+       three things that silently break a send are a name that differs from
+       what was submitted, a template still in review, and one approved under
+       the wrong language — and all three look identical from here until a
+       message fails. Asked only when the channel is otherwise up. */
+    if (S.wac.ready && S.wac.reachable) {
+      try {
+        const t = await api('/admin/wa/cloud/templates');
+        S.wac.approved = Array.isArray(t.templates) ? t.templates : [];
+        S.wac.tplErr = t.error || null;
+      } catch (e2) {
+        S.wac.approved = null;
+        S.wac.tplErr = (e2 && e2.message) || 'לא ניתן לקרוא את רשימת התבניות';
+      }
+    }
   } catch (e) {
     S.wac.loaded = true;
     S.wac.ready = !!(e && e.data && e.data.ready);
@@ -9016,12 +9033,62 @@ function cloudPanel() {
              : '<strong>המספר אינו מופיע תחת החשבון העסקי המוגדר — בדקו שלא מדובר בחשבון כפול.</strong>'}</p>`
         : ''}
 
-      ${names.length
-        ? `<p class="field-hint">תבניות: ${names
-             .map(([k, v]) => `${esc(k)} → <code>${esc(v)}</code>`).join(' · ')}.
-           תבנית שנדחתה מוחלפת בשם אחר בהגדרות, בלי שינוי בקוד.</p>`
-        : ''}
+      ${names.length ? tplTable(names) : ''}
     </section>`;
+}
+
+/* Each configured template, against what Meta says it has.
+   The useful row is the one that disagrees: a name Meta has never heard of,
+   a template still in review, or one approved in a language the code will
+   not ask for. Any of those fails a send with a Graph error and nothing
+   else — so they are named here, before anyone presses anything. */
+const TPL_ROLE = { signed: 'אישור רישום', credit: 'זיכוי ציוד', update: 'עדכון כללי' };
+
+const TPL_STATE = {
+  APPROVED: { label: 'מאושרת', tone: 'ok' },
+  PENDING:  { label: 'בבדיקה', tone: 'warn' },
+  IN_APPEAL: { label: 'בערעור', tone: 'warn' },
+  REJECTED: { label: 'נדחתה', tone: 'bad' },
+  PAUSED:   { label: 'מושהית', tone: 'bad' },
+  DISABLED: { label: 'מנוטרלת', tone: 'bad' },
+};
+
+function tplTable(names) {
+  const list = S.wac.approved;
+  if (S.wac.tplErr) {
+    return `<p class="field-hint bad">${esc(S.wac.tplErr)}</p>`;
+  }
+  if (!Array.isArray(list)) {
+    return `<p class="field-hint">תבניות: ${names
+      .map(([k, v]) => `${esc(TPL_ROLE[k] || k)} → <code>${esc(v)}</code>`).join(' · ')}.</p>`;
+  }
+
+  const rows = names.map(([role, name]) => {
+    const hit = list.find((t) => t.name === name && t.language === S.wac.lang);
+    const wrongLang = !hit && list.find((t) => t.name === name);
+    const st = hit ? (TPL_STATE[hit.status] || { label: hit.status, tone: 'off' })
+      : wrongLang ? { label: `אושרה בשפה ${wrongLang.language}`, tone: 'bad' }
+        : { label: 'לא נמצאה אצל Meta', tone: 'bad' };
+    return `
+      <tr>
+        <td>${esc(TPL_ROLE[role] || role)}</td>
+        <td><code>${esc(name)}</code></td>
+        <td><span class="wa-dot ${st.tone}" aria-hidden="true"></span> ${esc(st.label)}</td>
+      </tr>`;
+  }).join('');
+
+  const bad = names.some(([, name]) =>
+    !list.find((t) => t.name === name && t.language === S.wac.lang && t.status === 'APPROVED'));
+
+  return `
+    <table class="tpl-table">
+      <thead><tr><th>הודעה</th><th>תבנית</th><th>מצב</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${bad
+      ? `<p class="field-hint bad">תבנית שאינה מאושרת בשפה <code>${esc(S.wac.lang)}</code> תיכשל בשליחה.
+         אם השם או השפה שונים אצל Meta — יש לעדכן את ההגדרות בקלאודפלייר ולפרוס מחדש.</p>`
+      : '<p class="field-hint">כל התבניות מאושרות. אפשר לשלוח.</p>'}`;
 }
 
 function renderWaTab() {
