@@ -10,6 +10,21 @@ const SVG_OPEN =
 
 // Every item is quantifiable — a soldier can receive 2 vests, 3 magazines, etc.
 const ITEMS = [
+  /* Uniforms. Added late, and deliberately as an ordinary item rather than a
+     special case: one entry here is what puts it on the soldier's own
+     sign-out form, in the manager's add-kit dialog, in the stock count, in
+     the shortage arithmetic and in every export — because all of them are
+     built from this list and none of them names an item directly.
+
+     Sizes are not modelled. The item carries a count, like everything else,
+     and a soldier signing for two sets signs for two. If the unit needs to
+     track which size went out, that is a different shape of data than this
+     list holds today. */
+  {
+    id: 'uniform', name: 'מדים', qty: true, min: 1, max: 10,
+    icon: `${SVG_OPEN}<path d="M8.4 3.2 12 5.8l3.6-2.6 4.4 2.9-2 3.5-1.4-.9v12.1H7.4V8.7l-1.4.9-2-3.5z"/>` +
+      '<path d="M10 3.8 12 6.4l2-2.6"/></svg>',
+  },
   {
     id: 'helmet', name: 'קסדה', qty: true, min: 1, max: 10,
     icon: `${SVG_OPEN}<path d="M4 14a8 8 0 0 1 16 0v3H4z"/><path d="M2 17h20"/></svg>`,

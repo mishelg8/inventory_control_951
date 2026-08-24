@@ -427,3 +427,68 @@ test('a register movement is recorded wherever the move came from', () => {
   assert.ok(save.indexOf('logMoves();') < save.indexOf('const dirty'),
             'movements are logged before the parts to write are chosen');
 });
+
+/* ── Kit signed by mistake ────────────────────────────────────────────
+   Removing kit is not crediting it. A credit says the item went out and came
+   back, and both movements are true. A removal says the line should never
+   have existed — so it reduces what was taken, and the movement disappears
+   from the store's arithmetic instead of being cancelled out by a return
+   that never happened.
+
+   Checked against the real function lifted out of app.js. */
+
+function liftGearRemoved() {
+  const src = readFileSync(join(root, 'public/app.js'), 'utf8');
+  const from = src.indexOf('function gearRemoved(');
+  const to = src.indexOf('const gearDelSave =');
+  if (from < 0 || to < 0 || to < from) throw new Error('gearRemoved not found in app.js');
+  return new Function(`${src.slice(from, to)}\n return gearRemoved;`)();
+}
+
+test('removing kit reduces what was taken, not what came back', () => {
+  const gearRemoved = liftGearRemoved();
+  const out = gearRemoved({ vest: { t: 3, r: 0 } }, [['vest', 1]]);
+  assert.deepEqual(out, { vest: { t: 2, r: 0 } });
+});
+
+test('a line that never should have existed disappears entirely', () => {
+  const gearRemoved = liftGearRemoved();
+  const out = gearRemoved({ uniform: { t: 1, r: 0 }, vest: { t: 2, r: 0 } }, [['uniform', 1]]);
+  assert.deepEqual(out, { vest: { t: 2, r: 0 } }, 'not a holding of zero — gone');
+});
+
+test('kit that has already come back cannot be un-taken', () => {
+  const gearRemoved = liftGearRemoved();
+  // two went out, two came back: there is nothing left to correct
+  const out = gearRemoved({ mags: { t: 2, r: 2 } }, [['mags', 2]]);
+  assert.deepEqual(out, { mags: { t: 2, r: 2 } }, 'a return with nothing to return is not reachable');
+});
+
+test('a partial credit leaves only the uncredited part removable', () => {
+  const gearRemoved = liftGearRemoved();
+  // three out, one back — at most two can have been a mistake
+  const out = gearRemoved({ helmet: { t: 3, r: 1 } }, [['helmet', 3]]);
+  assert.deepEqual(out, { helmet: { t: 1, r: 1 } });
+});
+
+test('an item with a credit against it is kept even when taken drops to it', () => {
+  const gearRemoved = liftGearRemoved();
+  const out = gearRemoved({ knee: { t: 2, r: 1 } }, [['knee', 5]]);
+  assert.deepEqual(out, { knee: { t: 1, r: 1 } }, 'the credit still needs something to have gone out');
+});
+
+test('the original holding is left untouched, so a failed save can put it back', () => {
+  const gearRemoved = liftGearRemoved();
+  const before = { vest: { t: 3, r: 0 } };
+  const out = gearRemoved(before, [['vest', 3]]);
+  assert.deepEqual(before, { vest: { t: 3, r: 0 } }, 'edited a copy, not the record');
+  assert.deepEqual(out, {});
+});
+
+test('an item that is not held, or a nonsense count, changes nothing', () => {
+  const gearRemoved = liftGearRemoved();
+  const before = { vest: { t: 1, r: 0 } };
+  assert.deepEqual(gearRemoved(before, [['helmet', 2]]), before);
+  assert.deepEqual(gearRemoved(before, [['vest', 0]]), before);
+  assert.deepEqual(gearRemoved(before, [['vest', -3]]), before);
+});

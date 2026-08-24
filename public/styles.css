@@ -703,6 +703,9 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .who-opt-d { flex: none; font-size: var(--t-2xs); color: var(--muted); }
 .who-more { padding: var(--s-3) var(--s-5); font-size: var(--t-2xs); color: var(--muted); }
 .kit-count.is-add { color: var(--pine-deep); }
+/* A removal is not an addition with a different sign — it undoes a signature,
+   and it reads in the colour the rest of the console uses for that. */
+.kit-count.is-del { color: var(--bad-fill); }
 
 /* The whole row opens the card, not just the name. A name is a small target on
    a phone and the rest of the row was dead space; the buttons at the end still

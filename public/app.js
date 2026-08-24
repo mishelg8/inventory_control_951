@@ -300,6 +300,8 @@ const S = {
   auditQ: '',                   // admin search over the action log
   gearAdd: '',                  // rid whose "add kit" editor is open
   gearDraft: {},                // itemId -> how many to add, until saved
+  gearDel: '',                  // rid whose "signed by mistake" editor is open
+  gearDelDraft: {},             // itemId -> how many to strike off, until saved
 
   // correcting a licence from the console: which row is open, and its draft
   licEdit: '',                  // rid, '' when nothing is being corrected
@@ -2659,7 +2661,7 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>
-    ${creditDialog()}${gearDialog()}${deleteDialog()}${repDeleteDialog()}`);
+    ${creditDialog()}${gearDialog()}${gearDelDialog()}${deleteDialog()}${repDeleteDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -2773,6 +2775,10 @@ const DICO = {
   wrench: `${SVG_OPEN}<path d="M14.8 6.2a4.2 4.2 0 0 0 5.4 5.4l-8 8a2.4 2.4 0 0 1-3.4-3.4z"/><path d="M14.8 6.2 17.6 3.4"/></svg>`,
   fuel: `${SVG_OPEN}<path d="M4.5 20.5V5a1.6 1.6 0 0 1 1.6-1.6h5.3A1.6 1.6 0 0 1 13 5v15.5"/><path d="M3.4 20.5h11.2"/><path d="M4.5 11.4H13"/><path d="M16 8.4h2.2a1.6 1.6 0 0 1 1.6 1.6v6a1.4 1.4 0 0 1-2.8 0v-3.4H16"/></svg>`,
   door: `${SVG_OPEN}<path d="M4.5 20.5h15"/><path d="M6.5 20.5V4.6a1.1 1.1 0 0 1 1.3-1.1l8 1.3a1.1 1.1 0 0 1 .9 1.1v14.6"/><path d="M13.4 12.4v1.6"/></svg>`,
+  /* An undo arrow rather than a cross. A cross on a kit row reads as
+     "delete this item from the system"; what the button does is put a
+     signature back the way it was. */
+  undo: `${SVG_OPEN}<path d="M4.5 9.5h9.5a5 5 0 0 1 0 10H8"/><path d="M4.5 9.5 8.5 5.5"/><path d="M4.5 9.5l4 4"/></svg>`,
   sign: `${SVG_OPEN}<path d="M3.5 19.5c3-.4 4.4-2.4 4.4-5.4 0-2-.8-3-1.9-3s-1.8 1-1.8 2.4c0 3.4 3.4 4.6 6.6 4.6 3.6 0 5.6-1.4 7.4-3.3"/><path d="M17.5 6.5 20 9"/><path d="M12.5 14.5 19 8a1.8 1.8 0 0 0-2.5-2.5L10 12z"/></svg>`,
 };
 
@@ -3941,6 +3947,10 @@ function trackDetail(rec) {
     ${anyBack ? waAct('returnNotified', !!d.returnNotified, returnWaLink(d), 'הודעת זיכוי') : ''}
     <button class="dact" data-act="gear-add" data-rid="${esc(rec.rid)}">
       ${DICO.box}<span>החתמת ציוד</span></button>
+    ${ITEMS.some((i) => d.items[i.id] && d.items[i.id].t > 0)
+      ? `<button class="dact" data-act="gear-del" data-rid="${esc(rec.rid)}">
+           ${DICO.undo}<span>הסרת ציוד שנחתם בטעות</span></button>`
+      : ''}
     ${outstanding(d) > 0
       ? `<button class="dact" data-act="creditall" data-rid="${esc(rec.rid)}">
            ${DICO.check}<span>זיכוי מלא</span></button>`
@@ -4875,6 +4885,40 @@ const REPORTS = {
           const st = r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open';
           return [fmtDate(d.createdAt), d.name, d.phone, FLT_LABEL[st], d.text];
         }),
+      };
+    },
+  },
+
+  /* Shortage requests. The soldiers wrote these themselves, so the sheet
+     carries their words verbatim — a request summarised is a request the
+     store-keeper has to go back and read again anyway.
+
+     Sensitive: names and phone numbers in the clear, like every export that
+     leaves the encryption behind. Every one of them is exported, not just
+     what the screen is filtering to, because "all the requests" is the
+     question this answers — the status column is there so the filtering can
+     happen in the spreadsheet. */
+  shortages: {
+    name: 'בקשות ודיווחי חוסר', file: 'tzayad-shortages', sensitive: true,
+    build() {
+      const rows = shortageReports().filter((r) => !r.damaged && r.data);
+      const at = (r) => Number((r.data && r.data.createdAt) || 0);
+      const ordered = [...rows].sort((a, b) => at(b) - at(a));
+      const st = (r) => (r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open');
+      return {
+        head: ['דווח', 'שם', 'מ״א', 'מחלקה', 'טלפון', 'סטטוס', 'הבקשה'],
+        rows: ordered.map((r) => {
+          const d = r.data;
+          return [
+            fmtDate(d.createdAt), d.name || '', d.pn || '',
+            d.dept ? deptName(d.dept) : '', d.phone || '',
+            REP_LABEL[st(r)], d.text || '',
+          ];
+        }),
+        summary: `${ordered.filter((r) => st(r) === 'open').length} טרם טופלו · ` +
+          `${ordered.filter((r) => st(r) === 'partial').length} טופלו חלקית · ` +
+          `${ordered.filter((r) => st(r) === 'done').length} טופלו · ` +
+          `${ordered.length} בסך הכול`,
       };
     },
   },
@@ -7782,6 +7826,8 @@ function renderReportsTab() {
       <div class="filters">${filters}</div>
       ${cards || '<p class="empty">אין בקשות שתואמות את החיפוש והסינון.</p>'}
       ${pager('reports', pgReports)}
+      ${reportButtons('shortages')}
+      <p class="field-hint">הייצוא כולל את <strong>כל</strong> הבקשות, לא רק את מה שמסונן על המסך — עמודת הסטטוס מאפשרת לסנן בגיליון.</p>
     </section>`;
 }
 
@@ -10820,7 +10866,7 @@ function gearDialog() {
         <p class="modal-sub">להחתמה מרחוק — חייל שכבר יצא. הפריטים נוספים למה שכבר רשום עליו, והפעולה נרשמת ביומן הרשומה.</p>
         <ul class="modal-list modal-pick">${rows}</ul>
         <p class="modal-note">${total
-          ? `<span class="num">${total}</span> פריטים ייחתמו`
+          ? (total === 1 ? 'פריט אחד ייחתם' : `<span class="num">${total}</span> פריטים ייחתמו`)
           : 'בחרו כמות לפריט אחד לפחות'}</p>
         <div class="modal-acts">
           <button class="btn ghost" type="button" data-act="gear-add-cancel">ביטול</button>
@@ -10830,6 +10876,143 @@ function gearDialog() {
       </div>
     </div>`;
 }
+
+/* Kit that was never handed over.
+ *
+ * Not the same as זיכוי, and the difference is the whole reason this exists.
+ * A credit says the soldier had the item and gave it back: it went out of the
+ * store and it came back, and both movements are true and worth keeping. A
+ * correction says the line should never have been written — the soldier
+ * ticked a box he did not mean, or signed for three when he took two.
+ *
+ * Crediting a mistake balances the soldier's holding and lies about the
+ * store: the stock ledger ends up showing an issue and a return that never
+ * happened, and every "how much went out this month" built on it is wrong by
+ * that much. So this reduces what was taken instead, and the movement
+ * disappears rather than being cancelled out.
+ *
+ * What it will not do is reduce below what has already been credited. Once an
+ * item has come back through the door, its going out is a fact — undoing it
+ * would leave a return with nothing to return. */
+function gearDelDialog() {
+  if (!S.gearDel) return '';
+  const rec = findRec(S.gearDel);
+  if (!rec || rec.damaged) return '';
+  const d = rec.data;
+  const draft = S.gearDelDraft;
+
+  const held = ITEMS.filter((i) => d.items[i.id] && d.items[i.id].t > 0);
+  if (!held.length) {
+    return `
+      <div class="modal-back" data-act="modal-close">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gdq" data-act="modal-keep">
+          <h2 class="modal-title" id="gdq">אין ציוד להסרה</h2>
+          <p class="modal-sub">לא רשום על ${esc(d.name)} שום פריט.</p>
+          <div class="modal-acts">
+            <button class="btn ghost" type="button" data-act="gear-del-cancel">סגירה</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const rows = held.map((item) => {
+    const have = d.items[item.id];
+    const back = have.r || 0;
+    const room = have.t - back;          // never below what has come back
+    const off = draft[item.id] || 0;
+    return `<li class="kit-row">
+        <span class="row-ico" aria-hidden="true">${item.icon}</span>
+        <span class="kit-name">${esc(item.name)}
+          <small class="kit-have">רשום ${have.t}${back ? ` · זוכה ${back}` : ''}</small></span>
+        <span class="kit-count num${off ? ' is-del' : ''}">${off ? `−${off}` : '—'}</span>
+        <span class="rec-row-tools step">
+          <button type="button" class="step-btn" data-act="gear-del-draft" data-item="${item.id}"
+                  data-d="-1" aria-label="פחות — ${esc(item.name)}" ${off <= 0 ? 'disabled' : ''}>−</button>
+          <button type="button" class="step-btn" data-act="gear-del-draft" data-item="${item.id}"
+                  data-d="1" aria-label="עוד — ${esc(item.name)}" ${off >= room ? 'disabled' : ''}>+</button>
+        </span>
+      </li>`;
+  }).join('');
+
+  const total = Object.values(draft).reduce((a, b) => a + b, 0);
+  const locked = held.some((i) => (d.items[i.id].r || 0) > 0);
+
+  return `
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gdq" data-act="modal-keep">
+        <h2 class="modal-title" id="gdq">איזה ציוד להסיר מ${esc(d.name)}?</h2>
+        <p class="modal-sub">לתיקון חתימה שגויה — ציוד שלא נמסר בפועל. הפריט יורד מהרישום <strong>וגם מספירת המלאי</strong>, כאילו לא יצא מעולם. אם הציוד כן נמסר והוחזר — זו פעולת <strong>זיכוי</strong>, לא הסרה.</p>
+        <ul class="modal-list modal-pick">${rows}</ul>
+        ${locked
+          ? '<p class="modal-note">פריט שכבר זוכה אינו ניתן להסרה עד גבול מה שזוכה — יציאה שכבר חזרה היא עובדה.</p>'
+          : ''}
+        <p class="modal-note">${total
+          ? (total === 1 ? 'פריט אחד יוסר מהרישום' : `<span class="num">${total}</span> פריטים יוסרו מהרישום`)
+          : 'בחרו כמות לפריט אחד לפחות'}</p>
+        <div class="modal-acts">
+          <button class="btn ghost" type="button" data-act="gear-del-cancel">ביטול</button>
+          <button class="btn danger" type="button" data-act="gear-del-save"
+                  data-rid="${esc(rec.rid)}" ${total ? '' : 'disabled'}>הסרה</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* The arithmetic on its own, so it can be checked without a record, a
+   network or a screen. Returns a new holding rather than editing in place:
+   the caller needs the old one intact to put back if the save fails. */
+function gearRemoved(items, off) {
+  const next = {};
+  for (const [id, it] of Object.entries(items || {})) next[id] = { ...it };
+
+  for (const [id, q] of off) {
+    const it = next[id];
+    if (!it || !(q > 0)) continue;
+    const back = it.r || 0;
+    // Never below what has already come back: a return with nothing to
+    // return is not a state this record is allowed to reach.
+    it.t = Math.max(back, (it.t || 0) - q);
+    // Nothing taken and nothing returned is not a holding of zero — it is a
+    // line that was never written. Remove it, so the record reads the way it
+    // would have if the mistake had not been made.
+    if (it.t === 0 && back === 0) delete next[id];
+  }
+  return next;
+}
+
+const gearDelSave = (rid) =>
+  withBusy(async () => {
+    const rec = findRec(rid);
+    if (!rec || rec.damaged) return;
+    const draft = { ...S.gearDelDraft };
+    const off = Object.entries(draft).filter(([, q]) => q > 0);
+    if (!off.length) return;
+
+    const before = JSON.stringify(rec.data.items);
+    rec.data.items = gearRemoved(rec.data.items, off);
+    rec.data.log.push({ a: 'gear-fix', t: Date.now() });
+    try {
+      await saveRec(rec, 'ציוד');
+    } catch (e) {
+      rec.data.items = JSON.parse(before);
+      rec.data.log.pop();
+      renderConsole();
+      throw e;
+    }
+    S.gearDel = '';
+    S.gearDelDraft = {};
+    renderConsole();
+
+    /* No message goes out. Adding kit tells a soldier he is now answerable
+       for something, which he has to know. Taking back a line he never signed
+       for in the first place tells him about a mistake he may never have
+       seen — and it would spend an approved template to do it. The manager
+       can send one by hand if the soldier did see it. */
+    const names = off
+      .map(([id, q]) => [itemById(id) && itemById(id).name, q])
+      .filter(([name]) => name);
+    toast(`הוסר מהרישום של ${rec.data.name}: ${names.map(([n, q]) => (q > 1 ? `${n} ×${q}` : n)).join(', ')}`);
+  });
 
 const gearAddSave = (rid) =>
   withBusy(async () => {
@@ -11345,12 +11528,14 @@ $app.addEventListener('click', (e) => {
 /* Both dialogs are questions, and closing one without answering is always the
    safe outcome — nothing is written until the confirm button is pressed. */
 function closeModals() {
-  if (!S.creditAsk && !S.gearAdd && !S.delAsk && !S.repDelAsk) return false;
+  if (!S.creditAsk && !S.gearAdd && !S.gearDel && !S.delAsk && !S.repDelAsk) return false;
   S.creditAsk = '';
   S.delAsk = '';
   S.repDelAsk = '';
   S.gearAdd = '';
   S.gearDraft = {};
+  S.gearDel = '';
+  S.gearDelDraft = {};
   renderConsole();
   return true;
 }
@@ -11707,6 +11892,20 @@ function dispatch(act, el) {
     case 'repdel-ok': S.repDelAsk = ''; repDelete(el.dataset.id); break;
     case 'modal-close': closeModals(); break;
     case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
+    case 'gear-del': S.gearDel = rid; S.gearDelDraft = {}; renderConsole(); break;
+    case 'gear-del-cancel': S.gearDel = ''; S.gearDelDraft = {}; renderConsole(); break;
+    case 'gear-del-save': gearDelSave(rid); break;
+    case 'gear-del-draft': {
+      const id = el.dataset.item;
+      const rec = findRec(S.gearDel);
+      const have = rec && rec.data.items[id];
+      if (!have) break;
+      const room = have.t - (have.r || 0);
+      const next = (S.gearDelDraft[id] || 0) + Number(el.dataset.d || 0);
+      S.gearDelDraft[id] = Math.max(0, Math.min(room, next));
+      renderConsole();
+      break;
+    }
     case 'gear-add-cancel': S.gearAdd = ''; S.gearDraft = {}; renderConsole(); break;
     case 'gear-add-save': gearAddSave(rid); break;
     case 'gear-draft': {
