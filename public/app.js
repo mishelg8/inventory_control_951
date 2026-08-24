@@ -8947,7 +8947,10 @@ const waPause = (on) =>
     S.askDel = '';
     try {
       const r = await api(`/admin/wa/${on ? 'pause' : 'resume'}`, { method: 'POST' });
+      // One row, one switch, both panels — the official channel checks the
+      // same flag before it sends, so it has to be told too.
       S.wa.paused = r.paused === true;
+      S.wac.paused = r.paused === true;
       renderConsole();
       toast(S.wa.paused ? 'שליחת הוואטסאפ מושהית' : 'שליחת הוואטסאפ חודשה');
     } catch (e) {
@@ -9034,6 +9037,18 @@ function cloudPanel() {
         : ''}
 
       ${names.length ? tplTable(names) : ''}
+
+      <div class="rec-actions">
+        ${S.wac.paused
+          /* Down is the safe direction, so coming back up is the one that
+             asks. This used to live on the gateway's panel — which stopped
+             rendering when the gateway was retired, leaving the stop switched
+             on and no control anywhere to switch it off. */
+          ? askBtn('wa-resume', 'wa-resume', 'חידוש שליחה',
+              'לחדש שליחת הודעות? כפתורי ההודעות יחזרו לשלוח מיד בלחיצה.',
+              { yes: 'חידוש', cls: 'btn ghost small' })
+          : `<button class="btn danger small" data-act="wa-pause">עצירת שליחה</button>`}
+      </div>
     </section>`;
 }
 
