@@ -249,6 +249,8 @@ const S = {
      one entry per item, each either held (with a catalogue number and a
      photograph) or missing (with a reason). Photographs are kept out of the
      row so a re-render never copies image bytes around. */
+  midBad: [],                   // records whose id does not match their number
+  midRan: 0,                    // how many were checked, 0 = not run
   msnQ: '',                     // shift-report search box
   msn: null,
   msnRows: {},                  // itemId -> { have: 'yes'|'no', mk, why }
@@ -9759,8 +9761,64 @@ function renderWaTab() {
     </div>`;
 }
 
+/* ── Records whose id no longer matches their number ───────────────────
+ *
+ * The record id is derived from the personal number when the record is
+ * created, and it is the primary key — so it never changes afterwards. A
+ * number corrected later through "עריכת פרטים" leaves the card reading
+ * correctly while the id still encodes what was typed the first time.
+ *
+ * That is invisible until a soldier goes to sign for kit: the form derives an
+ * id from the number he types, the server has no row under it, and he is told
+ * he is not registered — while the console shows him plainly. It looks like
+ * the form is broken and it is not.
+ *
+ * The console is the only place that can see this, because only it holds both
+ * the ids and the decrypted numbers. Counting is cheap; the derivation is not
+ * — 60,000 rounds per record — so it runs when asked for and not before. */
+const midCheck = () =>
+  withBusy(async () => {
+    const rows = S.recs.filter((r) => !r.damaged && r.data && r.data.pn);
+    const bad = [];
+    for (const r of rows) {
+      const want = await deriveRid(String(r.data.pn).trim(), S.config.idSalt);
+      if (want !== r.rid) bad.push({ rid: r.rid, name: r.data.name, pn: r.data.pn });
+    }
+    S.midBad = bad;
+    S.midRan = rows.length;
+    renderConsole();
+  });
+
+function midPanel() {
+  if (!S.midRan) {
+    return `
+      <div class="callout">
+        <p class="callout-title">בדיקת התאמה בין מספר אישי למזהה הרשומה</p>
+        <p>מזהה הרשומה נגזר מהמספר האישי ברגע היצירה ואינו משתנה אחר כך. מספר שתוקן מאוחר יותר משאיר רשומה שנראית תקינה בקונסולה, אבל <strong>החייל לא יוכל לחתום על ציוד או לרשום נשק</strong> — הטופס יאמר לו שהוא אינו רשום.</p>
+        <p class="mb0"><button class="btn ghost" data-act="mid-check">בדיקת כל הרשומות</button></p>
+      </div>`;
+  }
+  if (!S.midBad.length) {
+    return `
+      <div class="callout">
+        <p class="callout-title">בדיקת התאמה — תקין</p>
+        <p class="mb0">נבדקו <span class="num">${S.midRan}</span> רשומות. בכולן המזהה תואם למספר האישי, וכל חייל יכול לחתום.</p>
+      </div>`;
+  }
+  return `
+    <div class="callout risk">
+      <p class="callout-title">${S.midBad.length} רשומות שהמזהה שלהן אינו תואם למספר האישי</p>
+      <p>החיילים האלה <strong>יקבלו "המספר האישי הזה עוד לא רשום"</strong> כשינסו לחתום על ציוד או לרשום נשק, למרות שהם מופיעים בקונסולה:</p>
+      <ul class="mid-list">
+        ${S.midBad.map((b) => `<li><strong>${esc(b.name || '')}</strong> · מ״א <span class="num">${esc(b.pn)}</span> · מזהה <span class="num">${esc(b.rid.slice(0, 16))}</span></li>`).join('')}
+      </ul>
+      <p class="mb0">נבדקו <span class="num">${S.midRan}</span> רשומות.</p>
+    </div>`;
+}
+
 function renderSecurityTab() {
   return `
+    ${midPanel()}
     <div class="callout">
       <p class="callout-title">מה מוצפן</p>
       <p>שם, מספר אישי, טלפון, מספר נשק, פירוט הציוד <strong>וצילומי הרישיונות</strong> מוצפנים במכשיר לפני השליחה. השרת, קלאודפלייר, וכל מי שמשיג גישה לחשבון או למסד — רואים צופן בלבד.</p>
@@ -12759,6 +12817,7 @@ function dispatch(act, el) {
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
+    case 'mid-check': midCheck(); break;
     case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;
