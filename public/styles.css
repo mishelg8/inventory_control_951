@@ -3301,40 +3301,18 @@ body.printing .printdoc {
    itself is what receives the ring since the input inside it is invisible. */
 .msn-pick:focus-within { outline: 2px solid var(--pine); outline-offset: 2px; }
 
-/* A shift report read back: one line per item, the catalogue number beside
-   the name, and the photograph brought down only when somebody asks for it. */
-.msn-lines {
-  list-style: none;
-  margin: 0.75rem 0 0;
-  padding: 0;
-}
+/* The items of one shift, inside the row that was opened for them. */
+.msn-detail { padding: 0.5rem 0; }
 
-.msn-line {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.45rem 0;
-  border-block-start: 1px solid var(--bg-2);
-  font-size: var(--t-sm);
-}
+.msn-detail .tbl { margin-block-end: 0.5rem; }
 
-.msn-line:first-child { border-block-start: 0; }
-.msn-line-n { font-weight: 600; min-width: 7.5rem; }
-.msn-line-mk { color: var(--muted); }
+/* A missing item is the only thing on this screen anybody acts on. */
+.msn-short td:first-child { color: var(--bad-fill); font-weight: 600; }
 
-.msn-line-why {
-  color: var(--muted);
-  flex: 1 1 100%;
-}
-
-.msn-line.short .msn-line-n { color: var(--bad-fill); }
-
-/* The picture, once it is down. Capped so a card stays a card — pressing it
-   opens it larger through the same zoom the licences use. */
+/* The picture, once it is down. Capped so one open row stays a row. */
 .msn-shot {
-  flex: 1 1 100%;
-  max-width: 15rem;
+  display: block;
+  max-width: 12rem;
   border-radius: var(--r-sm);
   margin-block-start: 0.35rem;
 }

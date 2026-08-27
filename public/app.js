@@ -8222,25 +8222,57 @@ function renderReportsTab() {
    thing on this screen anybody acts on. A shift where everything was present
    is a shift nobody needs to read — it exists so that when something does not
    come back, there is a record of when it was last seen and who had it. */
-function msnItemLine(rec, item, i) {
-  const name = missionItemName(item.id);
-  if (item.have === 'no') {
-    return `<li class="msn-line short">
-        <span class="msn-line-n">${esc(name)}</span>
-        <span class="state wait">חסר</span>
-        <span class="msn-line-why">${esc(item.why || '')}</span>
-      </li>`;
-  }
-  const kind = MISSION_KINDS[typeof item.shot === 'number' ? item.shot : i];
-  const key = `${rec.id}:${kind}`;
-  const shot = S.docs[key];
-  return `<li class="msn-line">
-      <span class="msn-line-n">${esc(name)}</span>
-      <span class="msn-line-mk num">${esc(item.mk || '—')}</span>
-      <button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
-        shot ? 'הסתרה' : '📷 צילום'}</button>
-      ${shot ? `<img class="shot-img msn-shot" src="${shot}" alt="צילום ${esc(name)}">` : ''}
-    </li>`;
+/* One row per shift, opened to see the items — not a card per shift.
+ *
+ * The first version drew every item of every report on the screen at once,
+ * which reads fine for the one report that exists on the day it is built and
+ * becomes unusable at forty. What somebody actually does with this screen is
+ * scan for the shifts that went up short; the six lines underneath are the
+ * second question, asked of one shift at a time.
+ *
+ * So it is the same table the roster uses, with the same folding behaviour on
+ * a phone: the commander and the verdict are what a 375px screen keeps, and
+ * the rest comes back as the window widens. */
+function msnDetail(rec) {
+  const d = rec.data;
+  const rows = msnItems(rec).map((item, i) => {
+    const name = missionItemName(item.id);
+    if (item.have === 'no') {
+      return `<tr class="msn-short">
+          <td>${esc(name)}</td>
+          <td><span class="state wait">חסר</span></td>
+          <td colspan="2">${esc(item.why || '—')}</td>
+        </tr>`;
+    }
+    const kind = MISSION_KINDS[typeof item.shot === 'number' ? item.shot : i];
+    const shot = S.docs[`${rec.id}:${kind}`];
+    return `<tr>
+        <td>${esc(name)}</td>
+        <td><span class="state done">יש</span></td>
+        <td class="num">${esc(item.mk || '—')}</td>
+        <td>
+          <button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
+            shot ? 'הסתרה' : '📷 צילום'}</button>
+          ${shot ? `<img class="shot-img msn-shot" src="${shot}" alt="צילום ${esc(name)}">` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="msn-detail">
+      <div class="tbl-scroll">
+        <table class="tbl compact">
+          <thead><tr><th>פריט</th><th>מצב</th><th>מק״ט / סיבה</th><th>צילום</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${d.phone
+        ? `<p class="rec-meta mb0">טלפון:
+             <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
+             <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${
+               S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button></p>`
+        : '<p class="rec-meta mb0 muted-txt">לא הושאר טלפון</p>'}
+    </div>`;
 }
 
 function renderMissionTab() {
@@ -8263,42 +8295,60 @@ function renderMissionTab() {
   });
 
   const pg = paged('mission', ordered);
-  const cards = pg.slice.map((rec) => {
+  const rows = pg.slice.map((rec) => {
     if (rec.damaged) {
-      return `<article class="rec broken">
-          <header class="rec-head"><div class="rec-name">דוח פגום</div><span class="state live">שגיאה</span></header>
-        </article>`;
+      return `<tr><td colspan="6" class="muted-txt">דוח פגום — לא ניתן לפענוח</td></tr>`;
     }
     const d = rec.data;
-    const items = msnItems(rec);
-    const short = msnMissingOf(rec);
+    const short = msnMissingOf(rec).length;
+    const total = msnItems(rec).length;
+    const open = S.expanded.has(rec.id);
     return `
-      <article class="rec ${short.length ? 'wait' : 'done'}">
-        <header class="rec-head">
-          <div>
-            <div class="rec-name">${esc(d.name || '')}</div>
-            <div class="rec-meta">${esc(fmtDate(d.createdAt))}${d.shift ? ` · ${esc(d.shift)}` : ''}</div>
-            <div class="rec-meta">מ״א <span class="num">${esc(d.pn || '')}</span>${
-              d.phone
-                ? ` · <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
-                    <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${
-                      S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button>`
-                : ''}</div>
-          </div>
-          <span class="state ${short.length ? 'wait' : 'done'}">${
-            short.length ? `${short.length} חסרים` : '✓ הכול נמצא'}</span>
-        </header>
-        <ul class="msn-lines">${items.map((it, i) => msnItemLine(rec, it, i)).join('')}</ul>
-      </article>`;
+      <tr class="${open ? 'is-open' : ''}">
+        <td class="lg-name">
+          <button class="rowlink" data-act="expand" data-rid="${esc(rec.id)}">
+            ${avatar(d.name)}<span class="rowlink-n">${esc(d.name || '')}</span><span class="row-caret" aria-hidden="true">${open ? '▾' : '◂'}</span>
+          </button>
+        </td>
+        <td class="num">${esc(d.pn || '')}</td>
+        <td>${esc(d.shift || '—')}</td>
+        <td class="num">${esc(fmtShort(d.createdAt))}</td>
+        <td>${short
+          ? `<span class="state wait">${short === 1
+              ? `חסר 1 מתוך ${total}`
+              : `חסרים ${short} מתוך ${total}`}</span>`
+          : '<span class="state done">✓ הכול נמצא</span>'}</td>
+        <td></td>
+      </tr>
+      ${open ? `<tr class="sub"><td colspan="6">${msnDetail(rec)}</td></tr>` : ''}`;
   }).join('');
+
+  const short = ordered.filter((r) => !r.damaged && msnMissingOf(r).length).length;
 
   return `
     <section class="panel">
       <h2 class="panel-title">דוחות משמרת</h2>
-      <p class="panel-sub">מה שמפקד דיווח לפני עלייה למשמרת, דרך <span class="code-inline">#mission</span>. משמרות שעלו בחוסר מוצגות ראשונות.</p>
+      <p class="panel-sub">שורה לכל משמרת. לחיצה על השם פותחת את הפירוט — מק״ט, סיבת חוסר וצילום לכל פריט. משמרות שעלו בחוסר מוצגות ראשונות.</p>
       ${plainSearch('msn-search', 'msn-qclear', S.msnQ, 'חיפוש לפי שם, מ״א או משמרת', all.length, visible.length)}
-      ${cards || '<p class="empty">אין דוחות משמרת עדיין.</p>'}
-      ${pager('mission', pg)}
+      ${pg.slice.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl roster" data-phone="0,4,-1">
+               <thead><tr>
+                 <th>מפקד</th><th class="num">מ״א</th><th>משמרת</th>
+                 <th class="num">דווח</th><th>מצב</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           ${pager('mission', pg)}`
+        : '<p class="empty">אין דוחות משמרת שתואמים את החיפוש.</p>'}
+      <p class="mt muted-txt">${(() => {
+        const n = ordered.filter((r) => !r.damaged).length;
+        return `${n === 1 ? 'דוח אחד' : `<span class="num">${n}</span> דוחות`} · ${
+          short === 0 ? 'אף משמרת לא עלתה בחוסר'
+            : short === 1 ? 'משמרת אחת עלתה בחוסר'
+              : `<span class="num">${short}</span> משמרות עלו בחוסר`}`;
+      })()}</p>
       ${reportButtons('mission')}
     </section>`;
 }
