@@ -574,3 +574,84 @@ test('a damaged or nameless record cannot poison the index', () => {
   assert.equal(out.pn, '8000001', 'the damaged duplicate was not counted as a second soldier');
   assert.equal(out.source, 'הושלם לפי שם');
 });
+
+/* ── A weapon may be in one place, and paperwork says it twice ─────────
+   Depositing a weapon into the armoury was refused with "already registered
+   to <the soldier depositing it>". It was: he signed for it, which is why he
+   has it to hand in. The uniqueness rule is about one number naming one
+   physical object, and a deposit does not create a second object — it moves
+   the one there is.
+
+   The rule still has to hold for everybody else, so these check both
+   directions. */
+
+function liftSerials() {
+  const src = readFileSync(join(root, 'public/app.js'), 'utf8');
+  const from = src.indexOf('function serialIndex(except) {');
+  const to = src.indexOf('// Returns [] when nothing is suspicious');
+  if (from < 0 || to < 0 || to < from) throw new Error('serial helpers not found in app.js');
+
+  const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אקילה'], ['scope', 'כוונת']];
+  const REGISTERS = { armon: { key: 'armon', kinds: [{ id: 'weapon', name: 'נשק אישי' }], title: 'ארמון' } };
+  return (S) => new Function(
+    'S', 'SERIAL_FIELDS', 'REGISTERS', 'nameOf',
+    `${src.slice(from, to)}\n return { serialIndex, serialTaken };`
+  )(S, SERIAL_FIELDS, REGISTERS, (list, id) => (list.find((k) => k.id === id) || {}).name || id);
+}
+
+const soldier = (name, pn, weapon) => ({
+  rid: `rid-${pn}`, status: 'approved', data: { name, pn, weapon },
+});
+
+test('a weapon held by a different soldier still blocks', () => {
+  const S = {
+    recs: [soldier('דוד לוי', '1111111', 'W-500')],
+    inv: { armon: [] }, reports: [],
+  };
+  const { serialTaken } = liftSerials()(S);
+  // filed by somebody else — a real collision
+  assert.match(serialTaken('W-500', 'dep-1', '2222222'), /כבר רשום על/);
+});
+
+test('a soldier depositing his own weapon is not blocked by his own record', () => {
+  const S = {
+    recs: [soldier('גיא אביזמר', '7522807', '47886692')],
+    inv: { armon: [] }, reports: [],
+  };
+  const { serialTaken } = liftSerials()(S);
+  assert.equal(serialTaken('47886692', 'dep-1', '7522807'), '', 'his own signature is why he has it');
+});
+
+test('without knowing whose deposit it is, the old refusal still stands', () => {
+  const S = {
+    recs: [soldier('גיא אביזמר', '7522807', '47886692')],
+    inv: { armon: [] }, reports: [],
+  };
+  const { serialTaken } = liftSerials()(S);
+  assert.match(serialTaken('47886692', 'dep-1'), /כבר רשום על/);
+});
+
+test('once filed, the record and the register are counted as one object', () => {
+  const S = {
+    recs: [soldier('גיא אביזמר', '7522807', '47886692')],
+    inv: { armon: [{ id: 'a1', kind: 'weapon', serial: '47886692', owner: 'גיא אביזמר', ownerPn: '7522807' }] },
+    reports: [],
+  };
+  const { serialIndex, serialTaken } = liftSerials()(S);
+  const hits = serialIndex().filter((o) => o.v === '47886692');
+  assert.equal(hits.length, 1, 'the same weapon must not appear twice');
+  assert.equal(hits[0].kind, 'ארמון', 'the register is where it physically is');
+  // and it is still taken as far as anybody else is concerned
+  assert.match(serialTaken('47886692', 'other', '9999999'), /כבר רשום על/);
+});
+
+test('the same serial under two different soldiers is still two rows', () => {
+  const S = {
+    recs: [soldier('א', '1111111', 'W-9')],
+    inv: { armon: [{ id: 'a1', kind: 'weapon', serial: 'W-9', owner: 'ב', ownerPn: '2222222' }] },
+    reports: [],
+  };
+  const { serialIndex } = liftSerials()(S);
+  assert.equal(serialIndex().filter((o) => o.v === 'W-9').length, 2,
+    'different owners means a genuine clash, not one object');
+});

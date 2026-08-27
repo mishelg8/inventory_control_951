@@ -6333,7 +6333,8 @@ const depApprove = (id) =>
     // Every number on the slip has to be free — the weapon and each accessory
     // — and the deposit itself is excluded so it does not collide with itself.
     for (const [f, label] of SERIAL_FIELDS) {
-      const clash = serialTaken(d[f], rec.id);
+      // His own record holding this weapon is the reason he is depositing it.
+      const clash = serialTaken(d[f], rec.id, d.pn);
       if (clash) { toast(`${label}: ${clash}`, true); return; }
     }
     S.askDel = '';
@@ -10995,16 +10996,41 @@ function editDistance(a, b) {
 // drops the row being edited, so a record does not collide with itself.
 function serialIndex(except) {
   const out = [];
+  const norm = (v) => String(v || '').trim().toLowerCase();
+
+  /* A weapon that has been deposited is in the armoury and on the soldier's
+     record at once, and both rows are true: the register says where the thing
+     is, the record says he signed for it. They describe one object, so the
+     index must count it once — otherwise every check after the first deposit
+     reports the unit's own paperwork as a duplicate.
+
+     Matched on the number together with the personal number: the same serial
+     under a different soldier is a real collision and stays one. */
+  const inArmoury = new Set();
+  for (const reg of Object.values(REGISTERS)) {
+    for (const x of (S.inv && S.inv[reg.key]) || []) {
+      if (x.serial && x.ownerPn) inArmoury.add(`${norm(x.serial)}|${norm(x.ownerPn)}`);
+    }
+  }
+
   for (const rec of S.recs) {
     if (rec.rid === except || rec.damaged || !rec.data || rec.status !== 'approved') continue;
     for (const [f, label] of SERIAL_FIELDS) {
-      if (rec.data[f]) out.push({ v: String(rec.data[f]), label, who: rec.data.name, kind: 'חייל' });
+      if (!rec.data[f]) continue;
+      if (inArmoury.has(`${norm(rec.data[f])}|${norm(rec.data.pn)}`)) continue;
+      out.push({
+        v: String(rec.data[f]), label, who: rec.data.name, kind: 'חייל',
+        pn: String(rec.data.pn || ''),
+      });
     }
   }
   for (const reg of Object.values(REGISTERS)) {
     for (const x of (S.inv && S.inv[reg.key]) || []) {
       if (x.id === except || !x.serial) continue;
-      out.push({ v: String(x.serial), label: nameOf(reg.kinds, x.kind), who: x.owner, kind: reg.title });
+      out.push({
+        v: String(x.serial), label: nameOf(reg.kinds, x.kind), who: x.owner, kind: reg.title,
+        pn: String(x.ownerPn || ''),
+      });
     }
   }
   // A deposit that has been filed is already in the register; one still
@@ -11021,10 +11047,20 @@ function serialIndex(except) {
 
 // The blocking half of the check: an exact match anywhere is a refusal, not
 // a warning. Returns the message to show, or '' if the number is free.
-function serialTaken(value, except) {
+/* `ownPn` is the soldier the number is allowed to already belong to.
+   Filing a deposit is the one operation where a match is expected rather than
+   forbidden: the weapon is on his record because he signed for it, and the
+   deposit is that same weapon moving to the armoury. A match under any other
+   personal number is still a refusal. */
+function serialTaken(value, except, ownPn = '') {
   const v = String(value || '').trim().toLowerCase();
   if (!v) return '';
-  const hit = serialIndex(except).find((o) => o.v.trim().toLowerCase() === v);
+  const mine = String(ownPn || '').trim().toLowerCase();
+  const hit = serialIndex(except).find((o) => {
+    if (o.v.trim().toLowerCase() !== v) return false;
+    if (mine && o.kind === 'חייל' && String(o.pn || '').trim().toLowerCase() === mine) return false;
+    return true;
+  });
   return hit ? `⛔ ${value} כבר רשום על ${hit.who || 'ללא שם'} (${hit.kind}) — מספר חייב להיות ייחודי` : '';
 }
 
