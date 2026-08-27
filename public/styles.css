@@ -3251,3 +3251,90 @@ body.printing .printdoc {
   text-decoration: none;
   text-align: center;
 }
+
+/* ── The shift checklist ───────────────────────────────────────────────
+   Two answers per item, and the pair is the whole control — so they are wide,
+   thumb-sized and unambiguous. A commander fills this standing up, in the
+   dark, before going out; a small radio dot beside a word is the wrong thing
+   to ask him to hit. */
+.msn-card { margin-block-end: 0.75rem; }
+
+.msn-card.missing {
+  border-color: var(--bad-line, var(--line-hard));
+  background: var(--bad-tint, var(--surface-2));
+}
+
+.msn-name {
+  margin-block-end: 0.6rem;
+  font-size: var(--t-md);
+}
+
+.msn-picks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-block-end: 0.75rem;
+}
+
+.msn-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-hard);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+
+.msn-pick:hover { border-color: var(--muted-2); }
+.msn-pick input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.msn-pick.on.yes { border-color: var(--pine); background: var(--pine-tint); color: var(--pine-deep); }
+.msn-pick.on.no  { border-color: var(--bad-fill); background: var(--bad-tint, var(--surface-2)); color: var(--bad-fill); }
+
+/* The keyboard has to be able to see which one is focused, and the pill
+   itself is what receives the ring since the input inside it is invisible. */
+.msn-pick:focus-within { outline: 2px solid var(--pine); outline-offset: 2px; }
+
+/* A shift report read back: one line per item, the catalogue number beside
+   the name, and the photograph brought down only when somebody asks for it. */
+.msn-lines {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.msn-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+  border-block-start: 1px solid var(--bg-2);
+  font-size: var(--t-sm);
+}
+
+.msn-line:first-child { border-block-start: 0; }
+.msn-line-n { font-weight: 600; min-width: 7.5rem; }
+.msn-line-mk { color: var(--muted); }
+
+.msn-line-why {
+  color: var(--muted);
+  flex: 1 1 100%;
+}
+
+.msn-line.short .msn-line-n { color: var(--bad-fill); }
+
+/* The picture, once it is down. Capped so a card stays a card — pressing it
+   opens it larger through the same zoom the licences use. */
+.msn-shot {
+  flex: 1 1 100%;
+  max-width: 15rem;
+  border-radius: var(--r-sm);
+  margin-block-start: 0.35rem;
+}

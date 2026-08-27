@@ -62,6 +62,29 @@ const ITEMS = [
 
 const itemById = (id) => ITEMS.find((i) => i.id === id);
 
+/* What a commander accounts for before going up on a shift.
+ *
+ * A separate list from ITEMS on purpose. ITEMS is what a soldier signs for
+ * and holds; this is what gets checked at the top of every shift, item by
+ * item, with a catalogue number written down and a photograph taken there and
+ * then. The two overlap without being the same, and folding them together
+ * would put a ceramic plate in the store's stock count or a helmet in the
+ * shift handover.
+ *
+ * The order is the order they are checked in, which is the order the unit
+ * gave. The ids are short because each one becomes a document key. */
+const MISSION_ITEMS = [
+  { id: 'binocs', name: 'משקפת' },
+  { id: 'amral',  name: 'אמר״ל' },
+  { id: 'comms',  name: 'ציוד קשר' },
+  { id: 'alpha',  name: 'ציוד אלפא' },
+  { id: 'plates', name: 'פלטות קרמיות' },
+  { id: 'lionet', name: 'ליונט' },
+];
+
+const missionItemName = (id) =>
+  (MISSION_ITEMS.find((i) => i.id === id) || {}).name || id;
+
 const DEPTS = [
   { id: 'p1', name: 'מחלקה 1' },
   { id: 'p2', name: 'מחלקה 2' },
@@ -306,6 +329,7 @@ export {
   FUEL_LOW,
   FUEL_OFFICE,
   ITEMS,
+  MISSION_ITEMS,
   LIC_KINDS,
   LIFECYCLE,
   LOAN_LOCS,
@@ -317,6 +341,7 @@ export {
   canLoan,
   deptName,
   itemById,
+  missionItemName,
   kindLocs,
   nameOf,
 };

@@ -8,7 +8,7 @@
 // whitelisted. Without this, a crafted quantity like "<img …>" flows into
 // innerHTML in the admin console — where the private key lives.
 
-import { ITEMS, DEPTS, DIETS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
+import { ITEMS, MISSION_ITEMS, DEPTS, DIETS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
 import { rndId } from './crypto.js';
 
 const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -108,7 +108,27 @@ function cleanRecord(raw) {
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
-    kind: ['deposit', 'fault', 'refuel'].includes(raw.kind) ? raw.kind : 'report',
+    kind: ['deposit', 'fault', 'refuel', 'mission'].includes(raw.kind) ? raw.kind : 'report',
+    /* mission-only: the shift checklist, one entry per item. Whitelisting
+       works by omission, and omitting this meant a shift report arrived with
+       its kind flattened to 'report' and its items gone — it read as an empty
+       shortage request. Every field is coerced here, because a checklist that
+       came back from storage is no more trusted than one off a form.
+
+       `shot` is which document slot holds the photograph, kept as a number so
+       the console does not have to infer it from position when an item was
+       answered out of order. */
+    items: Array.isArray(raw.items)
+      ? raw.items.slice(0, MISSION_ITEMS.length).map((it) => ({
+        id: MISSION_ITEMS.some((m) => m.id === (it && it.id)) ? it.id : '',
+        have: (it && it.have) === 'no' ? 'no' : 'yes',
+        mk: asText(it && it.mk, 40),
+        why: asText(it && it.why, 120),
+        shot: asCount(it && it.shot, MISSION_ITEMS.length - 1),
+      })).filter((it) => it.id)
+      : [],
+    // mission-only: which shift or task this was filed for. Free text.
+    shift: asText(raw.shift, 60),
     // refuelling: which card, how much, into which vehicle. The litres are a
     // count and nothing else — a soldier's browser is not trusted to send a
     // number, so it is coerced to one here as everything else is.

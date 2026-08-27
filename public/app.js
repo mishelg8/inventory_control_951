@@ -5,7 +5,7 @@
    ════════════════════════════════════════════════════════════════════ */
 
 import {
-  SVG_OPEN, ITEMS, itemById, DEPTS, DIETS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
+  SVG_OPEN, ITEMS, MISSION_ITEMS, missionItemName, itemById, DEPTS, DIETS, deptName, SERIAL_FIELDS, LIFECYCLE, ARM_KINDS, ARM_LOCS,
   COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
   nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
   DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS, canLoan,
@@ -155,6 +155,11 @@ const DOC_MAX_BYTES = 280 * 1024;   // stays clear of the server's 400 KB b64 ca
    four the Worker accepts, in this order. Kept in step with FAULT_DOC_KINDS in
    functions/api/[[path]].js. */
 const FAULT_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
+
+/* One key per item on the shift checklist, in the checklist's own order, so
+   slot i always belongs to MISSION_ITEMS[i]. Kept in step with
+   MISSION_DOC_KINDS in functions/api/[[path]].js. */
+const MISSION_KINDS = ['msn1', 'msn2', 'msn3', 'msn4', 'msn5', 'msn6'];
 const FAULT_PHOTO_MAX = FAULT_KINDS.length;
 
 // The gallery button keeps `accept="image/*"`, and three attempts to improve on
@@ -225,6 +230,7 @@ function routeFromHash() {
   if (h === '#report') return 'report';
   if (h === '#deposit') return 'deposit';
   if (h === '#fault') return 'fault';
+  if (h === '#mission') return 'mission';
   if (h === '#refuel') return 'refuel';
   if (h === '#sign') return 'soldier';
   // The sign-up split into the three things it always was: being written down,
@@ -238,6 +244,16 @@ function routeFromHash() {
 const S = {
   config: null,                 // { ready, pub?, idSalt? }
   route: routeFromHash(),
+
+  /* Shift report. `msn` is the identity half, `msnRows` is the checklist —
+     one entry per item, each either held (with a catalogue number and a
+     photograph) or missing (with a reason). Photographs are kept out of the
+     row so a re-render never copies image bytes around. */
+  msnQ: '',                     // shift-report search box
+  msn: null,
+  msnRows: {},                  // itemId -> { have: 'yes'|'no', mk, why }
+  msnPhotos: {},                // itemId -> { bytes, size, preview }
+  msnSent: false,
 
   // refuelling report (soldier-facing, filed against a fuel card by the admin)
   sig: null,                    // the soldier's signature: { bytes, size, preview }
@@ -921,6 +937,7 @@ function renderRoute() {
   else if (S.route === 'report') renderReport();
   else if (S.route === 'deposit') renderDeposit();
   else if (S.route === 'fault') renderFault();
+  else if (S.route === 'mission') renderMission();
   else if (S.route === 'refuel') renderRefuel();
   else if (S.route === 'weapon') renderWeaponPage();
   else if (S.route === 'gear') renderGearPage();
@@ -1045,6 +1062,25 @@ function renderHome() {
         <span class="choice-txt">
           <span class="choice-t">דיווח תדלוק</span>
           <span class="choice-s">תדלקתם רכב בכרטיס תדלוק? רשמו כמה וכרטיס איזה, וזה ייקלט אצל מנהל הרכב.</span>
+        </span>
+        <span class="choice-go" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </span>
+      </a>
+      <a class="choice" href="#mission">
+        <span class="choice-ico bld" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/>
+            <path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/>
+            <path d="M8.4 12.6l1.8 1.8 3.8-3.8"/>
+            <path d="M8.4 17.6h7.2"/>
+          </svg>
+        </span>
+        <span class="choice-txt">
+          <span class="choice-t">דוח משימה לפני משמרת</span>
+          <span class="choice-s">מפקד? עברו על הציוד פריט־פריט לפני העלייה.</span>
         </span>
         <span class="choice-go" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
@@ -1326,6 +1362,230 @@ async function faultPhoto(input) {
   toast(skipped
     ? `צורפו ${added.length} — ${skipped} לא נכנסו, המקסימום הוא ${FAULT_PHOTO_MAX}`
     : added.length > 1 ? `${added.length} צילומים צורפו` : 'הצילום צורף');
+}
+
+/* ── Shift report ──────────────────────────────────────────────────────
+   Filled by a commander before going up, so that the unit knows what went up
+   with him and, when something does not come back, when it was last seen and
+   who was holding it.
+
+   Every item is answered, and "חסר" is an answer. Requiring a catalogue
+   number and a photograph for all six would mean a commander who is short of
+   one cannot file at all — and the missing item is exactly the thing this
+   report exists to catch. So a held item costs a number and a picture, and a
+   missing one costs a sentence.
+
+   The photograph is taken here, not chosen: the input offers the camera and
+   there is no gallery button beside it, which is the only lever HTML gives.
+   It is a strong one on a phone and it is not a guarantee — see the note
+   above FAULT_KINDS about what `accept` and `capture` can and cannot do. */
+const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '' };
+
+const msnReady = () => MISSION_ITEMS.every((it) => {
+  const r = msnRow(it.id);
+  if (r.have === 'no') return r.why.trim().length >= 2;
+  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
+  return false;
+});
+
+function msnItemCard(it) {
+  const r = msnRow(it.id);
+  const shot = S.msnPhotos[it.id];
+  const pick = (v, label, cls) => `
+    <label class="msn-pick ${r.have === v ? `on ${cls}` : ''}">
+      <input type="radio" name="have-${it.id}" data-act="msn-have" data-item="${it.id}"
+             data-v="${v}" ${r.have === v ? 'checked' : ''}>
+      <span>${label}</span>
+    </label>`;
+
+  return `
+    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}">
+      <h3 class="fsec msn-name">${esc(it.name)}</h3>
+      <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
+
+      ${r.have === 'yes' ? `
+        <label class="field">
+          <span class="field-label">מק״ט <span class="req" aria-hidden="true">*</span></span>
+          <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
+                 value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
+                 placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
+        </label>
+        ${shot
+          ? `<div class="lic-shot">
+               <img class="shot-img" src="${shot.preview}" alt="צילום ${esc(it.name)}">
+               <button type="button" class="btn ghost small" data-act="msn-drop" data-item="${it.id}">צילום מחדש</button>
+             </div>`
+          : `<label class="btn ghost wide">📷 צילום הפריט
+               <input class="vis-hidden" type="file" accept="image/*" capture="environment"
+                      data-act="msn-file" data-item="${it.id}"></label>
+             <p class="field-hint">חובה לצלם כאן ועכשיו — אין העלאה מהגלריה.</p>`}
+      ` : ''}
+
+      ${r.have === 'no' ? `
+        <label class="field mb0">
+          <span class="field-label">מה קרה לו? <span class="req" aria-hidden="true">*</span></span>
+          <input class="input" maxlength="120" autocomplete="off" value="${esc(r.why)}"
+                 data-act="msn-why" data-item="${it.id}"
+                 placeholder="לא נמסר / נשאר אצל המשמרת הקודמת / לא נמצא" required>
+        </label>` : ''}
+    </div>`;
+}
+
+function renderMission() {
+  if (notConfigured()) return;
+  if (S.msnSent) {
+    render(`
+      <section class="panel sform center-head">
+        <h1 class="panel-title center">הדוח נשלח</h1>
+        <p class="panel-sub center">הדוח נקלט אצל מנהל הציוד. אפשר לעלות למשמרת.</p>
+        <div class="formbar">
+          <button class="btn ghost" data-act="msn-again">דוח נוסף</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
+      </section>`);
+    return;
+  }
+
+  const v = S.msn || { pn: '', name: '', phone: '', shift: '' };
+  const missing = MISSION_ITEMS.filter((it) => msnRow(it.id).have === 'no').length;
+
+  render(`
+    <section class="panel sform center-head">
+      <h1 class="panel-title center">דוח משימה לפני משמרת</h1>
+      <p class="panel-sub center">עוברים פריט־פריט. על כל פריט שיש — מק״ט וצילום. על פריט שחסר — מה קרה לו.</p>
+
+      <form data-form="mission" novalidate>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>מי מדווח</h2>
+          <div class="grid2">
+            <label class="field">
+              <span class="field-label">מספר אישי <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="pn" inputmode="numeric" autocomplete="off"
+                     maxlength="9" value="${esc(v.pn)}" placeholder="1234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">שם מלא <span class="req" aria-hidden="true">*</span></span>
+              <input class="input" name="name" autocomplete="off" maxlength="60"
+                     value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+            </label>
+            <label class="field">
+              <span class="field-label">טלפון נייד <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" name="phone" inputmode="numeric" autocomplete="off"
+                     maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
+            </label>
+            <label class="field">
+              <span class="field-label">משמרת / משימה</span>
+              <input class="input" name="shift" autocomplete="off" maxlength="60"
+                     value="${esc(v.shift)}" placeholder="לדוגמה: שג״ם לילה, 22:00">
+            </label>
+          </div>
+        </div>
+
+        ${MISSION_ITEMS.map(msnItemCard).join('')}
+
+        <p class="form-err" data-err></p>
+        <p class="field-hint">${missing
+          ? `<strong>${missing}</strong> פריטים מסומנים כחסרים — הם יופיעו כדיווח אצל מנהל הציוד.`
+          : 'סמנו יש/חסר על כל פריט כדי לשלוח.'}</p>
+        <div class="formbar">
+          <button class="btn primary" type="submit" ${msnReady() ? '' : 'disabled'}>שליחת הדוח</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
+      </form>
+    </section>`);
+}
+
+/* Typing a catalogue number changes whether the report may be sent, and
+   nothing else on the screen. Redrawing the form to reflect that would take
+   the cursor out of the field mid-number, so only the button is touched. */
+function msnSyncSend() {
+  const form = $app.querySelector('form[data-form="mission"]');
+  if (!form) return;
+  const btn = form.querySelector('button[type=submit]');
+  if (btn) btn.disabled = !msnReady();
+}
+
+// Keeps what is typed across the re-render each tick of the checklist causes.
+function captureMissionForm() {
+  const form = $app.querySelector('form[data-form="mission"]');
+  if (!form) return;
+  S.msn = {
+    pn: form.pn.value.trim(), name: form.name.value.trim(),
+    phone: form.phone.value.trim(), shift: form.shift.value.trim(),
+  };
+}
+
+async function missionPhoto(itemId, file) {
+  captureMissionForm();
+  if (!file || notAnImage(file)) { toast('יש לצלם תמונה', true); return; }
+  toast('מעבד את התמונה…');
+  try {
+    const { bytes, size } = await compressImage(file);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    S.msnPhotos[itemId] = { bytes, size, preview: `data:image/jpeg;base64,${btoa(bin)}` };
+    renderMission();
+    toast('הצילום צורף');
+  } catch (e) {
+    toast(e.message || 'עיבוד התמונה נכשל', true);
+  }
+}
+
+async function missionSubmit(form) {
+  captureMissionForm();
+  const { pn, name, phone, shift } = S.msn;
+  if (!/^\d{5,9}$/.test(pn)) return setFormErr(form, 'מספר אישי: 5–9 ספרות');
+  if (name.length < 2) return setFormErr(form, 'נא למלא שם מלא');
+  if (!/^\d{9,10}$/.test(phone)) return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים');
+  if (!msnReady()) return setFormErr(form, 'יש להשלים כל פריט — מק״ט וצילום, או סיבה לחוסר');
+  setFormErr(form, '');
+
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const pubKey = await importPubKey(S.config.pub);
+    const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+
+    // The checklist as filed, and the photo slot each picture went into, so
+    // the console can fetch them without guessing at the order.
+    const shots = [];
+    const items = MISSION_ITEMS.map((it, i) => {
+      const r = msnRow(it.id);
+      const out = { id: it.id, have: r.have };
+      if (r.have === 'yes') {
+        out.mk = r.mk.trim();
+        if (S.msnPhotos[it.id]) { out.shot = i; shots[i] = S.msnPhotos[it.id]; }
+      } else {
+        out.why = r.why.trim();
+      }
+      return out;
+    });
+
+    const sealed = await seal(pubKey, {
+      kind: 'mission', pn, name, phone, shift, items, createdAt: Date.now(),
+    });
+    await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
+
+    // Separately, like every other photograph here, so listing shift reports
+    // never drags image data around with it.
+    for (let i = 0; i < shots.length; i++) {
+      if (!shots[i]) continue;
+      await api('/docs', {
+        body: { rid: id, kind: MISSION_KINDS[i], ...(await sealBytes(pubKey, shots[i].bytes)) },
+      });
+    }
+
+    S.msnSent = true;
+    S.msn = null;
+    S.msnRows = {};
+    S.msnPhotos = {};
+    renderMission();
+  });
+  if (!S.msnSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת הדוח';
+  }
 }
 
 async function faultSubmit(form) {
@@ -2532,6 +2792,7 @@ const TABS = [
   { id: 'track',   name: 'מעקב ציוד',    needs: ['records'] },
   { id: 'reports', name: 'בקשות חוסר',   needs: ['reports'] },
   { id: 'faults',  name: 'תקלות בינוי',  needs: ['reports'] },
+  { id: 'mission', name: 'דוחות משמרת', needs: ['reports'] },
   { id: 'inv',     name: 'מלאי',         needs: ['records', 'vault'] },
   { id: 'armon',   name: 'ארמון',        needs: ['vault', 'reports'] },
   { id: 'comms',   name: 'דוח קשר',      needs: ['vault'] },
@@ -2590,6 +2851,7 @@ function renderConsole() {
     ['track',   'מעקב ציוד',    c.approved],
     ['reports', 'בקשות חוסר',   openReps, openReps > 0],
     ['faults',  'תקלות בינוי',  openFaults() || null, openFaults() > 0],
+    ['mission', 'דוחות משמרת', msnShort() || null, msnShort() > 0],
     ['inv',     'מלאי',         null],
     // a deposit waiting for approval outranks the item count — it needs action
     ['armon',   'ארמון',        openDeposits() || armonCount() || null, openDeposits() > 0],
@@ -2624,6 +2886,7 @@ function renderConsole() {
   else if (S.tab === 'pending') body = renderPendingTab();
   else if (S.tab === 'track') body = renderTrackTab();
   else if (S.tab === 'reports') body = renderReportsTab();
+  else if (S.tab === 'mission') body = renderMissionTab();
   else if (S.tab === 'faults') body = renderFaultsTab();
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'armon') body = renderArmonTab();
@@ -4996,6 +5259,36 @@ const REPORTS = {
           `${ordered.filter((r) => st(r) === 'partial').length} טופלו חלקית · ` +
           `${ordered.filter((r) => st(r) === 'done').length} טופלו · ` +
           `${ordered.length} בסך הכול`,
+      };
+    },
+  },
+
+  /* One line per item per shift, not one line per shift: the question asked
+     of this sheet is "when was this thing last seen and who had it", and that
+     is a question about an item. */
+  mission: {
+    name: 'דוחות משמרת', file: 'tzayad-mission', sensitive: true,
+    build() {
+      const rows = [];
+      for (const r of missionReports()) {
+        if (r.damaged || !r.data) continue;
+        const d = r.data;
+        for (const it of msnItems(r)) {
+          rows.push([
+            fmtDate(d.createdAt), d.name || '', d.pn || '', d.phone || '', d.shift || '',
+            missionItemName(it.id),
+            it.have === 'no' ? 'חסר' : 'יש',
+            it.have === 'no' ? '' : (it.mk || ''),
+            it.have === 'no' ? (it.why || '') : '',
+          ]);
+        }
+      }
+      const short = rows.filter((x) => x[6] === 'חסר').length;
+      return {
+        head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משמרת', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
+        rows,
+        summary: `${missionReports().filter((r) => !r.damaged).length} דוחות · ` +
+          `${rows.length} פריטים נבדקו · ${short} חסרים`,
       };
     },
   },
@@ -7753,7 +8046,18 @@ const isKind = (r, k) => !r.damaged && !!r.data && r.data.kind === k;
 const isDeposit = (r) => isKind(r, 'deposit');
 const isFault = (r) => isKind(r, 'fault');
 const isRefuel = (r) => isKind(r, 'refuel');
-const shortageReports = () => S.reports.filter((r) => !isDeposit(r) && !isFault(r) && !isRefuel(r));
+const isMission = (r) => isKind(r, 'mission');
+const shortageReports = () =>
+  S.reports.filter((r) => !isDeposit(r) && !isFault(r) && !isRefuel(r) && !isMission(r));
+const missionReports = () => S.reports.filter(isMission);
+
+/* The number worth putting on a tab is not how many reports came in — it is
+   how many items went up short. A shift where everything was present is a
+   shift nobody needs to look at. */
+const msnItems = (r) => (r.data && Array.isArray(r.data.items) ? r.data.items : []);
+const msnMissingOf = (r) => msnItems(r).filter((i) => i.have === 'no');
+const msnShort = () =>
+  missionReports().filter((r) => !r.damaged && msnMissingOf(r).length).length;
 const depositReports = () => S.reports.filter(isDeposit);
 const faultReports = () => S.reports.filter(isFault);
 const refuelReports = () => S.reports.filter(isRefuel);
@@ -7905,6 +8209,95 @@ function renderReportsTab() {
       ${pager('reports', pgReports)}
       ${reportButtons('shortages')}
       <p class="field-hint">הייצוא כולל את <strong>כל</strong> הבקשות, לא רק את מה שמסונן על המסך — עמודת הסטטוס מאפשרת לסנן בגיליון. מ״א וטלפון שחסרים בבקשה מושלמים מהרישומים לפי שם החייל, ורק כשיש התאמה יחידה; עמודת <strong>מקור הפרטים</strong> אומרת על כל שורה מאיפה הגיעו.</p>
+    </section>`;
+}
+
+/* ── Shift reports (admin) ─────────────────────────────────────────────
+   What a commander said he had before going up, item by item, with the
+   photograph he took of each one.
+
+   The list leads with the shifts that went up short, because that is the only
+   thing on this screen anybody acts on. A shift where everything was present
+   is a shift nobody needs to read — it exists so that when something does not
+   come back, there is a record of when it was last seen and who had it. */
+function msnItemLine(rec, item, i) {
+  const name = missionItemName(item.id);
+  if (item.have === 'no') {
+    return `<li class="msn-line short">
+        <span class="msn-line-n">${esc(name)}</span>
+        <span class="state wait">חסר</span>
+        <span class="msn-line-why">${esc(item.why || '')}</span>
+      </li>`;
+  }
+  const kind = MISSION_KINDS[typeof item.shot === 'number' ? item.shot : i];
+  const key = `${rec.id}:${kind}`;
+  const shot = S.docs[key];
+  return `<li class="msn-line">
+      <span class="msn-line-n">${esc(name)}</span>
+      <span class="msn-line-mk num">${esc(item.mk || '—')}</span>
+      <button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
+        shot ? 'הסתרה' : '📷 צילום'}</button>
+      ${shot ? `<img class="shot-img msn-shot" src="${shot}" alt="צילום ${esc(name)}">` : ''}
+    </li>`;
+}
+
+function renderMissionTab() {
+  const all = missionReports();
+  const needle = S.msnQ.trim().toLowerCase();
+  const visible = all.filter((r) => {
+    if (r.damaged || !needle) return true;
+    const d = r.data || {};
+    return (d.name || '').toLowerCase().includes(needle)
+      || (d.shift || '').toLowerCase().includes(needle)
+      || String(d.pn || '').includes(needle);
+  });
+
+  // Short shifts first, then most recent — the order somebody reads this in.
+  const ordered = [...visible].sort((a, b) => {
+    const sa = a.damaged ? 0 : msnMissingOf(a).length;
+    const sb = b.damaged ? 0 : msnMissingOf(b).length;
+    if (!!sa !== !!sb) return sb - sa;
+    return Number((b.data && b.data.createdAt) || 0) - Number((a.data && a.data.createdAt) || 0);
+  });
+
+  const pg = paged('mission', ordered);
+  const cards = pg.slice.map((rec) => {
+    if (rec.damaged) {
+      return `<article class="rec broken">
+          <header class="rec-head"><div class="rec-name">דוח פגום</div><span class="state live">שגיאה</span></header>
+        </article>`;
+    }
+    const d = rec.data;
+    const items = msnItems(rec);
+    const short = msnMissingOf(rec);
+    return `
+      <article class="rec ${short.length ? 'wait' : 'done'}">
+        <header class="rec-head">
+          <div>
+            <div class="rec-name">${esc(d.name || '')}</div>
+            <div class="rec-meta">${esc(fmtDate(d.createdAt))}${d.shift ? ` · ${esc(d.shift)}` : ''}</div>
+            <div class="rec-meta">מ״א <span class="num">${esc(d.pn || '')}</span>${
+              d.phone
+                ? ` · <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
+                    <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${
+                      S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button>`
+                : ''}</div>
+          </div>
+          <span class="state ${short.length ? 'wait' : 'done'}">${
+            short.length ? `${short.length} חסרים` : '✓ הכול נמצא'}</span>
+        </header>
+        <ul class="msn-lines">${items.map((it, i) => msnItemLine(rec, it, i)).join('')}</ul>
+      </article>`;
+  }).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">דוחות משמרת</h2>
+      <p class="panel-sub">מה שמפקד דיווח לפני עלייה למשמרת, דרך <span class="code-inline">#mission</span>. משמרות שעלו בחוסר מוצגות ראשונות.</p>
+      ${plainSearch('msn-search', 'msn-qclear', S.msnQ, 'חיפוש לפי שם, מ״א או משמרת', all.length, visible.length)}
+      ${cards || '<p class="empty">אין דוחות משמרת עדיין.</p>'}
+      ${pager('mission', pg)}
+      ${reportButtons('mission')}
     </section>`;
 }
 
@@ -11679,6 +12072,17 @@ $app.addEventListener('input', (e) => {
   const num = () => Math.max(0, Math.min(9999, parseInt(String(el.value).replace(/\D/g, ''), 10) || 0));
   switch (act) {
     case 'search': S.q = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    /* A catalogue number and a reason change one thing on the screen: whether
+       the report may be sent. Redrawing the form to reflect that would take
+       the cursor out of the field mid-number, so only the button is touched. */
+    case 'msn-mk':
+      S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), mk: el.value };
+      msnSyncSend();
+      break;
+    case 'msn-why':
+      S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), why: el.value };
+      msnSyncSend();
+      break;
     case 'rep-search': S.repQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'inv-search': S.invQ = el.value; rerenderKeepFocus(el); break;
     case 'inv-open': S.inv.open[el.dataset.item] = num(); break;
@@ -11691,6 +12095,7 @@ $app.addEventListener('input', (e) => {
     case 'dep-search':  S.depQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'arm-mission': S.inv[regOf(el).key][+el.dataset.i].mission = el.value; break;
     case 'flt-search':  S.fltQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
+    case 'msn-search':  S.msnQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'audit-search': S.auditQ = el.value; S.page = {}; rerenderKeepFocus(el); break;
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
@@ -11773,6 +12178,9 @@ $app.addEventListener('change', (e) => {
   if (NUM_COMMIT.has(el.dataset.act)) { renderConsole(); return; }
   if (el.dataset.act === 'rf-photo') { refuelPhoto(el); return; }
   if (el.dataset.act === 'flt-photo') { faultPhoto(el); return; }
+  // One item, one picture, taken rather than chosen — there is no gallery
+  // input beside this one to fall back to.
+  if (el.dataset.act === 'msn-file') { missionPhoto(el.dataset.item, el.files && el.files[0]); return; }
   /* Switching to a mission takes the soldier list away and, with it, any link
      that was made while the destination was still a person. */
   if (el.dataset.act === 'loan-loc') {
@@ -11888,6 +12296,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'report') reportSubmit(form);
   else if (kind === 'deposit') depositSubmit(form);
   else if (kind === 'fault') faultSubmit(form);
+  else if (kind === 'mission') missionSubmit(form);
   else if (kind === 'refuel') refuelSubmit(form);
   else if (kind === 'arm-add') armAdd(form);
   else if (kind === 'arm-loan') armLoan(form);
@@ -12308,6 +12717,28 @@ function dispatch(act, el) {
     case 'dep-qclear': S.depQ = ''; S.page = {}; renderConsole(); break;
     // building faults
     case 'flt-again': S.fltSent = false; S.flt = null; S.fltPhotos = []; renderFault(); break;
+
+    /* Every one of these re-renders the checklist, so what is already typed
+       in the identity card is captured first — otherwise ticking the sixth
+       item wipes the personal number typed before the first. */
+    case 'msn-have': {
+      const id = el.dataset.item;
+      captureMissionForm();
+      S.msnRows[id] = { ...msnRow(id), have: el.dataset.v };
+      // Switching to "חסר" drops a picture that no longer describes anything.
+      if (el.dataset.v === 'no') delete S.msnPhotos[id];
+      renderMission();
+      break;
+    }
+    case 'msn-drop':
+      captureMissionForm();
+      delete S.msnPhotos[el.dataset.item];
+      renderMission();
+      break;
+    case 'msn-again':
+      S.msnSent = false; S.msn = null; S.msnRows = {}; S.msnPhotos = {};
+      renderMission();
+      break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
     case 'sig-clear': clearSignature(); break;
     case 'rf-photo-clear': captureRefuelForm(); S.rfPhoto = null; renderRefuel(); break;
@@ -12327,6 +12758,7 @@ function dispatch(act, el) {
       break;
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
+    case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
     case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
     case 'wa-sign': markSent(rid, 'notified'); break;

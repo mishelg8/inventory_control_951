@@ -383,6 +383,7 @@ const TAB_NEEDS = {
   track: ['records'],
   reports: ['reports'],
   faults: ['reports'],
+  mission: ['reports'],
   inv: ['records', 'vault'],
   armon: ['vault', 'reports'],
   comms: ['vault'],
@@ -412,6 +413,13 @@ const TAB_NEEDS = {
    connection. */
 const FAULT_DOC_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
 
+/* One photograph per item on a shift report. The docs table is keyed
+   (rid, kind), so each picture needs a kind of its own, and the count is
+   fixed by the checklist rather than by the reporter — six items, six keys,
+   in the checklist's order. Kept in step with MISSION_ITEMS in
+   public/lib/catalog.js. */
+const MISSION_DOC_KINDS = ['msn1', 'msn2', 'msn3', 'msn4', 'msn5', 'msn6'];
+
 // Which data source each kind of attachment belongs to, and therefore which
 // screen permission may read it. A photograph is not its own thing: it is part
 // of the record, the report or the fuel card it was attached to.
@@ -422,6 +430,7 @@ const DOC_SOURCE = {
   refuel: 'reports',
   fuel: 'vault',            // a receipt the office has filed onto a card
   ...Object.fromEntries(FAULT_DOC_KINDS.map((k) => [k, 'reports'])),
+  ...Object.fromEntries(MISSION_DOC_KINDS.map((k) => [k, 'reports'])),
 };
 
 function scopesFor(tabs) {
@@ -749,7 +758,7 @@ export async function onRequest(context) {
         // could not verify anyway.
         // The fault kinds are photographs of the broken thing itself, attached
         // to a building-fault report. Optional, unlike the receipt beside it.
-        !['civil', 'military', 'refuel', 'signature', ...FAULT_DOC_KINDS].includes(kind) ||
+        !['civil', 'military', 'refuel', 'signature', ...FAULT_DOC_KINDS, ...MISSION_DOC_KINDS].includes(kind) ||
         !isB64(ek, 1000) ||
         !isB64(iv, 64) ||
         !isB64(ct, DOC_MAX_B64)
@@ -759,7 +768,7 @@ export async function onRequest(context) {
       // A refuelling receipt and a fault photograph hang off the report, not
       // off a sign-out record, and the same rule applies: either may be
       // attached while the report is still open and not once it is closed.
-      if (kind === 'refuel' || FAULT_DOC_KINDS.includes(kind)) {
+      if (kind === 'refuel' || FAULT_DOC_KINDS.includes(kind) || MISSION_DOC_KINDS.includes(kind)) {
         const rep = await db
           .prepare('SELECT status FROM reports WHERE id = ?1 AND deleted_at IS NULL')
           .bind(rid)
