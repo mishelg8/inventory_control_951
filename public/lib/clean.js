@@ -129,6 +129,14 @@ function cleanReport(raw) {
       : [],
     // mission-only: which shift or task this was filed for. Free text.
     shift: asText(raw.shift, 60),
+    /* mission-only: the vehicle the shift drove and its odometer as the
+       commander read it. The id is the vault's own vehicle id, so the console
+       can match the reading back to the vehicle; the label rides along
+       because a vehicle can leave the fleet and stop resolving, and a reading
+       against "unknown vehicle" is worth less than one against a plate. */
+    vehId: asText(raw.vehId, 40),
+    vehLabel: asText(raw.vehLabel, 60),
+    km: asCount(raw.km, 9999999),
     // refuelling: which card, how much, into which vehicle. The litres are a
     // count and nothing else — a soldier's browser is not trusted to send a
     // number, so it is coerced to one here as everything else is.

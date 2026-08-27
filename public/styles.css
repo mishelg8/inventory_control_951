@@ -3324,3 +3324,8 @@ body.printing .printdoc {
 }
 
 .mid-list li { margin-block-end: 0.3rem; }
+
+/* "Already up to date" on the shift report's odometer line. The screen has a
+   colour for a refusal and one for a warning; this is neither — it is the
+   quiet answer that nothing needs doing. */
+.ok-txt { color: var(--pine-deep); font-weight: 600; }

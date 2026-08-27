@@ -253,6 +253,8 @@ const S = {
   midRan: 0,                    // how many were checked, 0 = not run
   msnQ: '',                     // shift-report search box
   msn: null,
+  msnVeh: '',                   // vault vehicle id the shift is driving, '' = none
+  msnKm: '',                    // its odometer as the commander reads it
   msnRows: {},                  // itemId -> { have: 'yes'|'no', mk, why }
   msnPhotos: {},                // itemId -> { bytes, size, preview }
   msnSent: false,
@@ -1383,7 +1385,11 @@ async function faultPhoto(input) {
    above FAULT_KINDS about what `accept` and `capture` can and cannot do. */
 const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '' };
 
-const msnReady = () => MISSION_ITEMS.every((it) => {
+// A vehicle without a reading is worse than no vehicle: it says somebody
+// drove and says nothing about how far.
+const msnKmOk = () => !S.msnVeh || /^\d{1,7}$/.test(String(S.msnKm).trim());
+
+const msnReady = () => msnKmOk() && MISSION_ITEMS.every((it) => {
   const r = msnRow(it.id);
   if (r.have === 'no') return r.why.trim().length >= 2;
   if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
@@ -1433,8 +1439,25 @@ function msnItemCard(it) {
     </div>`;
 }
 
+/* The fleet, for the picker. Same public list the refuelling form uses —
+   ids and labels only, published by the console. A shift form cannot read the
+   vault, and it does not need to: it needs to name a vehicle the console will
+   recognise afterwards. Asked once per page, not per keystroke. */
+let msnFleetAsked = false;
+function msnAskFleet() {
+  if (msnFleetAsked || !S.config || !S.config.ready) return;
+  msnFleetAsked = true;
+  api('/cards')
+    .then((r) => {
+      S.fleet = r.vehicles || [];
+      if (S.route === 'mission') { captureMissionForm(); renderMission(); }
+    })
+    .catch(() => { /* the picker says there is nothing to pick */ });
+}
+
 function renderMission() {
   if (notConfigured()) return;
+  msnAskFleet();
   if (S.msnSent) {
     render(`
       <section class="panel sform center-head">
@@ -1481,6 +1504,29 @@ function renderMission() {
                      value="${esc(v.shift)}" placeholder="לדוגמה: שג״ם לילה, 22:00">
             </label>
           </div>
+        </div>
+
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.car}</span>רכב</h2>
+          <label class="field">
+            <span class="field-label">הרכב שאתם נוסעים עליו</span>
+            <select class="input" data-act="msn-veh">
+              <option value=""${S.msnVeh ? '' : ' selected'}>— ללא רכב במשמרת הזו —</option>
+              ${(S.fleet || []).map((f) => `<option value="${esc(f.id)}"${
+                S.msnVeh === f.id ? ' selected' : ''}>${esc(f.label)}</option>`).join('')}
+            </select>
+            ${(S.fleet || []).length
+              ? ''
+              : '<span class="field-hint">רשימת הרכבים עדיין נטענת, או שלא פורסמה על ידי מנהל הציוד.</span>'}
+          </label>
+          ${S.msnVeh ? `
+            <label class="field mb0">
+              <span class="field-label">קילומטראז׳ עדכני <span class="req" aria-hidden="true">*</span></span>
+              <input class="input num" inputmode="numeric" maxlength="7" autocomplete="off"
+                     value="${esc(S.msnKm)}" data-act="msn-km"
+                     placeholder="כפי שמופיע בשעון הרכב עכשיו" required>
+              <span class="field-hint">מה שתרשמו כאן יעדכן את הק״מ של הרכב במערכת, אחרי אישור מנהל הציוד.</span>
+            </label>` : ''}
         </div>
 
         ${MISSION_ITEMS.map(msnItemCard).join('')}
@@ -1564,8 +1610,13 @@ async function missionSubmit(form) {
       return out;
     });
 
+    const veh = (S.fleet || []).find((f) => f.id === S.msnVeh);
     const sealed = await seal(pubKey, {
-      kind: 'mission', pn, name, phone, shift, items, createdAt: Date.now(),
+      kind: 'mission', pn, name, phone, shift, items,
+      // The label rides along so the console can still name the vehicle if it
+      // has since left the fleet and the id no longer resolves.
+      ...(veh ? { vehId: veh.id, vehLabel: veh.label, km: Number(String(S.msnKm).trim()) } : {}),
+      createdAt: Date.now(),
     });
     await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
 
@@ -1582,6 +1633,8 @@ async function missionSubmit(form) {
     S.msn = null;
     S.msnRows = {};
     S.msnPhotos = {};
+    S.msnVeh = '';
+    S.msnKm = '';
     renderMission();
   });
   if (!S.msnSent) {
@@ -5278,6 +5331,7 @@ const REPORTS = {
         for (const it of msnItems(r)) {
           rows.push([
             fmtDate(d.createdAt), d.name || '', d.pn || '', d.phone || '', d.shift || '',
+            d.vehLabel || '', d.km || '',
             missionItemName(it.id),
             it.have === 'no' ? 'חסר' : 'יש',
             it.have === 'no' ? '' : (it.mk || ''),
@@ -5285,9 +5339,9 @@ const REPORTS = {
           ]);
         }
       }
-      const short = rows.filter((x) => x[6] === 'חסר').length;
+      const short = rows.filter((x) => x[8] === 'חסר').length;
       return {
-        head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משמרת', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
+        head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משמרת', 'רכב', 'ק״מ', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
         rows,
         summary: `${missionReports().filter((r) => !r.damaged).length} דוחות · ` +
           `${rows.length} פריטים נבדקו · ${short} חסרים`,
@@ -8267,6 +8321,7 @@ function msnDetail(rec) {
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${msnVehLine(rec)}
       ${d.phone
         ? `<p class="rec-meta mb0">טלפון:
              <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
@@ -8275,6 +8330,69 @@ function msnDetail(rec) {
         : '<p class="rec-meta mb0 muted-txt">לא הושאר טלפון</p>'}
     </div>`;
 }
+
+/* The odometer the commander read, against the one the fleet holds.
+ *
+ * It is not applied on arrival. A shift report is a claim typed on a phone in
+ * the dark, and a slipped digit would overwrite the real reading with a
+ * number nobody can reconstruct — the vehicle carries one figure and there is
+ * no history behind it. So the two are shown side by side and the update is a
+ * press.
+ *
+ * A reading below what is recorded is shown and refused: an odometer does not
+ * run backwards, so either the plate is wrong or the number is. */
+function msnVehLine(rec) {
+  const d = rec.data;
+  if (!d.vehId && !d.vehLabel) return '';
+  const label = d.vehLabel || 'רכב שאינו בצי';
+  const km = Number(d.km) || 0;
+  if (!km) return `<p class="rec-meta mb0">רכב: ${esc(label)} · לא נמסר קילומטראז׳</p>`;
+
+  const veh = ((S.inv && S.inv.vehicles) || []).find((v) => v.id === d.vehId);
+  if (!S.inv) {
+    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ</p>`;
+  }
+  if (!veh) {
+    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ —
+      <span class="muted-txt">הרכב אינו קיים בצי, אין מה לעדכן</span></p>`;
+  }
+
+  const cur = Number(veh.km) || 0;
+  if (km === cur) {
+    return `<p class="rec-meta mb0">רכב: ${esc(label)} · <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ —
+      <span class="ok-txt">מעודכן</span></p>`;
+  }
+  if (km < cur) {
+    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ,
+      במערכת <span class="num">${cur.toLocaleString('he-IL')}</span> —
+      <strong class="bad">הדיווח נמוך מהרשום. מונה לא חוזר אחורה — בדקו את הרכב או את המספר.</strong></p>`;
+  }
+  return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ,
+    במערכת <span class="num">${cur.toLocaleString('he-IL')}</span>
+    <button class="linkbtn" data-act="msn-km-apply" data-id="${esc(rec.id)}">עדכון הרכב ל-${km.toLocaleString('he-IL')}</button></p>`;
+}
+
+const msnKmApply = (id) =>
+  withBusy(async () => {
+    const rec = missionReports().find((r) => r.id === id);
+    if (!rec || rec.damaged || !S.inv) return;
+    const km = Number(rec.data.km) || 0;
+    const i = ((S.inv.vehicles) || []).findIndex((v) => v.id === rec.data.vehId);
+    if (i < 0 || !km) { toast('הרכב אינו קיים בצי', true); return; }
+
+    const prev = S.inv.vehicles[i].km;
+    if (km < (Number(prev) || 0)) { toast('הדיווח נמוך מהרשום — לא עודכן', true); return; }
+    S.inv.vehicles[i] = { ...S.inv.vehicles[i], km };
+    try {
+      await saveInv();
+    } catch (e) {
+      S.inv.vehicles[i] = { ...S.inv.vehicles[i], km: prev };
+      renderConsole();
+      throw e;
+    }
+    renderConsole();
+    toast(`${rec.data.vehLabel || 'הרכב'} עודכן ל-${km.toLocaleString('he-IL')} ק״מ`);
+  });
 
 function renderMissionTab() {
   const all = missionReports();
@@ -12245,6 +12363,11 @@ $app.addEventListener('input', (e) => {
       S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), mk: el.value };
       msnSyncSend();
       break;
+    case 'msn-km':
+      S.msnKm = el.value.replace(/\D/g, '').slice(0, 7);
+      if (el.value !== S.msnKm) el.value = S.msnKm;
+      msnSyncSend();
+      break;
     case 'msn-why':
       S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), why: el.value };
       msnSyncSend();
@@ -12347,6 +12470,14 @@ $app.addEventListener('change', (e) => {
   // One item, one picture, taken rather than chosen — there is no gallery
   // input beside this one to fall back to.
   if (el.dataset.act === 'msn-file') { missionPhoto(el.dataset.item, el.files && el.files[0]); return; }
+  // Picking a vehicle brings the odometer field with it, so the form redraws.
+  if (el.dataset.act === 'msn-veh') {
+    captureMissionForm();
+    S.msnVeh = el.value;
+    if (!el.value) S.msnKm = '';
+    renderMission();
+    return;
+  }
   /* Switching to a mission takes the soldier list away and, with it, any link
      that was made while the destination was still a person. */
   if (el.dataset.act === 'loan-loc') {
@@ -12903,6 +13034,7 @@ function dispatch(act, el) {
       break;
     case 'msn-again':
       S.msnSent = false; S.msn = null; S.msnRows = {}; S.msnPhotos = {};
+      S.msnVeh = ''; S.msnKm = '';
       renderMission();
       break;
     case 'rf-again': S.rfSent = false; S.rf = null; S.rfPhoto = null; renderRefuel(); break;
@@ -12925,6 +13057,7 @@ function dispatch(act, el) {
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
+    case 'msn-km-apply': msnKmApply(el.dataset.id); break;
     case 'mid-check': midCheck(); break;
     case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
