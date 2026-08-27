@@ -9826,13 +9826,33 @@ function renderWaTab() {
  * The console is the only place that can see this, because only it holds both
  * the ids and the decrypted numbers. Counting is cheap; the derivation is not
  * — 60,000 rounds per record — so it runs when asked for and not before. */
+/* Which string the id was actually derived from. The three later forms each
+   derive under their own suffix, so a record sitting under one of those was
+   filed as a weapon slip or a kit slip and never became the main record it
+   should have merged into — a different fault from a number corrected after
+   the fact, and it wants a different fix. Naming which one it is turns a
+   mismatch into a diagnosis. */
+const MID_ORIGIN = {
+  '': 'המספר האישי הנוכחי',
+  ':details': 'השלמת פרטים שלא מוזגה',
+  ':weapon': 'רישום נשק שלא מוזג',
+  ':gear': 'חתימת ציוד שלא מוזגה',
+};
+
 const midCheck = () =>
   withBusy(async () => {
     const rows = S.recs.filter((r) => !r.damaged && r.data && r.data.pn);
     const bad = [];
     for (const r of rows) {
-      const want = await deriveRid(String(r.data.pn).trim(), S.config.idSalt);
-      if (want !== r.rid) bad.push({ rid: r.rid, name: r.data.name, pn: r.data.pn });
+      const pn = String(r.data.pn).trim();
+      if ((await deriveRid(pn, S.config.idSalt)) === r.rid) continue;
+      // Not the plain number. Ask the three suffixes before concluding that
+      // the number itself must have changed.
+      let origin = null;
+      for (const suffix of [':details', ':weapon', ':gear']) {
+        if ((await deriveRid(pn + suffix, S.config.idSalt)) === r.rid) { origin = suffix; break; }
+      }
+      bad.push({ rid: r.rid, name: r.data.name, pn, origin });
     }
     S.midBad = bad;
     S.midRan = rows.length;
@@ -9860,7 +9880,9 @@ function midPanel() {
       <p class="callout-title">${S.midBad.length} רשומות שהמזהה שלהן אינו תואם למספר האישי</p>
       <p>החיילים האלה <strong>יקבלו "המספר האישי הזה עוד לא רשום"</strong> כשינסו לחתום על ציוד או לרשום נשק, למרות שהם מופיעים בקונסולה:</p>
       <ul class="mid-list">
-        ${S.midBad.map((b) => `<li><strong>${esc(b.name || '')}</strong> · מ״א <span class="num">${esc(b.pn)}</span> · מזהה <span class="num">${esc(b.rid.slice(0, 16))}</span></li>`).join('')}
+        ${S.midBad.map((b) => `<li><strong>${esc(b.name || '')}</strong> · מ״א <span class="num">${esc(b.pn)}</span> · <em>${
+          esc(b.origin ? MID_ORIGIN[b.origin] : 'המספר האישי שונה אחרי היצירה')
+        }</em> · מזהה <span class="num">${esc(b.rid.slice(0, 16))}</span></li>`).join('')}
       </ul>
       <p class="mb0">נבדקו <span class="num">${S.midRan}</span> רשומות.</p>
     </div>`;
