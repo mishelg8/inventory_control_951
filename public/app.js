@@ -272,6 +272,7 @@ const S = {
   rid: null,
   suppMode: false,              // main record approved → this is a supplement
   existingPending: false,
+  carry: null,                  // pn+name handed from one soldier form to another
   sel: {},                      // itemId -> quantity
   lic: { civil: false, military: false },   // "I hold a valid licence" ticks
   licNo: '',                    // civilian licence number (typed, not OCR'd)
@@ -438,6 +439,8 @@ function lock() {
 }
 
 function resetSoldier() {
+  // S.carry is deliberately not cleared here — it is the one thing meant to
+  // cross from one form to the next, and this runs on every hash change.
   S.sStep = 1;
   S.flow = 'details';           // which of the three pages is being filled
   S.ident = null;
@@ -1816,7 +1819,16 @@ async function findSoldier(form, pn) {
   const rid = await deriveRid(pn, S.config.idSalt);
   const st = await api(`/status/${rid}`);
   if (!st.exists) {
-    setFormErr(form, 'המספר האישי הזה עוד לא רשום — מלאו קודם "רישום פרטים אישיים" בתפריט');
+    /* Kept across the hash change, which resets everything else about the
+       flow: retyping a personal number and a name because the app sent you
+       one screen sideways is the kind of small insult that makes people stop
+       using it. */
+    S.carry = { pn, name: (form.name && form.name.value.trim()) || '' };
+    setFormErr(
+      form,
+      'המספר האישי הזה עוד לא רשום. הרישום הראשוני נמשך פחות מדקה, ואחריו אפשר לחתום.',
+      '<a class="btn primary errbtn" href="#sign">מילוי הרישום הראשוני →</a>'
+    );
     return null;
   }
   return rid;
@@ -1949,6 +1961,15 @@ function dietBlock(v) {
 }
 
 function renderSoldierStep1() {
+  // Arriving from a form that could not find this soldier: keep what he
+  // already typed, and spend the carry so a later visit starts clean.
+  if (!S.ident && S.carry) {
+    S.ident = {
+      pn: '', name: '', phone: '', dept: '', weapon: '', amral: '', scope: '',
+      diet: '', alg: 'no', allergyTxt: '', ...S.carry,
+    };
+    S.carry = null;
+  }
   const v = S.ident || {
     pn: '', name: '', phone: '', dept: '', weapon: '', amral: '', scope: '',
     diet: '', alg: 'no', allergyTxt: '',
@@ -9859,11 +9880,16 @@ function setBusyUI(on) {
 // pressed send, nothing visibly happened, and they pressed it again; someone
 // using a screen reader was told nothing at all. The message now announces
 // itself and brings itself on screen.
-function setFormErr(form, msg) {
+function setFormErr(form, msg, actionHtml = '') {
   const el = form.querySelector('[data-err]');
   if (!el) return;
   el.textContent = msg || '';
   if (!msg) return;                     // clearing before a submit: say nothing
+  /* Some refusals are not the soldier's mistake, they are a step he has not
+     taken yet — and telling him to go and find a menu item is how a form
+     loses somebody standing in a store with a queue behind him. When there is
+     a way out, the message carries it. */
+  if (actionHtml) el.insertAdjacentHTML('beforeend', actionHtml);
   el.focus({ preventScroll: true });
   bringIntoView(el);
 }

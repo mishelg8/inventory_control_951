@@ -3241,3 +3241,13 @@ body.printing .printdoc {
   margin-inline-end: 0.35rem;
   vertical-align: -1px;
 }
+
+/* A way out, inside the message that blocked you. Sits under the sentence
+   rather than beside it: the error text is what explains the button, and on a
+   phone the two side by side would put the button off the edge. */
+.errbtn {
+  display: block;
+  margin-block-start: 0.75rem;
+  text-decoration: none;
+  text-align: center;
+}
