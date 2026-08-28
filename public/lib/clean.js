@@ -108,7 +108,7 @@ function cleanRecord(raw) {
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
-    kind: ['deposit', 'fault', 'refuel', 'mission'].includes(raw.kind) ? raw.kind : 'report',
+    kind: ['deposit', 'fault', 'refuel', 'mission', 'km'].includes(raw.kind) ? raw.kind : 'report',
     /* mission-only: the shift checklist, one entry per item. Whitelisting
        works by omission, and omitting this meant a shift report arrived with
        its kind flattened to 'report' and its items gone — it read as an empty

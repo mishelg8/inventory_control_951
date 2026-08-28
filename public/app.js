@@ -231,6 +231,7 @@ function routeFromHash() {
   if (h === '#deposit') return 'deposit';
   if (h === '#fault') return 'fault';
   if (h === '#mission') return 'mission';
+  if (h === '#km') return 'km';
   if (h === '#refuel') return 'refuel';
   if (h === '#sign') return 'soldier';
   // The sign-up split into the three things it always was: being written down,
@@ -252,6 +253,9 @@ const S = {
   midBad: [],                   // records whose id does not match their number
   midRan: 0,                    // how many were checked, 0 = not run
   msnQ: '',                     // shift-report search box
+  homeCat: '',                  // which subject of the front page is open
+  km: null,                     // standalone odometer report draft
+  kmSent: false,
   msn: null,
   msnVeh: '',                   // vault vehicle id the shift is driving, '' = none
   msnKm: '',                    // its odometer as the commander reads it
@@ -459,6 +463,7 @@ function lock() {
 }
 
 function resetSoldier() {
+  S.homeCat = '';
   // S.carry is deliberately not cleared here — it is the one thing meant to
   // cross from one form to the next, and this runs on every hash change.
   S.sStep = 1;
@@ -942,6 +947,7 @@ function renderRoute() {
   else if (S.route === 'deposit') renderDeposit();
   else if (S.route === 'fault') renderFault();
   else if (S.route === 'mission') renderMission();
+  else if (S.route === 'km') renderKm();
   else if (S.route === 'refuel') renderRefuel();
   else if (S.route === 'weapon') renderWeaponPage();
   else if (S.route === 'gear') renderGearPage();
@@ -951,7 +957,93 @@ function renderRoute() {
 
 /* ── Landing: what does the soldier want to do? ────────────────────── */
 
+/* The soldier's front page.
+ *
+ * It was one column of eight choices, then nine, and a column that long stops
+ * being a menu: the thing you came for is somewhere in it, and you read all of
+ * it every time to find out where. So it opens on four subjects, and the
+ * choices live one press inside the one they belong to.
+ *
+ * The pages themselves did not move — every href here is the same hash it
+ * always was, so a link somebody was sent still lands where it did. */
+const HOME_CATS = [
+  { id: 'log',  t: 'לוגיסטיקה', s: 'רישום, חתימה על ציוד ובקשות חוסר',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></svg>` },
+  { id: 'arms', t: 'נשק', s: 'רישום נשק ואפסון בארמון',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5h14l3 3v2h-4l-2 3h-4l-1.5-3H3z"/><path d="M7 13.5V17"/></svg>` },
+  { id: 'veh',  t: 'רכב', s: 'תדלוק וקילומטראז׳',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 16.4h16.8v-3.3l-1.6-4a1.6 1.6 0 0 0-1.5-1H6.7a1.6 1.6 0 0 0-1.5 1l-1.6 4z"/><path d="M6.4 16.4v2H4.6v-2M19.4 16.4v2h-1.8v-2"/></svg>` },
+  { id: 'ops',  t: 'משמרת ותקלות', s: 'דוח לפני משמרת ודיווח תקלות בינוי',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/><path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/><path d="M8.4 12.6l1.8 1.8 3.8-3.8"/></svg>` },
+];
+
+const HOME_ITEMS = [
+  { id: 'sign', cat: 'log', cls: '',
+    t: 'רישום פרטים אישיים',
+    s: 'מתחילים כאן — שם, מספר אישי, מחלקה ורישיונות נהיגה.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M9 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/> <rect x="9" y="2.5" width="6" height="3.4" rx="1"/> <path d="M8.5 12.5l2.4 2.4 4.6-5"/> </svg>` },
+  { id: 'weapon', cat: 'arms', cls: 'arm',
+    t: 'רישום נשק',
+    s: 'המספרים שעל הנשק, האקילה והכוונת שקיבלתם.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M3 9h15l3 3-3 3h-4l-2-3H3z"/> <path d="M7 15v3"/> </svg>` },
+  { id: 'gear', cat: 'log', cls: '',
+    t: 'חתימה על ציוד',
+    s: 'קסדה, ווסט, מחסניות ועוד — בחירה וחתימה באצבע.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M4 17c2.5-4 5-4 7.5 0"/> <path d="M3 20h18"/> <path d="M14 13l3.5-3.5a2 2 0 0 1 3 2.6L17 16"/> </svg>` },
+  { id: 'report', cat: 'log', cls: 'alt',
+    t: 'בקשת ציוד / דיווח חוסר',
+    s: 'חסר לכם משהו או צריך השלמה? כתבו ומנהל הציוד יטפל.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M5 21V4.5"/> <path d="M5 5c4-2 8 2 12 0v8c-4 2-8-2-12 0z"/> </svg>` },
+  { id: 'deposit', cat: 'arms', cls: 'arm',
+    t: 'אפסון נשק בארמון',
+    s: 'מוסרים נשק לאחסון? רשמו את הפרטים ומנהל הארמון יקלוט אותו.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <rect x="3.5" y="3" width="17" height="18" rx="2"/> <path d="M12 3v18"/> <path d="M9.6 11.4h.01M14.4 11.4h.01"/> </svg>` },
+  { id: 'refuel', cat: 'veh', cls: 'fuel',
+    t: 'דיווח תדלוק',
+    s: 'תדלקתם רכב בכרטיס תדלוק? רשמו כמה וכרטיס איזה, וזה ייקלט אצל מנהל הרכב.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M4 21V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v16"/> <path d="M3 21h11"/> <path d="M5.5 8.5h6"/> <path d="M13 12h3.5a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V9l-2.5-2.5"/> </svg>` },
+  { id: 'km', cat: 'veh', cls: 'bld',
+    t: 'דיווח קילומטראז׳',
+    s: 'עברתם ליד רכב? רשמו את המספר שעל השעון.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5a7.5 7.5 0 1 1 15 0"/><path d="M12 16.5l3.6-4.2"/><path d="M6.9 12.2h.01M9.2 9.1h.01M12 8h.01M14.8 9.1h.01M17.1 12.2h.01"/><path d="M3 20.5h18"/></svg>` },
+  { id: 'mission', cat: 'ops', cls: 'bld',
+    t: 'דוח משימה לפני משמרת',
+    s: 'מפקד? עברו על הציוד פריט־פריט לפני העלייה.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/> <path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/> <path d="M8.4 12.6l1.8 1.8 3.8-3.8"/> <path d="M8.4 17.6h7.2"/> </svg>` },
+  { id: 'fault', cat: 'ops', cls: 'bld',
+    t: 'דיווח תקלות בינוי',
+    s: 'דלת שבורה, נזילה, חשמל, מזגן? דווחו כאן ונטפל.',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M3 21h18"/> <path d="M5.5 21V6.5l7-3.5v18"/> <path d="M12.5 10.5H19V21"/> <path d="M8.6 9.2h.01M8.6 13h.01M15.6 14h.01"/> </svg>` },
+];
+
+const CHEV_BACK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>`;
+
 function renderHome() {
+  const cat = HOME_CATS.find((c) => c.id === S.homeCat);
+
+  const card = (href, cls, icon, title, sub, act = '') => `
+    <a class="choice" href="${href}"${act}>
+      <span class="choice-ico${cls ? ` ${cls}` : ''}" aria-hidden="true">${icon}</span>
+      <span class="choice-txt">
+        <span class="choice-t">${title}</span>
+        <span class="choice-s">${sub}</span>
+      </span>
+      <span class="choice-go" aria-hidden="true">${CHEV_BACK}</span>
+    </a>`;
+
+  const body = cat
+    ? `<div class="choices">
+         ${HOME_ITEMS.filter((i) => i.cat === cat.id)
+           .map((i) => card(`#${i.id}`, i.cls, i.icon, i.t, i.s)).join('')}
+       </div>
+       <div class="formbar">
+         <button class="btn ghost" data-act="home-back">${ICO.back}חזרה לקטגוריות</button>
+       </div>`
+    : `<div class="choices">
+         ${HOME_CATS.map((c) => card('#', '', c.icon, c.t, c.s,
+           ` data-act="home-cat" data-cat="${c.id}"`)).join('')}
+       </div>`;
+
   render(`
     <!-- The bar above already carries the emblem and the unit's name. This
          card used to repeat both, so "מסייעת 951" appeared three times inside
@@ -962,155 +1054,9 @@ function renderHome() {
     <section class="panel center-head hero">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
       <h1 class="panel-title center hide-phone">מסייעת 951</h1>
-      <p class="panel-sub center mb0">בחרו מה תרצו לעשות.</p>
+      <p class="panel-sub center mb0">${cat ? esc(cat.t) : 'בחרו מה תרצו לעשות.'}</p>
     </section>
-    <div class="choices">
-      <a class="choice" href="#sign">
-        <span class="choice-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/>
-            <rect x="9" y="2.5" width="6" height="3.4" rx="1"/>
-            <path d="M8.5 12.5l2.4 2.4 4.6-5"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">רישום פרטים אישיים</span>
-          <span class="choice-s">מתחילים כאן — שם, מספר אישי, מחלקה ורישיונות נהיגה.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#weapon">
-        <span class="choice-ico arm" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 9h15l3 3-3 3h-4l-2-3H3z"/>
-            <path d="M7 15v3"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">רישום נשק</span>
-          <span class="choice-s">המספרים שעל הנשק, האקילה והכוונת שקיבלתם.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#gear">
-        <span class="choice-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 17c2.5-4 5-4 7.5 0"/>
-            <path d="M3 20h18"/>
-            <path d="M14 13l3.5-3.5a2 2 0 0 1 3 2.6L17 16"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">חתימה על ציוד</span>
-          <span class="choice-s">קסדה, ווסט, מחסניות ועוד — בחירה וחתימה באצבע.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#report">
-        <span class="choice-ico alt" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 21V4.5"/>
-            <path d="M5 5c4-2 8 2 12 0v8c-4 2-8-2-12 0z"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">בקשת ציוד / דיווח חוסר</span>
-          <span class="choice-s">חסר לכם משהו או צריך השלמה? כתבו ומנהל הציוד יטפל.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#deposit">
-        <span class="choice-ico arm" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3.5" y="3" width="17" height="18" rx="2"/>
-            <path d="M12 3v18"/>
-            <path d="M9.6 11.4h.01M14.4 11.4h.01"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">אפסון נשק בארמון</span>
-          <span class="choice-s">מוסרים נשק לאחסון? רשמו את הפרטים ומנהל הארמון יקלוט אותו.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#refuel">
-        <span class="choice-ico fuel" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 21V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v16"/>
-            <path d="M3 21h11"/>
-            <path d="M5.5 8.5h6"/>
-            <path d="M13 12h3.5a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V9l-2.5-2.5"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">דיווח תדלוק</span>
-          <span class="choice-s">תדלקתם רכב בכרטיס תדלוק? רשמו כמה וכרטיס איזה, וזה ייקלט אצל מנהל הרכב.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#mission">
-        <span class="choice-ico bld" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/>
-            <path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/>
-            <path d="M8.4 12.6l1.8 1.8 3.8-3.8"/>
-            <path d="M8.4 17.6h7.2"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">דוח משימה לפני משמרת</span>
-          <span class="choice-s">מפקד? עברו על הציוד פריט־פריט לפני העלייה.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-      <a class="choice" href="#fault">
-        <span class="choice-ico bld" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 21h18"/>
-            <path d="M5.5 21V6.5l7-3.5v18"/>
-            <path d="M12.5 10.5H19V21"/>
-            <path d="M8.6 9.2h.01M8.6 13h.01M15.6 14h.01"/>
-          </svg>
-        </span>
-        <span class="choice-txt">
-          <span class="choice-t">דיווח תקלות בינוי</span>
-          <span class="choice-s">דלת שבורה, נזילה, חשמל, מזגן? דווחו כאן ונטפל.</span>
-        </span>
-        <span class="choice-go" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-               stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </span>
-      </a>
-    </div>`, 'home');
+    ${body}`, 'home');
 }
 
 /* ── Shortage reporting (soldier-facing, separate from sign-out) ────── */
@@ -1462,9 +1408,118 @@ function msnAskFleet() {
   api('/cards')
     .then((r) => {
       S.fleet = r.vehicles || [];
+      /* Two forms wait on this list, and redrawing only one of them left the
+         other showing an empty picker for ever — the fleet arrived and
+         nothing asked the page to say so. */
       if (S.route === 'mission') { captureMissionForm(); renderMission(); }
+      else if (S.route === 'km') renderKm();
     })
     .catch(() => { /* the picker says there is nothing to pick */ });
+}
+
+/* Reading an odometer, and nothing else.
+ *
+ * The shift report already carries a reading, but it asks for six items and a
+ * signature first — and most of the time somebody just walked past a vehicle
+ * and wants the number written down. A form that asks only what it needs gets
+ * filled in; one that asks for a shift report to record a number does not. */
+function renderKm() {
+  if (notConfigured()) return;
+  msnAskFleet();
+
+  if (S.kmSent) {
+    render(`
+      <section class="panel sform center-head">
+        <h1 class="panel-title center">הדיווח נשלח</h1>
+        <p class="panel-sub center">מנהל הציוד יאשר אותו במסך הרכבים, והק״מ יתעדכן.</p>
+        <div class="formbar">
+          <button class="btn ghost" data-act="km-again">דיווח נוסף</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
+      </section>`);
+    return;
+  }
+
+  const v = S.km || { name: '', veh: '', km: '', text: '' };
+  render(`
+    <section class="panel sform center-head">
+      <h1 class="panel-title center">דיווח קילומטראז׳</h1>
+      <p class="panel-sub center">בחרו רכב ורשמו את המספר שעל השעון עכשיו.</p>
+
+      <form data-form="km" novalidate>
+        <div class="fcard">
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.car}</span>הרכב</h2>
+          <label class="field">
+            <span class="field-label">רכב <span class="req" aria-hidden="true">*</span></span>
+            <select class="input" name="veh">
+              <option value=""${v.veh ? '' : ' selected'}>— בחרו רכב —</option>
+              ${(S.fleet || []).map((f) => `<option value="${esc(f.id)}"${
+                v.veh === f.id ? ' selected' : ''}>${esc(f.label)}</option>`).join('')}
+            </select>
+            ${(S.fleet || []).length ? '' : '<span class="field-hint">רשימת הרכבים עדיין נטענת.</span>'}
+          </label>
+          <label class="field">
+            <span class="field-label">קילומטראז׳ עכשיו <span class="req" aria-hidden="true">*</span></span>
+            <input class="input num" name="km" inputmode="numeric" maxlength="7" autocomplete="off"
+                   value="${esc(v.km)}" placeholder="כפי שמופיע בשעון" required>
+          </label>
+          <label class="field mb0">
+            <span class="field-label">שם המדווח <span class="req" aria-hidden="true">*</span></span>
+            <input class="input" name="name" maxlength="60" autocomplete="off"
+                   value="${esc(v.name)}" placeholder="ישראל ישראלי" required>
+          </label>
+        </div>
+
+        <div class="fcard">
+          <label class="field mb0">
+            <span class="field-label">הערה</span>
+            <input class="input" name="text" maxlength="120" autocomplete="off"
+                   value="${esc(v.text)}" placeholder="רשות — לדוגמה: אחרי נסיעה לבסיס">
+          </label>
+        </div>
+
+        <p class="form-err" data-err></p>
+        <p class="field-hint">הדיווח לא משנה את הרכב מיד — מנהל הציוד רואה אותו לצד המספר הרשום ומאשר.</p>
+        <div class="formbar">
+          <button class="btn primary" type="submit">שליחת הדיווח</button>
+          <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
+        </div>
+      </form>
+    </section>`);
+}
+
+async function kmSubmit(form) {
+  const name = form.name.value.trim();
+  const veh = form.veh.value;
+  const km = form.km.value.replace(/\D/g, '');
+  const text = form.text.value.trim();
+  S.km = { name, veh, km, text };
+  if (!veh) return setFormErr(form, 'נא לבחור רכב');
+  if (!/^\d{1,7}$/.test(km)) return setFormErr(form, 'קילומטראז׳: ספרות בלבד');
+  if (name.length < 2) return setFormErr(form, 'נא למלא שם');
+  setFormErr(form, '');
+
+  const btn = form.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.textContent = 'שולח…';
+  await withBusy(async () => {
+    const pubKey = await importPubKey(S.config.pub);
+    const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+    const picked = (S.fleet || []).find((f) => f.id === veh);
+    const sealed = await seal(pubKey, {
+      kind: 'km', name, text,
+      vehId: veh, vehLabel: (picked && picked.label) || '', km: Number(km),
+      createdAt: Date.now(),
+    });
+    await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
+    S.kmSent = true;
+    S.km = null;
+    renderKm();
+  });
+  if (!S.kmSent) {
+    btn.disabled = false;
+    btn.textContent = 'שליחת הדיווח';
+  }
 }
 
 function renderMission() {
@@ -7060,6 +7115,78 @@ function renderAmmoTab() {
 
 /* ── Vehicles ──────────────────────────────────────────────────────── */
 
+/* Readings from the field, waiting to be accepted into the fleet.
+ *
+ * They are not applied on arrival and they are not applied from the screen
+ * they arrived on. A reading is a claim typed on a phone, a vehicle carries
+ * one odometer figure with no history behind it, and a slipped digit would
+ * overwrite the real number with one nobody can reconstruct. So every reading
+ * from every source is presented here, beside the figure it would replace,
+ * and accepting it is a press by somebody looking at both. */
+function kmPanel() {
+  const pending = kmPending();
+  const back = kmBackwards();
+  if (!pending.length && !back.length) return '';
+
+  const rows = pending.map((p) => `
+    <tr>
+      <td>${esc(p.label)}</td>
+      <td class="num">${p.cur.toLocaleString('he-IL')}</td>
+      <td class="num"><strong>${p.km.toLocaleString('he-IL')}</strong></td>
+      <td class="num">+${(p.km - p.cur).toLocaleString('he-IL')}</td>
+      <td>${esc(p.who)}<span class="dim"> · ${esc(p.from)}</span></td>
+      <td class="num">${esc(fmtShort(p.at))}</td>
+      <td class="nowrap">${askBtn(`km:${p.id}`, 'km-apply',
+        'עדכון', `לעדכן את ${p.label} מ-${p.cur.toLocaleString('he-IL')} ל-${p.km.toLocaleString('he-IL')} ק״מ?`,
+        { data: { id: p.id }, yes: 'עדכון', cls: 'btn primary small' })}</td>
+    </tr>`).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">קילומטראז׳ שדווח מהשטח</h2>
+      <p class="panel-sub">קריאות שהגיעו מדוחות משמרת ומדיווחי ק״מ. הן <strong>אינן</strong> נכנסות לרכב מעצמן — השוו למספר הרשום ואשרו.</p>
+      ${pending.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl compact" data-phone="0,2,-1">
+               <thead><tr>
+                 <th>רכב</th><th class="num">במערכת</th><th class="num">דווח</th><th class="num">הפרש</th>
+                 <th>מי דיווח</th><th class="num">מתי</th><th></th>
+               </tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>`
+        : '<p class="empty">אין קריאות שממתינות לאישור.</p>'}
+      ${back.length
+        ? `<div class="callout risk">
+             <p class="callout-title">${back.length === 1 ? 'קריאה אחת נמוכה' : `${back.length} קריאות נמוכות`} מהרשום במערכת</p>
+             <p class="mb0">מונה לא חוזר אחורה — או שנבחר הרכב הלא נכון, או שהמספר הוקלד שגוי. לא ניתן לאשר אותן:
+               ${back.map((b) => `<br><strong>${esc(b.label)}</strong> — דווח ${b.km.toLocaleString('he-IL')}, במערכת ${b.cur.toLocaleString('he-IL')}${b.who ? ` · ${esc(b.who)}` : ''}`).join('')}</p>
+           </div>`
+        : ''}
+    </section>`;
+}
+
+const kmApply = (id) =>
+  withBusy(async () => {
+    S.askDel = '';
+    const hit = kmPending().find((p) => p.id === id);
+    if (!hit) { toast('הקריאה כבר אינה רלוונטית', true); renderConsole(); return; }
+    const i = ((S.inv && S.inv.vehicles) || []).findIndex((v) => v.id === hit.vehId);
+    if (i < 0) { toast('הרכב אינו קיים בצי', true); return; }
+
+    const prev = S.inv.vehicles[i].km;
+    S.inv.vehicles[i] = { ...S.inv.vehicles[i], km: hit.km };
+    try {
+      await saveInv();
+    } catch (e) {
+      S.inv.vehicles[i] = { ...S.inv.vehicles[i], km: prev };
+      renderConsole();
+      throw e;
+    }
+    renderConsole();
+    toast(`${hit.label} עודכן ל-${hit.km.toLocaleString('he-IL')} ק״מ`);
+  });
+
 function renderVehTab() {
   const all = (S.inv && S.inv.vehicles) || [];
   const q = (S.regQ.veh || '').trim().toLowerCase();
@@ -7099,6 +7226,7 @@ function renderVehTab() {
   }).join('');
 
   return `
+    ${kmPanel()}
     <section class="panel">
       <h2 class="panel-title">רכבים</h2>
       <p class="panel-sub">מספר רכב, חברת השכרה, ק״מ עדכני ומועד טיפול. סמנו מה קיים ברכב — שורה עם חוסר או טיפול שעבר נצבעת באדום.</p>
@@ -8118,8 +8246,61 @@ const isDeposit = (r) => isKind(r, 'deposit');
 const isFault = (r) => isKind(r, 'fault');
 const isRefuel = (r) => isKind(r, 'refuel');
 const isMission = (r) => isKind(r, 'mission');
+const isKmReport = (r) => isKind(r, 'km');
+
+/* Odometer readings waiting for somebody to accept them.
+ *
+ * Two forms produce them — a shift report names the vehicle it drove, and the
+ * standalone reading form does nothing else — and both land here, because the
+ * question "is this figure right" is asked in one place: the fleet.
+ *
+ * Nothing is stored to say a reading was accepted. A reading is pending while
+ * it is higher than what the vehicle carries, and disappears the moment the
+ * vehicle catches up — whether it was this reading that moved it or a later
+ * one. That is stateless and it cannot drift: there is no flag to be wrong. */
+function kmPending() {
+  const fleet = (S.inv && S.inv.vehicles) || [];
+  const out = [];
+  for (const r of S.reports) {
+    if (r.damaged || !r.data) continue;
+    const d = r.data;
+    if (!isMission(r) && !isKmReport(r)) continue;
+    const km = Number(d.km) || 0;
+    if (!km || !d.vehId) continue;
+    const veh = fleet.find((v) => v.id === d.vehId);
+    if (!veh) continue;                              // left the fleet — nothing to update
+    const cur = Number(veh.km) || 0;
+    if (km <= cur) continue;                         // accepted already, or overtaken
+    out.push({
+      id: r.id, vehId: d.vehId, label: d.vehLabel || veh.plate || 'רכב',
+      km, cur, who: d.name || '', at: Number(d.createdAt) || 0,
+      from: isMission(r) ? 'דוח משמרת' : 'דיווח ק״מ',
+      note: d.text || '',
+    });
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+
+// A reading below what the vehicle carries is not pending, it is wrong — an
+// odometer does not run backwards. Surfaced separately so it is not silent.
+function kmBackwards() {
+  const fleet = (S.inv && S.inv.vehicles) || [];
+  const out = [];
+  for (const r of S.reports) {
+    if (r.damaged || !r.data) continue;
+    const d = r.data;
+    if (!isMission(r) && !isKmReport(r)) continue;
+    const km = Number(d.km) || 0;
+    if (!km || !d.vehId) continue;
+    const veh = fleet.find((v) => v.id === d.vehId);
+    if (!veh) continue;
+    const cur = Number(veh.km) || 0;
+    if (km < cur) out.push({ id: r.id, label: d.vehLabel || veh.plate, km, cur, who: d.name || '', at: Number(d.createdAt) || 0 });
+  }
+  return out;
+}
 const shortageReports = () =>
-  S.reports.filter((r) => !isDeposit(r) && !isFault(r) && !isRefuel(r) && !isMission(r));
+  S.reports.filter((r) => !isDeposit(r) && !isFault(r) && !isRefuel(r) && !isMission(r) && !isKmReport(r));
 const missionReports = () => S.reports.filter(isMission);
 
 /* The number worth putting on a tab is not how many reports came in — it is
@@ -8355,16 +8536,13 @@ function msnDetail(rec) {
     </div>`;
 }
 
-/* The odometer the commander read, against the one the fleet holds.
+/* The odometer the commander read, and where it goes.
  *
- * It is not applied on arrival. A shift report is a claim typed on a phone in
- * the dark, and a slipped digit would overwrite the real reading with a
- * number nobody can reconstruct — the vehicle carries one figure and there is
- * no history behind it. So the two are shown side by side and the update is a
- * press.
- *
- * A reading below what is recorded is shown and refused: an odometer does not
- * run backwards, so either the plate is wrong or the number is. */
+ * The button used to live here, which put the same decision in two places and
+ * on the screen with the least context — this row knows what was reported and
+ * nothing about the vehicle's history or the other readings queued against
+ * it. The fleet screen knows all of that, so the acceptance happens there and
+ * this line only says what was read and whether it still needs attention. */
 function msnVehLine(rec) {
   const d = rec.data;
   if (!d.vehId && !d.vehLabel) return '';
@@ -8372,51 +8550,15 @@ function msnVehLine(rec) {
   const km = Number(d.km) || 0;
   if (!km) return `<p class="rec-meta mb0">רכב: ${esc(label)} · לא נמסר קילומטראז׳</p>`;
 
+  const said = `רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ`;
   const veh = ((S.inv && S.inv.vehicles) || []).find((v) => v.id === d.vehId);
-  if (!S.inv) {
-    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ</p>`;
-  }
-  if (!veh) {
-    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ —
-      <span class="muted-txt">הרכב אינו קיים בצי, אין מה לעדכן</span></p>`;
-  }
+  if (!S.inv || !veh) return `<p class="rec-meta mb0">${said}</p>`;
 
   const cur = Number(veh.km) || 0;
-  if (km === cur) {
-    return `<p class="rec-meta mb0">רכב: ${esc(label)} · <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ —
-      <span class="ok-txt">מעודכן</span></p>`;
-  }
-  if (km < cur) {
-    return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ,
-      במערכת <span class="num">${cur.toLocaleString('he-IL')}</span> —
-      <strong class="bad">הדיווח נמוך מהרשום. מונה לא חוזר אחורה — בדקו את הרכב או את המספר.</strong></p>`;
-  }
-  return `<p class="rec-meta mb0">רכב: ${esc(label)} · דווח <span class="num">${km.toLocaleString('he-IL')}</span> ק״מ,
-    במערכת <span class="num">${cur.toLocaleString('he-IL')}</span>
-    <button class="linkbtn" data-act="msn-km-apply" data-id="${esc(rec.id)}">עדכון הרכב ל-${km.toLocaleString('he-IL')}</button></p>`;
+  if (km <= cur) return `<p class="rec-meta mb0">${said} — <span class="ok-txt">נקלט ברכב</span></p>`;
+  return `<p class="rec-meta mb0">${said}, במערכת <span class="num">${cur.toLocaleString('he-IL')}</span> —
+    <span class="muted-txt">ממתין לאישור במסך הרכבים</span></p>`;
 }
-
-const msnKmApply = (id) =>
-  withBusy(async () => {
-    const rec = missionReports().find((r) => r.id === id);
-    if (!rec || rec.damaged || !S.inv) return;
-    const km = Number(rec.data.km) || 0;
-    const i = ((S.inv.vehicles) || []).findIndex((v) => v.id === rec.data.vehId);
-    if (i < 0 || !km) { toast('הרכב אינו קיים בצי', true); return; }
-
-    const prev = S.inv.vehicles[i].km;
-    if (km < (Number(prev) || 0)) { toast('הדיווח נמוך מהרשום — לא עודכן', true); return; }
-    S.inv.vehicles[i] = { ...S.inv.vehicles[i], km };
-    try {
-      await saveInv();
-    } catch (e) {
-      S.inv.vehicles[i] = { ...S.inv.vehicles[i], km: prev };
-      renderConsole();
-      throw e;
-    }
-    renderConsole();
-    toast(`${rec.data.vehLabel || 'הרכב'} עודכן ל-${km.toLocaleString('he-IL')} ק״מ`);
-  });
 
 function renderMissionTab() {
   const all = missionReports();
@@ -12618,6 +12760,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'deposit') depositSubmit(form);
   else if (kind === 'fault') faultSubmit(form);
   else if (kind === 'mission') missionSubmit(form);
+  else if (kind === 'km') kmSubmit(form);
   else if (kind === 'refuel') refuelSubmit(form);
   else if (kind === 'arm-add') armAdd(form);
   else if (kind === 'arm-loan') armLoan(form);
@@ -13056,6 +13199,11 @@ function dispatch(act, el) {
       delete S.msnPhotos[el.dataset.item];
       renderMission();
       break;
+    case 'km-again': S.kmSent = false; S.km = null; renderKm(); break;
+    // The front page's two states. Leaving the page clears the subject, so
+    // coming back lands on the subjects rather than wherever you last were.
+    case 'home-cat': S.homeCat = el.dataset.cat; renderHome(); break;
+    case 'home-back': S.homeCat = ''; renderHome(); break;
     case 'msn-again':
       S.msnSent = false; S.msn = null; S.msnRows = {}; S.msnPhotos = {};
       S.msnVeh = ''; S.msnKm = '';
@@ -13081,7 +13229,7 @@ function dispatch(act, el) {
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
-    case 'msn-km-apply': msnKmApply(el.dataset.id); break;
+    case 'km-apply': kmApply(el.dataset.id); break;
     case 'mid-check': midCheck(); break;
     case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used
