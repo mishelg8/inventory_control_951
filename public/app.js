@@ -1335,23 +1335,25 @@ const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '' };
 // drove and says nothing about how far.
 const msnKmOk = () => !S.msnVeh || /^\d{1,7}$/.test(String(S.msnKm).trim());
 
-/* Three answers, not two.
+/* Answer what you drew, leave the rest alone.
  *
- * "יש" and "חסר" assumed every mission carries every item, and a shift that
- * takes only a ליונט could not be filed at all — the form demanded a
- * catalogue number and a photograph for five things nobody drew. That is the
- * form refusing a true report because it does not fit its own shape.
+ * The form used to demand a verdict on all six, so a shift carrying only a
+ * ליונט could not be filed: it wanted a catalogue number and a photograph for
+ * five things nobody took. A third button — "לא נדרש" — fixed that by adding
+ * a decision, which is not the same as removing one. An item nobody touched
+ * says the same thing by staying blank.
  *
- * "לא נדרש" costs nothing and says something: this shift was not supposed to
- * have it. It is not the same as "חסר", which means it should have been here
- * and is not, and the console counts only the second. */
-const msnReady = () => msnKmOk() && MISSION_ITEMS.every((it) => {
-  const r = msnRow(it.id);
-  if (r.have === 'na') return true;
-  if (r.have === 'no') return r.why.trim().length >= 2;
-  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
-  return false;
-});
+ * So an item is optional, and an item that was answered has to be finished:
+ * "יש" costs a number and a picture, "חסר" costs a sentence. A report with
+ * nothing answered at all is not a report, so one item is the floor. */
+const msnAnswered = () => MISSION_ITEMS.filter((it) => msnRow(it.id).have);
+
+const msnReady = () => msnKmOk() && msnAnswered().length >= 1
+  && msnAnswered().every((it) => {
+    const r = msnRow(it.id);
+    if (r.have === 'no') return r.why.trim().length >= 2;
+    return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
+  });
 
 function msnItemCard(it) {
   const r = msnRow(it.id);
@@ -1364,10 +1366,9 @@ function msnItemCard(it) {
     </label>`;
 
   return `
-    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${r.have === 'na' ? ' na' : ''}">
+    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${r.have ? '' : ' unanswered'}">
       <h3 class="fsec msn-name">${esc(it.name)}</h3>
-      <div class="msn-picks three">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}${
-        pick('na', 'לא נדרש', 'na')}</div>
+      <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
 
       ${r.have === 'yes' ? `
         <label class="field">
@@ -1602,7 +1603,7 @@ function renderMission() {
         <p class="field-hint">${missing
           ? `<strong>${missing}</strong> ${missing === 1 ? 'פריט מסומן כחסר' : 'פריטים מסומנים כחסרים'} — ${
               missing === 1 ? 'הוא יופיע' : 'הם יופיעו'} כדיווח אצל מנהל הציוד.`
-          : 'ענו על כל פריט. פריט שלא שייך למשמרת הזו — סמנו "לא נדרש".'}</p>
+          : 'סמנו רק את הפריטים שרלוונטיים למשמרת הזו. מה שלא נלקח — השאירו ריק.'}</p>
         <div class="formbar">
           <button class="btn primary" type="submit" ${msnReady() ? '' : 'disabled'}>שליחת הדוח</button>
           <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
@@ -1666,10 +1667,10 @@ async function missionSubmit(form) {
     // The checklist as filed, and the photo slot each picture went into, so
     // the console can fetch them without guessing at the order.
     const shots = [];
-    const items = MISSION_ITEMS.map((it, i) => {
+    const items = MISSION_ITEMS.filter((it) => msnRow(it.id).have).map((it) => {
       const r = msnRow(it.id);
+      const i = MISSION_ITEMS.findIndex((m) => m.id === it.id);   // the photo slot
       const out = { id: it.id, have: r.have };
-      if (r.have === 'na') return out;
       if (r.have === 'yes') {
         out.mk = r.mk.trim();
         if (S.msnPhotos[it.id]) { out.shot = i; shots[i] = S.msnPhotos[it.id]; }
@@ -13188,9 +13189,13 @@ function dispatch(act, el) {
     case 'msn-have': {
       const id = el.dataset.item;
       captureMissionForm();
-      S.msnRows[id] = { ...msnRow(id), have: el.dataset.v };
+      // Pressing the answer already given takes it back. Without this there
+      // is no way out of a button pressed by mistake, and the item would
+      // stay answered — and therefore required — for the rest of the form.
+      const next = msnRow(id).have === el.dataset.v ? '' : el.dataset.v;
+      S.msnRows[id] = { ...msnRow(id), have: next };
       // Anything but "יש" drops a picture that no longer describes anything.
-      if (el.dataset.v !== 'yes') delete S.msnPhotos[id];
+      if (next !== 'yes') delete S.msnPhotos[id];
       renderMission();
       break;
     }

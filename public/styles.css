@@ -3330,10 +3330,10 @@ body.printing .printdoc {
    quiet answer that nothing needs doing. */
 .ok-txt { color: var(--pine-deep); font-weight: 600; }
 
-/* Three answers per item now: held, short, or not part of this mission. */
-.msn-picks.three { grid-template-columns: 1fr 1fr 1fr; }
-.msn-pick.on.na { border-color: var(--muted-2); background: var(--surface-3); color: var(--muted); }
-.msn-card.na { opacity: 0.72; }
+/* An item nobody has answered yet is not an error and not a warning — it is
+   simply not part of this shift until somebody says it is. It recedes rather
+   than demanding attention. */
+.msn-card.unanswered { opacity: 0.72; }
 
-/* In the console, an item nobody was asked to carry recedes. */
+/* Kept for reports filed while a third answer briefly existed. */
 .msn-na td { color: var(--muted); }
