@@ -253,6 +253,8 @@ const S = {
   midBad: [],                   // records whose id does not match their number
   midRan: 0,                    // how many were checked, 0 = not run
   msnQ: '',                     // shift-report search box
+  msnEdit: '',                  // shift report open for correction in the console
+  msnDraft: null,               // its working copy, until saved
   homeCat: '',                  // which subject of the front page is open
   km: null,                     // standalone odometer report draft
   kmSent: false,
@@ -8240,6 +8242,7 @@ function tzelemWa() {
 // What each kind of report is called when it is listed outside its own tab.
 const REPORT_KIND = {
   deposit: 'אפסון נשק', fault: 'תקלת בינוי', refuel: 'דיווח תדלוק', report: 'בקשת חוסר',
+  mission: 'דוח משמרת', km: 'דיווח קילומטראז׳',
 };
 
 const isKind = (r, k) => !r.damaged && !!r.data && r.data.kind === k;
@@ -8528,6 +8531,11 @@ function msnDetail(rec) {
         </table>
       </div>
       ${msnVehLine(rec)}
+      <div class="rec-actions">
+        ${msnEditLink(rec)}
+        ${repDelBtn(rec, 'מחיקת הדוח')}
+      </div>
+      ${msnEditor(rec)}
       ${d.phone
         ? `<p class="rec-meta mb0">טלפון:
              <span class="num">${esc(S.revealed.has(rec.id) ? d.phone : maskPhone(d.phone))}</span>
@@ -8560,6 +8568,138 @@ function msnVehLine(rec) {
   return `<p class="rec-meta mb0">${said}, במערכת <span class="num">${cur.toLocaleString('he-IL')}</span> —
     <span class="muted-txt">ממתין לאישור במסך הרכבים</span></p>`;
 }
+
+/* Correcting a shift report from the console.
+ *
+ * A report is filed in the dark, at the start of a shift, by somebody who is
+ * about to leave. Catalogue numbers get a digit wrong, an item gets marked
+ * held that was not, a photograph comes out of a pocket rather than of a
+ * ליונט. None of that is found while the commander is still standing there,
+ * so the correction has to be possible afterwards or it does not happen.
+ *
+ * What it will not do is invent. An item the office adds is marked exactly
+ * like one the commander answered, because after the fact there is no way to
+ * tell the reader which is which — so the log line on the report says the
+ * office touched it, and the report's own text is left to speak for itself. */
+const msnEditLink = (rec) =>
+  `<button class="linkbtn" data-act="${S.msnEdit === rec.id ? 'msn-edit-cancel' : 'msn-edit'}"
+           data-id="${esc(rec.id)}">${S.msnEdit === rec.id ? 'סגירה' : '✎ תיקון הדוח'}</button>`;
+
+function msnEditor(rec) {
+  if (S.msnEdit !== rec.id) return '';
+  const d = S.msnDraft || {};
+  const byId = Object.fromEntries((d.items || []).map((it) => [it.id, it]));
+
+  const rows = MISSION_ITEMS.map((mi, i) => {
+    const it = byId[mi.id];
+    const have = it ? it.have : '';
+    const kind = MISSION_KINDS[i];
+    const shot = S.docs[`${rec.id}:${kind}`];
+    const opt = (v, label) => `<option value="${v}"${have === v ? ' selected' : ''}>${label}</option>`;
+    return `
+      <div class="fuel-entry msn-edit-row">
+        <label class="field mb0">
+          <span class="field-label">${esc(mi.name)}</span>
+          <select class="input mini" data-act="msn-e-have" data-item="${mi.id}">
+            ${opt('', '— לא בדוח —')}${opt('yes', 'יש')}${opt('no', 'חסר')}
+          </select>
+        </label>
+        ${have === 'yes' ? `
+          <label class="field mb0">
+            <span class="field-label">מק״ט</span>
+            <input class="input mini num" type="text" maxlength="40" value="${esc(it.mk || '')}"
+                   data-act="msn-e-mk" data-item="${mi.id}" aria-label="מק״ט ${esc(mi.name)}">
+          </label>` : ''}
+        ${have === 'no' ? `
+          <label class="field mb0">
+            <span class="field-label">סיבת החוסר</span>
+            <input class="input mini" type="text" maxlength="120" value="${esc(it.why || '')}"
+                   data-act="msn-e-why" data-item="${mi.id}" aria-label="סיבה ${esc(mi.name)}">
+          </label>` : ''}
+        ${have === 'yes' ? `
+          <span class="msn-edit-shot">
+            <label class="btn ghost small">${shot ? '↻ החלפת צילום' : '📷 הוספת צילום'}
+              <input class="vis-hidden" type="file" accept="image/*"
+                     data-act="msn-e-file" data-id="${esc(rec.id)}" data-kind="${kind}"></label>
+            ${shot
+              ? `<button class="linkbtn danger-link" data-act="msn-e-shot-del"
+                         data-id="${esc(rec.id)}" data-kind="${kind}">מחיקת הצילום</button>`
+              : ''}
+          </span>` : ''}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="receditor">
+      <div class="fuel-entry">
+        <label class="field mb0">
+          <span class="field-label">מפקד</span>
+          <input class="input mini" type="text" maxlength="60" value="${esc(d.name || '')}"
+                 data-act="msn-e-f" data-k="name" aria-label="מפקד">
+        </label>
+        <label class="field mb0">
+          <span class="field-label">משמרת</span>
+          <input class="input mini" type="text" maxlength="60" value="${esc(d.shift || '')}"
+                 data-act="msn-e-f" data-k="shift" aria-label="משמרת">
+        </label>
+        ${d.vehId ? `
+          <label class="field mb0">
+            <span class="field-label">ק״מ שדווח</span>
+            <input class="input mini num" type="text" maxlength="7" value="${esc(String(d.km || ''))}"
+                   data-act="msn-e-km" aria-label="קילומטראז׳">
+          </label>` : ''}
+      </div>
+      ${rows}
+      <div class="rec-actions">
+        <button class="btn primary small" data-act="msn-e-save" data-id="${esc(rec.id)}">שמירת התיקון</button>
+        <button class="btn ghost small" data-act="msn-edit-cancel">ביטול</button>
+      </div>
+      <p class="field-hint mb0">שינוי כאן נשמר מוצפן, בדיוק כמו הדוח המקורי. צילום שמוחלף מחליף את הקודם ואין דרך לשחזר אותו.</p>
+    </div>`;
+}
+
+const msnSave = (id) =>
+  withBusy(async () => {
+    const rec = missionReports().find((r) => r.id === id);
+    if (!rec || !S.msnDraft) return;
+    // An item is in the report or it is not; one left as "לא בדוח" drops out
+    // entirely, which is the same shape the form files.
+    const items = (S.msnDraft.items || []).filter((it) => it.have);
+    const next = cleanReport({ ...rec.data, ...S.msnDraft, items });
+    const prev = rec.data;
+    rec.data = next;
+    try {
+      await api(`/admin/reports/${id}`, { method: 'PUT', body: await seal(S.pubKey, next) });
+    } catch {
+      rec.data = prev;
+      toast('השמירה נכשלה — הדוח לא שונה', true);
+      return;
+    }
+    S.msnEdit = '';
+    S.msnDraft = null;
+    renderConsole();
+    toast('הדוח עודכן');
+  });
+
+// A photograph added or replaced from the console, on a report already filed.
+const msnShotPut = (id, kind, file) =>
+  withBusy(async () => {
+    if (!file || notAnImage(file)) { toast('יש לבחור קובץ תמונה', true); return; }
+    const { bytes } = await compressImage(file);
+    await api(`/admin/docs/${id}/${kind}`, { method: 'PUT', body: await sealBytes(S.pubKey, bytes) });
+    docForget(`${id}:${kind}`);
+    await fetchDocs(id, kind);
+    renderConsole();
+    toast('הצילום נשמר');
+  });
+
+const msnShotDel = (id, kind) =>
+  withBusy(async () => {
+    await api(`/admin/docs/${id}/${kind}`, { method: 'DELETE' });
+    docForget(`${id}:${kind}`);
+    renderConsole();
+    toast('הצילום נמחק');
+  });
 
 function renderMissionTab() {
   const all = missionReports();
@@ -12088,7 +12228,13 @@ function repDeleteDialog() {
   if (!rec) return '';
   const d = rec.data || {};
   const kindName = rec.damaged ? 'דיווח' : (REPORT_KIND[d.kind] || 'בקשת חוסר');
-  const shots = rec.damaged ? 0 : (d.photos || (d.photo ? 1 : 0));
+  /* How many pictures go with it. A fault carries a count; a shift report
+     carries one per item answered "יש", and the warning should say so rather
+     than reading zero and deleting six photographs quietly. */
+  const shots = rec.damaged ? 0
+    : d.kind === 'mission'
+      ? (Array.isArray(d.items) ? d.items.filter((it) => it.have === 'yes').length : 0)
+      : (d.photos || (d.photo ? 1 : 0));
 
   return `
     <div class="modal-back" data-act="modal-close">
@@ -12530,6 +12676,18 @@ $app.addEventListener('input', (e) => {
       S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), mk: el.value };
       msnSyncSend();
       break;
+    case 'msn-e-f': S.msnDraft[el.dataset.k] = el.value; break;
+    case 'msn-e-km': S.msnDraft.km = Number(el.value.replace(/\D/g, '').slice(0, 7)) || 0; break;
+    case 'msn-e-mk': {
+      const it = (S.msnDraft.items || []).find((x) => x.id === el.dataset.item);
+      if (it) it.mk = el.value;
+      break;
+    }
+    case 'msn-e-why': {
+      const it = (S.msnDraft.items || []).find((x) => x.id === el.dataset.item);
+      if (it) it.why = el.value;
+      break;
+    }
     case 'msn-km':
       S.msnKm = el.value.replace(/\D/g, '').slice(0, 7);
       if (el.value !== S.msnKm) el.value = S.msnKm;
@@ -12637,6 +12795,19 @@ $app.addEventListener('change', (e) => {
   // One item, one picture, taken rather than chosen — there is no gallery
   // input beside this one to fall back to.
   if (el.dataset.act === 'msn-file') { missionPhoto(el.dataset.item, el.files && el.files[0]); return; }
+  if (el.dataset.act === 'msn-e-file') { msnShotPut(el.dataset.id, el.dataset.kind, el.files && el.files[0]); return; }
+  if (el.dataset.act === 'msn-e-have') {
+    const items = (S.msnDraft.items || []).filter((it) => it.id !== el.dataset.item);
+    if (el.value) {
+      const was = (S.msnDraft.items || []).find((it) => it.id === el.dataset.item) || {};
+      items.push({ ...was, id: el.dataset.item, have: el.value,
+        shot: MISSION_ITEMS.findIndex((m) => m.id === el.dataset.item) });
+    }
+    // Kept in the catalogue's order so the photo slots still line up.
+    S.msnDraft.items = MISSION_ITEMS.map((m) => items.find((it) => it.id === m.id)).filter(Boolean);
+    renderConsole();
+    return;
+  }
   // Picking a vehicle brings the odometer field with it, so the form redraws.
   if (el.dataset.act === 'msn-veh') {
     captureMissionForm();
@@ -13235,6 +13406,19 @@ function dispatch(act, el) {
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
     case 'km-apply': kmApply(el.dataset.id); break;
+    case 'msn-edit': {
+      const rec = missionReports().find((r) => r.id === el.dataset.id);
+      if (!rec || rec.damaged) break;
+      S.msnEdit = rec.id;
+      // A working copy, so cancelling costs nothing and a failed save can put
+      // the original back untouched.
+      S.msnDraft = JSON.parse(JSON.stringify(rec.data));
+      renderConsole();
+      break;
+    }
+    case 'msn-edit-cancel': S.msnEdit = ''; S.msnDraft = null; renderConsole(); break;
+    case 'msn-e-save': msnSave(el.dataset.id); break;
+    case 'msn-e-shot-del': msnShotDel(el.dataset.id, el.dataset.kind); break;
     case 'mid-check': midCheck(); break;
     case 'audit-qclear': S.auditQ = ''; S.page = {}; renderConsole(); break;
     // the link itself still opens WhatsApp; this only records that it was used

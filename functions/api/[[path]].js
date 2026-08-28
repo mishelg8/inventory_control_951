@@ -1240,7 +1240,13 @@ export async function onRequest(context) {
       // the soldier's own hand and nobody else's to replace.
       if (seg[1] === 'docs' && seg.length === 4) {
         const [, , rid, kind] = seg;
-        if (!isHex(rid, HEX32) || !['fuel', 'civil', 'military'].includes(kind)) {
+        // The shift photographs are here for the licence's reason: a picture
+        // taken in the dark, of the wrong item, or not taken at all is found
+        // afterwards or not at all, and POST /docs answers to the report's
+        // status rather than to the office. The correction belongs here.
+        if (!isHex(rid, HEX32) || ![
+          'fuel', 'civil', 'military', ...MISSION_DOC_KINDS,
+        ].includes(kind)) {
           return err(400, 'בקשה לא תקינה');
         }
         if (scopes && !scopes.has(DOC_SOURCE[kind])) return err(403, 'אין הרשאה לנתונים אלה');

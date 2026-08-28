@@ -3337,3 +3337,23 @@ body.printing .printdoc {
 
 /* Kept for reports filed while a third answer briefly existed. */
 .msn-na td { color: var(--muted); }
+
+/* One item's line in the shift-report editor: what it was answered, its
+   number or its reason, and the photograph. Wraps rather than scrolls — this
+   is a form, and a form that scrolls sideways loses the field you are in. */
+.msn-edit-row {
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  padding-block: 0.4rem;
+  border-block-start: 1px solid var(--bg-2);
+}
+
+.msn-edit-row:first-of-type { border-block-start: 0; }
+
+.msn-edit-shot {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
