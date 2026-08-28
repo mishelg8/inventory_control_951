@@ -121,7 +121,10 @@ function cleanReport(raw) {
     items: Array.isArray(raw.items)
       ? raw.items.slice(0, MISSION_ITEMS.length).map((it) => ({
         id: MISSION_ITEMS.some((m) => m.id === (it && it.id)) ? it.id : '',
-        have: (it && it.have) === 'no' ? 'no' : 'yes',
+        // 'na' — not required on this mission — is a real answer, and a
+        // different one from 'no'. Anything unrecognised reads as held, which
+        // is the reading that shows the most and hides the least.
+        have: ['no', 'na'].includes(it && it.have) ? it.have : 'yes',
         mk: asText(it && it.mk, 40),
         why: asText(it && it.why, 120),
         shot: asCount(it && it.shot, MISSION_ITEMS.length - 1),

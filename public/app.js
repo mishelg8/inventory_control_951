@@ -1389,8 +1389,19 @@ const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '' };
 // drove and says nothing about how far.
 const msnKmOk = () => !S.msnVeh || /^\d{1,7}$/.test(String(S.msnKm).trim());
 
+/* Three answers, not two.
+ *
+ * "יש" and "חסר" assumed every mission carries every item, and a shift that
+ * takes only a ליונט could not be filed at all — the form demanded a
+ * catalogue number and a photograph for five things nobody drew. That is the
+ * form refusing a true report because it does not fit its own shape.
+ *
+ * "לא נדרש" costs nothing and says something: this shift was not supposed to
+ * have it. It is not the same as "חסר", which means it should have been here
+ * and is not, and the console counts only the second. */
 const msnReady = () => msnKmOk() && MISSION_ITEMS.every((it) => {
   const r = msnRow(it.id);
+  if (r.have === 'na') return true;
   if (r.have === 'no') return r.why.trim().length >= 2;
   if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
   return false;
@@ -1407,9 +1418,10 @@ function msnItemCard(it) {
     </label>`;
 
   return `
-    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}">
+    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${r.have === 'na' ? ' na' : ''}">
       <h3 class="fsec msn-name">${esc(it.name)}</h3>
-      <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
+      <div class="msn-picks three">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}${
+        pick('na', 'לא נדרש', 'na')}</div>
 
       ${r.have === 'yes' ? `
         <label class="field">
@@ -1533,8 +1545,9 @@ function renderMission() {
 
         <p class="form-err" data-err></p>
         <p class="field-hint">${missing
-          ? `<strong>${missing}</strong> פריטים מסומנים כחסרים — הם יופיעו כדיווח אצל מנהל הציוד.`
-          : 'סמנו יש/חסר על כל פריט כדי לשלוח.'}</p>
+          ? `<strong>${missing}</strong> ${missing === 1 ? 'פריט מסומן כחסר' : 'פריטים מסומנים כחסרים'} — ${
+              missing === 1 ? 'הוא יופיע' : 'הם יופיעו'} כדיווח אצל מנהל הציוד.`
+          : 'ענו על כל פריט. פריט שלא שייך למשמרת הזו — סמנו "לא נדרש".'}</p>
         <div class="formbar">
           <button class="btn primary" type="submit" ${msnReady() ? '' : 'disabled'}>שליחת הדוח</button>
           <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
@@ -1601,6 +1614,7 @@ async function missionSubmit(form) {
     const items = MISSION_ITEMS.map((it, i) => {
       const r = msnRow(it.id);
       const out = { id: it.id, have: r.have };
+      if (r.have === 'na') return out;
       if (r.have === 'yes') {
         out.mk = r.mk.trim();
         if (S.msnPhotos[it.id]) { out.shot = i; shots[i] = S.msnPhotos[it.id]; }
@@ -8113,6 +8127,9 @@ const missionReports = () => S.reports.filter(isMission);
    shift nobody needs to look at. */
 const msnItems = (r) => (r.data && Array.isArray(r.data.items) ? r.data.items : []);
 const msnMissingOf = (r) => msnItems(r).filter((i) => i.have === 'no');
+// What the shift was actually supposed to carry — "לא נדרש" is not a holding
+// and not a shortage, so it is out of both counts.
+const msnAskedOf = (r) => msnItems(r).filter((i) => i.have !== 'na');
 const msnShort = () =>
   missionReports().filter((r) => !r.damaged && msnMissingOf(r).length).length;
 const depositReports = () => S.reports.filter(isDeposit);
@@ -8292,6 +8309,13 @@ function msnDetail(rec) {
   const d = rec.data;
   const rows = msnItems(rec).map((item, i) => {
     const name = missionItemName(item.id);
+    if (item.have === 'na') {
+      return `<tr class="msn-na">
+          <td>${esc(name)}</td>
+          <td><span class="state">לא נדרש</span></td>
+          <td colspan="2" class="muted-txt">לא שייך למשמרת הזו</td>
+        </tr>`;
+    }
     if (item.have === 'no') {
       return `<tr class="msn-short">
           <td>${esc(name)}</td>
@@ -8420,7 +8444,7 @@ function renderMissionTab() {
     }
     const d = rec.data;
     const short = msnMissingOf(rec).length;
-    const total = msnItems(rec).length;
+    const total = msnAskedOf(rec).length;
     const open = S.expanded.has(rec.id);
     return `
       <tr class="${open ? 'is-open' : ''}">
@@ -13022,8 +13046,8 @@ function dispatch(act, el) {
       const id = el.dataset.item;
       captureMissionForm();
       S.msnRows[id] = { ...msnRow(id), have: el.dataset.v };
-      // Switching to "חסר" drops a picture that no longer describes anything.
-      if (el.dataset.v === 'no') delete S.msnPhotos[id];
+      // Anything but "יש" drops a picture that no longer describes anything.
+      if (el.dataset.v !== 'yes') delete S.msnPhotos[id];
       renderMission();
       break;
     }

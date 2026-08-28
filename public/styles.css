@@ -3329,3 +3329,11 @@ body.printing .printdoc {
    colour for a refusal and one for a warning; this is neither — it is the
    quiet answer that nothing needs doing. */
 .ok-txt { color: var(--pine-deep); font-weight: 600; }
+
+/* Three answers per item now: held, short, or not part of this mission. */
+.msn-picks.three { grid-template-columns: 1fr 1fr 1fr; }
+.msn-pick.on.na { border-color: var(--muted-2); background: var(--surface-3); color: var(--muted); }
+.msn-card.na { opacity: 0.72; }
+
+/* In the console, an item nobody was asked to carry recedes. */
+.msn-na td { color: var(--muted); }
