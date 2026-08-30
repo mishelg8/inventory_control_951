@@ -165,6 +165,15 @@ const COMMS_KINDS = [
   { id: 'charger', name: 'מטען', locs: COMMS_PLACES },
   { id: 'headset', name: 'דיבורית / אוזניות', locs: COMMS_PLACES },
   { id: 'cable', name: 'כבל / מתאם', locs: COMMS_PLACES },
+  /* Kept above the catch-all: an item filed as "אביזר נוסף" is one nobody can
+     count later, and these five were being filed that way for want of a row
+     of their own. New ids only — renaming an existing one would silently
+     retype every item already entered under it. */
+  { id: 'lionet', name: 'ליונט', locs: COMMS_PLACES },
+  { id: 'lionetFixed', name: 'ליונט נייח', locs: COMMS_PLACES },
+  { id: 'beacon', name: 'משואה', locs: COMMS_PLACES },
+  { id: 'locator', name: 'משיב מיקום', locs: COMMS_PLACES },
+  { id: 'mafles', name: 'מפלז', locs: COMMS_PLACES },
   { id: 'commsAcc', name: 'אביזר נוסף', locs: COMMS_PLACES },
 ];
 

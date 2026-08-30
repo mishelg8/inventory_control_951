@@ -111,6 +111,12 @@ function cleanRecord(raw) {
    in front of it and read by a form that makes every row of it mandatory. A
    duplicate item is dropped rather than merged: two rows for the same thing
    would ask the commander to photograph it twice. */
+/* A kind of grenade the unit carries. Named by the office once, so a mission
+   picks counts against a list rather than retyping the names each time. */
+function cleanAlphaKind(x) {
+  return { id: asText(x && x.id, 40) || rndId(), name: asText(x && x.name, 40) };
+}
+
 function cleanMission(x) {
   const seen = new Set();
   const items = [];
@@ -118,7 +124,18 @@ function cleanMission(x) {
     const id = MISSION_ITEMS.some((m) => m.id === (it && it.id)) ? it.id : '';
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    items.push({ id, qty: Math.max(1, asCount(it && it.qty, 99)) });
+    /* Alpha kit is not one thing. It is grenades, and which grenades matters
+       — so its row carries a count per kind beside the total, and a mission
+       that has not broken it down simply carries none. */
+    const parts = [];
+    const seenPart = new Set();
+    for (const p2 of Array.isArray(it && it.parts) ? it.parts : []) {
+      const pid = asText(p2 && p2.id, 40);
+      if (!pid || seenPart.has(pid)) continue;
+      seenPart.add(pid);
+      parts.push({ id: pid, name: asText(p2 && p2.name, 40), qty: Math.max(1, asCount(p2 && p2.qty, 99)) });
+    }
+    items.push({ id, qty: Math.max(1, asCount(it && it.qty, 99)), ...(parts.length ? { parts } : {}) });
   }
   return {
     id: asText(x && x.id, 40) || rndId(),
@@ -149,6 +166,17 @@ function cleanReport(raw) {
         have: ['no', 'na'].includes(it && it.have) ? it.have : 'yes',
         mk: asText(it && it.mk, 40),
         why: asText(it && it.why, 120),
+        /* What was actually counted, kind by kind, against what the mission
+           asked for. Both numbers are kept: "two of three" is the fact, and
+           either half alone is not. */
+        parts: Array.isArray(it && it.parts)
+          ? it.parts.slice(0, 40).map((p) => ({
+            id: asText(p && p.id, 40),
+            name: asText(p && p.name, 40),
+            qty: asCount(p && p.qty, 99),
+            got: asCount(p && p.got, 999),
+          })).filter((p) => p.id)
+          : [],
         shot: asCount(it && it.shot, MISSION_ITEMS.length - 1),
       })).filter((it) => it.id)
       : [],
@@ -339,6 +367,7 @@ function cleanInv(raw) {
     ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
     vehicles: arr(src.vehicles, cleanVehicle, 500),
     missions: arr(src.missions, cleanMission, 200),
+    alphaKinds: arr(src.alphaKinds, cleanAlphaKind, 40),
     fuel: arr(src.fuel, cleanFuel, 300),
     countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
     updatedAt: asTime(src.updatedAt),
@@ -352,6 +381,7 @@ export {
   asTime,
   cleanAmmo,
   cleanAmmoLog,
+  cleanAlphaKind,
   cleanMission,
   cleanArmLog,
   cleanFuel,

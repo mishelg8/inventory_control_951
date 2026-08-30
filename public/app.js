@@ -252,6 +252,7 @@ const S = {
      row so a re-render never copies image bytes around. */
   midBad: [],                   // records whose id does not match their number
   midRan: 0,                    // how many were checked, 0 = not run
+  msnDay: 'today',              // which day's shift reports the console shows
   msnQ: '',                     // shift-report search box
   missions: [],                 // the office's mission definitions, for the picker
   msnPick: '',                  // which one the commander chose, '' = none
@@ -1333,7 +1334,19 @@ async function faultPhoto(input) {
    there is no gallery button beside it, which is the only lever HTML gives.
    It is a strong one on a phone and it is not a guarantee — see the note
    above FAULT_KINDS about what `accept` and `capture` can and cannot do. */
-const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '' };
+const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '', got: {} };
+
+/* The grenade counts a mission asks for, if it asks for any. Alpha kit is not
+   one thing — a commander who "has alpha" may be two smoke short — so the
+   mission's own breakdown becomes a line per kind, and he counts them. */
+const msnParts = (it) => (it && Array.isArray(it.parts) ? it.parts : []);
+
+// Every kind has to be counted before the item is finished. Zero is a real
+// answer and the commonest one worth having: it is the shortage.
+const msnPartsDone = (it) => msnParts(it).every((p) => {
+  const got = (msnRow(it.id).got || {})[p.id];
+  return got !== undefined && got !== '' && /^\d{1,3}$/.test(String(got));
+});
 
 // A vehicle without a reading is worse than no vehicle: it says somebody
 // drove and says nothing about how far.
@@ -1366,7 +1379,12 @@ const msnScope = () => {
   return def.items
     .map((x) => {
       const cat = MISSION_ITEMS.find((m) => m.id === x.id);
-      return cat ? { ...cat, qty: Number(x.qty) || 1 } : null;
+      // The breakdown travels with the row. Rebuilding from the catalogue
+      // alone dropped it, and the alpha card rendered without the grenades
+      // it exists to count.
+      return cat
+        ? { ...cat, qty: Number(x.qty) || 1, ...(Array.isArray(x.parts) && x.parts.length ? { parts: x.parts } : {}) }
+        : null;
     })
     .filter(Boolean);
 };
@@ -1376,7 +1394,7 @@ const msnAnswered = () => msnScope().filter((it) => msnRow(it.id).have);
 const msnItemDone = (it) => {
   const r = msnRow(it.id);
   if (r.have === 'no') return r.why.trim().length >= 2;
-  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
+  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id] && msnPartsDone(it);
   return false;
 };
 
@@ -1413,6 +1431,24 @@ function msnItemCard(it) {
                  value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
                  placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
         </label>
+        ${msnParts(it).length ? `
+          <div class="msn-parts">
+            <p class="field-label">כמה מכל סוג יש בפועל</p>
+            ${msnParts(it).map((p) => {
+              const got = (r.got || {})[p.id];
+              const short = got !== undefined && got !== '' && Number(got) < p.qty;
+              return `
+                <label class="msn-part${short ? ' short' : ''}">
+                  <span class="msn-part-n">${esc(p.name)}</span>
+                  <span class="msn-part-need">נדרש ${p.qty}</span>
+                  <input class="input mini num" inputmode="numeric" maxlength="3" autocomplete="off"
+                         value="${esc(got === undefined ? '' : String(got))}"
+                         data-act="msn-part" data-item="${it.id}" data-part="${esc(p.id)}"
+                         placeholder="0" aria-label="${esc(p.name)} — כמה יש">
+                </label>`;
+            }).join('')}
+            <p class="field-hint mb0">ספרו בפועל. פחות מהנדרש נרשם כחוסר ומוצג למנהל הציוד.</p>
+          </div>` : ''}
         ${shot
           ? `<div class="lic-shot">
                <img class="shot-img" src="${shot.preview}" alt="צילום ${esc(it.name)}">
@@ -1720,6 +1756,13 @@ async function missionSubmit(form) {
       const out = { id: it.id, have: r.have };
       if (r.have === 'yes') {
         out.mk = r.mk.trim();
+        const parts = msnParts(it);
+        if (parts.length) {
+          out.parts = parts.map((p) => ({
+            id: p.id, name: p.name, qty: p.qty,
+            got: Number(String((r.got || {})[p.id] ?? '').replace(/\D/g, '')) || 0,
+          }));
+        }
         if (S.msnPhotos[it.id]) { out.shot = i; shots[i] = S.msnPhotos[it.id]; }
       } else {
         out.why = r.why.trim();
@@ -5924,7 +5967,7 @@ function ledgerPanel(approved) {
 const emptyInv = () => ({
   open: {}, extra: [], notes: '',
   armon: [], armonLog: [], comms: [], commsLog: [],
-  ammo: [], ammoLog: [], vehicles: [], fuel: [], missions: [], countedAt: {},
+  ammo: [], ammoLog: [], vehicles: [], fuel: [], missions: [], alphaKinds: [], countedAt: {},
 });
 
 // The two counting registers are the same thing with different names, so they
@@ -7257,6 +7300,10 @@ const kmApply = (id) =>
  * in the vault where it can be finished. */
 function renderMissionDefsTab() {
   const all = (S.inv && S.inv.missions) || [];
+  // Read inside the cards below, so it is declared before them. It was not,
+  // and the whole screen threw on the temporal dead zone the moment a mission
+  // carried alpha kit.
+  const kinds = (S.inv && S.inv.alphaKinds) || [];
 
   const cards = all.map((m, i) => {
     const rows = MISSION_ITEMS.map((mi) => {
@@ -7277,6 +7324,35 @@ function renderMissionDefsTab() {
         </div>`;
     }).join('');
 
+    /* Alpha's own breakdown, shown only once the mission actually carries
+       alpha kit — a list of grenade counts under an item nobody drew is noise
+       on a screen that is already a form. */
+    const alpha = (m.items || []).find((x) => x.id === 'alpha');
+    const alphaRows = alpha && kinds.length
+      ? `<div class="mdef-sub">
+           <p class="field-label">כמה מכל סוג בציוד אלפא</p>
+           <div class="mdef-grid">${kinds.map((k) => {
+             const part = (alpha.parts || []).find((p2) => p2.id === k.id);
+             const q = part ? part.qty : 0;
+             return `
+               <div class="mdef-row${q ? ' on' : ''}">
+                 <span class="mdef-name">${esc(k.name)}</span>
+                 <span class="mdef-qty num">${q || '—'}</span>
+                 <span class="rec-row-tools step">
+                   <button type="button" class="step-btn" data-act="mdef-part" data-i="${i}"
+                           data-kind="${esc(k.id)}" data-d="-1" ${q <= 0 ? 'disabled' : ''}
+                           aria-label="פחות ${esc(k.name)}">−</button>
+                   <button type="button" class="step-btn" data-act="mdef-part" data-i="${i}"
+                           data-kind="${esc(k.id)}" data-d="1" ${q >= 99 ? 'disabled' : ''}
+                           aria-label="עוד ${esc(k.name)}">+</button>
+                 </span>
+               </div>`;
+           }).join('')}</div>
+         </div>`
+      : alpha
+        ? '<p class="field-hint">הגדירו סוגי רימונים למעלה כדי לפרט מה נדרש באלפא.</p>'
+        : '';
+
     const count = (m.items || []).length;
     return `
       <section class="panel mdef">
@@ -7292,10 +7368,29 @@ function renderMissionDefsTab() {
           ? `${count === 1 ? 'פריט אחד נדרש' : `<span class="num">${count}</span> פריטים נדרשים`} במשימה הזו. החייל יידרש למק״ט וצילום על כל אחד מהם.`
           : 'בחרו כמות לפריט אחד לפחות — משימה בלי ציוד לא תוצע לחיילים.'}</p>
         <div class="mdef-grid">${rows}</div>
+        ${alphaRows}
       </section>`;
   }).join('');
 
+  const kindsPanel = `
+    <section class="panel">
+      <h2 class="panel-title">סוגי רימונים</h2>
+      <p class="panel-sub">ציוד אלפא הוא לא פריט אחד. הסוגים שתגדירו כאן מופיעים תחת "ציוד אלפא" בכל משימה, ושם קובעים כמה מכל סוג נדרשים.</p>
+      ${kinds.length
+        ? `<div class="mdef-grid">${kinds.map((k, n) => `
+            <div class="mdef-row on">
+              <input class="input mini grow" type="text" maxlength="40" value="${esc(k.name)}"
+                     data-act="akind-name" data-n="${n}" placeholder="לדוגמה: רימון רסס" aria-label="שם הסוג">
+              ${delCell(`akind:${n}`, 'akind-del', { n }, '✕', 'מחיקת הסוג')}
+            </div>`).join('')}</div>`
+        : '<p class="empty">עדיין לא הוגדרו סוגים.</p>'}
+      <div class="rec-actions mt">
+        <button class="btn ghost" data-act="akind-add">+ הוספת סוג</button>
+      </div>
+    </section>`;
+
   return `
+    ${kindsPanel}
     <section class="panel">
       <h2 class="panel-title">משימות</h2>
       <p class="panel-sub">מה שמוגדר כאן מופיע לחייל כרשימה נפתחת בדוח המשימה. ברגע שהוא בוחר משימה, הציוד שלה נפתח לפניו — <strong>וכל השדות חובה</strong>: מק״ט וצילום לכל פריט.</p>
@@ -8631,10 +8726,19 @@ function msnDetail(rec) {
     }
     const kind = MISSION_KINDS[typeof item.shot === 'number' ? item.shot : i];
     const shot = S.docs[`${rec.id}:${kind}`];
+    /* Grenades counted against what the mission asked for. A shortfall is the
+       reason this line exists, so it is the thing the eye lands on. */
+    const parts = Array.isArray(item.parts) ? item.parts : [];
+    const partsCell = parts.length
+      ? `<span class="msn-part-sum">${parts.map((p) => {
+          const short = Number(p.got) < Number(p.qty);
+          return `<span class="${short ? 'bad' : ''}">${esc(p.name)} ${p.got}/${p.qty}</span>`;
+        }).join(' · ')}</span>`
+      : '';
     return `<tr>
         <td>${esc(name)}</td>
         <td><span class="state done">יש</span></td>
-        <td class="num">${esc(item.mk || '—')}</td>
+        <td class="num">${esc(item.mk || '—')}${partsCell ? `<br>${partsCell}` : ''}</td>
         <td>
           <button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
             shot ? 'הסתרה' : '📷 צילום'}</button>
@@ -8822,16 +8926,48 @@ const msnShotDel = (id, kind) =>
     toast('הצילום נמחק');
   });
 
+/* Midnight, in the reader's own clock. A shift report belongs to the day the
+   commander filed it, and "today" has to mean the day he is standing in — not
+   a rolling 24 hours, which would put last night's 23:00 report outside it at
+   22:00 the next evening. */
+const dayStart = (back = 0) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime() - back * 86400000;
+};
+
+const MSN_DAYS = [
+  ['today', 'היום', () => [dayStart(), Infinity]],
+  ['yday', 'אתמול', () => [dayStart(1), dayStart()]],
+  ['week', 'השבוע', () => [dayStart(6), Infinity]],
+  ['all', 'הכל', () => [0, Infinity]],
+];
+
+const msnInDay = (r, id) => {
+  const spec = MSN_DAYS.find((x) => x[0] === id) || MSN_DAYS[3];
+  const [from, to] = spec[2]();
+  const t = Number((r.data && r.data.createdAt) || 0);
+  return t >= from && t < to;
+};
+
 function renderMissionTab() {
   const all = missionReports();
   const needle = S.msnQ.trim().toLowerCase();
-  const visible = all.filter((r) => {
+  const onDay = all.filter((r) => msnInDay(r, S.msnDay));
+  const visible = onDay.filter((r) => {
     if (r.damaged || !needle) return true;
     const d = r.data || {};
     return (d.name || '').toLowerCase().includes(needle)
       || (d.shift || '').toLowerCase().includes(needle)
+      || (d.missionName || '').toLowerCase().includes(needle)
       || String(d.pn || '').includes(needle);
   });
+
+  const dayChips = MSN_DAYS.map(([id, label]) => {
+    const n = all.filter((r) => msnInDay(r, id)).length;
+    return `<button class="filter" aria-pressed="${S.msnDay === id}" data-act="msn-day" data-d="${id}">${
+      label}${n ? ` <span class="num">${n}</span>` : ''}</button>`;
+  }).join('');
 
   // Short shifts first, then most recent — the order somebody reads this in.
   const ordered = [...visible].sort((a, b) => {
@@ -8877,7 +9013,8 @@ function renderMissionTab() {
     <section class="panel">
       <h2 class="panel-title">דוחות משמרת</h2>
       <p class="panel-sub">שורה לכל משמרת. לחיצה על השם פותחת את הפירוט — מק״ט, סיבת חוסר וצילום לכל פריט. משמרות שעלו בחוסר מוצגות ראשונות.</p>
-      ${plainSearch('msn-search', 'msn-qclear', S.msnQ, 'חיפוש לפי שם, מ״א או משמרת', all.length, visible.length)}
+      <div class="filters">${dayChips}</div>
+      ${plainSearch('msn-search', 'msn-qclear', S.msnQ, 'חיפוש לפי שם, מ״א או משימה', onDay.length, visible.length)}
       ${pg.slice.length
         ? `<div class="tbl-scroll">
              <table class="tbl roster" data-phone="0,4,-1">
@@ -8889,9 +9026,13 @@ function renderMissionTab() {
              </table>
            </div>
            ${pager('mission', pg)}`
-        : '<p class="empty">אין דוחות משמרת שתואמים את החיפוש.</p>'}
+        : `<p class="empty">${needle
+            ? 'אין דוחות שתואמים את החיפוש.'
+            : S.msnDay === 'today' ? 'לא הוגש היום אף דוח משמרת.'
+              : 'אין דוחות בטווח הזה.'}</p>`}
       <p class="mt muted-txt">${(() => {
         const n = ordered.filter((r) => !r.damaged).length;
+        void all;
         return `${n === 1 ? 'דוח אחד' : `<span class="num">${n}</span> דוחות`} · ${
           short === 0 ? 'אף משמרת לא עלתה בחוסר'
             : short === 1 ? 'משמרת אחת עלתה בחוסר'
@@ -10660,7 +10801,7 @@ const VAULT_PARTS = [
   ['ammoLog', ['ammoLog']],
   ['vehicles', ['vehicles']],
   ['fuel', ['fuel']],
-  ['missions', ['missions']],
+  ['missions', ['missions', 'alphaKinds']],
 ];
 
 const partSlice = (inv, keys) => {
@@ -10789,7 +10930,10 @@ async function publishCards() {
     .map((m) => ({
       id: m.id,
       label: String(m.name).trim().slice(0, 60),
-      data: JSON.stringify((m.items || []).map((it) => ({ id: it.id, qty: it.qty }))),
+      data: JSON.stringify((m.items || []).map((it) => ({
+        id: it.id, qty: it.qty,
+        ...(it.parts && it.parts.length ? { parts: it.parts } : {}),
+      }))),
     }));
   await api('/admin/cards', { method: 'PUT', body: { cards, vehicles, missions } }).catch(() => {});
 }
@@ -12809,6 +12953,24 @@ $app.addEventListener('input', (e) => {
       S.msnRows[el.dataset.item] = { ...msnRow(el.dataset.item), mk: el.value };
       msnSyncSend();
       break;
+    case 'msn-part': {
+      const id = el.dataset.item;
+      const clean = el.value.replace(/\D/g, '').slice(0, 3);
+      if (el.value !== clean) el.value = clean;
+      const row = msnRow(id);
+      S.msnRows[id] = { ...row, got: { ...(row.got || {}), [el.dataset.part]: clean } };
+      /* Marked here rather than by redrawing: this fires on every keystroke,
+         and a re-render would take the cursor out of the number being typed.
+         Counting fewer than the mission asked for is the answer this line
+         exists to get, so it has to show while it is being typed. */
+      const box = el.closest('.msn-part');
+      if (box) {
+        const need = Number((box.querySelector('.msn-part-need') || {}).textContent.replace(/\D/g, '')) || 0;
+        box.classList.toggle('short', clean !== '' && Number(clean) < need);
+      }
+      msnSyncSend();
+      break;
+    }
     case 'msn-e-f': S.msnDraft[el.dataset.k] = el.value; break;
     case 'msn-e-km': S.msnDraft.km = Number(el.value.replace(/\D/g, '').slice(0, 7)) || 0; break;
     case 'msn-e-mk': {
@@ -12848,6 +13010,20 @@ $app.addEventListener('input', (e) => {
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
     case 'veh-search':  S.regQ = { ...S.regQ, veh: el.value };    rerenderKeepFocus(el); break;
     case 'mdef-name':   S.inv.missions[+el.dataset.i].name = el.value; break;
+    case 'akind-name': {
+      const n = +el.dataset.n;
+      S.inv.alphaKinds[n] = { ...S.inv.alphaKinds[n], name: el.value };
+      // The name is copied into every mission that counts this kind, so a
+      // published requirement never carries a stale label.
+      const id = S.inv.alphaKinds[n].id;
+      S.inv.missions = (S.inv.missions || []).map((m) => ({
+        ...m,
+        items: (m.items || []).map((it) => (it.parts
+          ? { ...it, parts: it.parts.map((p2) => (p2.id === id ? { ...p2, name: el.value } : p2)) }
+          : it)),
+      }));
+      break;
+    }
     case 'veh-plate':   S.inv.vehicles[+el.dataset.i].plate = el.value; break;
     case 'veh-company': S.inv.vehicles[+el.dataset.i].company = el.value; break;
     case 'veh-km':
@@ -13551,7 +13727,49 @@ function dispatch(act, el) {
     case 'flt-filter': S.fltFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
+    case 'msn-day': S.msnDay = el.dataset.d; S.page = {}; renderConsole(); break;
     case 'km-apply': kmApply(el.dataset.id); break;
+    case 'akind-add':
+      S.inv.alphaKinds = [...(S.inv.alphaKinds || []), { id: rndId(), name: '' }];
+      renderConsole();
+      break;
+    case 'akind-del': {
+      S.askDel = '';
+      const gone = (S.inv.alphaKinds || [])[+el.dataset.n];
+      S.inv.alphaKinds = (S.inv.alphaKinds || []).filter((_, n) => n !== +el.dataset.n);
+      // A kind that no longer exists must not stay counted inside a mission —
+      // it would publish a requirement nobody can name.
+      if (gone) {
+        S.inv.missions = (S.inv.missions || []).map((m) => ({
+          ...m,
+          items: (m.items || []).map((it) => (it.parts
+            ? { ...it, parts: it.parts.filter((p2) => p2.id !== gone.id) }
+            : it)),
+        }));
+      }
+      renderConsole();
+      break;
+    }
+    case 'mdef-part': {
+      const i = +el.dataset.i;
+      const m = (S.inv.missions || [])[i];
+      if (!m) break;
+      const kind = ((S.inv.alphaKinds || []).find((k) => k.id === el.dataset.kind)) || null;
+      if (!kind) break;
+      const items = (m.items || []).map((x) => ({ ...x, parts: x.parts ? [...x.parts] : undefined }));
+      const alpha = items.find((x) => x.id === 'alpha');
+      if (!alpha) break;
+      const parts = alpha.parts || [];
+      const at = parts.findIndex((p2) => p2.id === kind.id);
+      const next = Math.max(0, Math.min(99, (at >= 0 ? parts[at].qty : 0) + Number(el.dataset.d || 0)));
+      if (next === 0) { if (at >= 0) parts.splice(at, 1); }
+      else if (at >= 0) parts[at] = { ...parts[at], qty: next, name: kind.name };
+      else parts.push({ id: kind.id, name: kind.name, qty: next });
+      alpha.parts = parts;
+      S.inv.missions[i] = { ...m, items };
+      renderConsole();
+      break;
+    }
     case 'mdef-add':
       S.inv.missions = [...(S.inv.missions || []), { id: rndId(), name: '', items: [] }];
       renderConsole();

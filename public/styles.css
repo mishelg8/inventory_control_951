@@ -3397,3 +3397,41 @@ body.printing .printdoc {
 /* Under a defined mission every row must be answered, so an unanswered one is
    outstanding work rather than something to leave alone. */
 .msn-card.required { border-color: var(--warn-line, var(--line-hard)); }
+
+/* Alpha's breakdown, under the mission it belongs to. */
+.mdef-sub {
+  margin-block-start: 0.75rem;
+  padding-block-start: 0.75rem;
+  border-block-start: 1px solid var(--bg-2);
+}
+
+.mdef-sub .field-label { display: block; margin-block-end: 0.4rem; }
+.mdef-row .grow { flex: 1; }
+
+/* Counting grenades on the shift form: what is required, and what is there. */
+.msn-parts {
+  margin-block: 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--bg-2);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.msn-part {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-block: 0.3rem;
+}
+
+.msn-part-n { flex: 1; font-weight: 600; font-size: var(--t-sm); }
+.msn-part-need { color: var(--muted); font-size: var(--t-2xs); }
+.msn-part .input { width: 4.5rem; }
+
+/* Fewer than the mission asked for is the answer this screen exists to get,
+   so it is marked rather than hidden. */
+.msn-part.short .msn-part-n { color: var(--bad-fill); }
+
+/* The grenade tally on a shift report, read back. */
+.msn-part-sum { font-size: var(--t-2xs); color: var(--muted); }
+.msn-part-sum .bad { font-weight: 700; }
