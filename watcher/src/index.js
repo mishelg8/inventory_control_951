@@ -138,7 +138,7 @@ async function send(env, to, mission, at) {
     // The token travels in a header. It has never been in a URL and must not
     // start now: URLs are logged, by us and by everyone in between.
     headers: {
-      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+      Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -160,7 +160,14 @@ export async function runWatch(env, now = Date.now()) {
   const early = (Number(env.ALERT_EARLY_MIN) || 60) * MIN;
 
   const sent = [];
+  /* Nothing is looked at, and nothing is claimed, until there is something to
+     send with. A missing token is not one failed message — it is every message
+     from now on, and the slot-claiming below would quietly mark each handover
+     as dealt with on the way past. A watcher that cannot speak must stay
+     silent about its slots too, so that fixing the token fixes the alerts. */
   if (!to.length) return { sent, why: 'no recipients configured' };
+  if (!env.WHATSAPP_ACCESS_TOKEN) return { sent, why: 'no token configured' };
+  if (!env.WHATSAPP_PHONE_NUMBER_ID) return { sent, why: 'no phone number id configured' };
 
   const { results } = await db
     .prepare("SELECT id, label, data FROM pub_pick WHERE kind = 'mission'")
@@ -190,13 +197,23 @@ export async function runWatch(env, now = Date.now()) {
         .bind(m.id, slot, now).run();
       if (!claim.meta || !claim.meta.changes) continue;
 
+      let delivered = 0;
       for (const n of to) {
         try {
           await send(env, n, m.label, hhmm(slot));
+          delivered += 1;
           sent.push({ mission: m.label, slot: hhmm(slot) });
         } catch (e) {
           console.log(`watch.send.fail ${m.id} ${slot}: ${e.message}`);
         }
+      }
+      /* Reached nobody: give the slot back so the next run tries again.
+         Reaching one of two is not a retry — resending to the one who already
+         has it is how an alert becomes noise — so the claim only lifts when
+         the message went nowhere at all. */
+      if (!delivered) {
+        await db.prepare('DELETE FROM shift_alerts WHERE mission_id = ?1 AND slot = ?2')
+          .bind(m.id, slot).run().catch(() => {});
       }
     }
   }

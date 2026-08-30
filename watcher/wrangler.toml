@@ -32,6 +32,10 @@ ALERT_GRACE_MIN = "30"
 ALERT_WINDOW_HOURS = "6"
 ALERT_EARLY_MIN = "60"
 
-# ALERT_TO, WHATSAPP_TOKEN and WATCH_KEY are secrets, set with
+# ALERT_TO, WHATSAPP_ACCESS_TOKEN and WATCH_KEY are secrets, set with
 # `wrangler secret put` — phone numbers are personal data and this repository
 # is public.
+#
+# WHATSAPP_ACCESS_TOKEN is deliberately the same name the Pages project uses
+# for the same Meta token. Two names for one credential is how one of them
+# ends up rotated and the other quietly stops working.
