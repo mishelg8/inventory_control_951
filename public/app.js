@@ -1424,13 +1424,14 @@ function msnItemCard(it) {
         it.qty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
       <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
 
-      ${r.have === 'yes' && !msnParts(it).length ? `
-        <label class="field">
-          <span class="field-label">מק״ט <span class="req" aria-hidden="true">*</span></span>
-          <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
-                 value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
-                 placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
-        </label>
+      ${r.have === 'yes' ? `
+        ${msnParts(it).length ? '' : `
+          <label class="field">
+            <span class="field-label">מק״ט <span class="req" aria-hidden="true">*</span></span>
+            <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
+                   value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
+                   placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
+          </label>`}
         ${msnParts(it).length ? `
           <div class="msn-parts">
             <p class="field-label">כמה מכל סוג יש בפועל</p>
