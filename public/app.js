@@ -4579,6 +4579,7 @@ function renderSummaryTab() {
     </section>
 
     ${weaponsPanel(approved)}
+    ${scopesPanel(approved)}
     ${ledgerPanel(approved)}`;
 }
 
@@ -5156,6 +5157,92 @@ function weaponsPanel(approved) {
     </section>`;
 }
 
+/* Weapon and optics, one row per soldier.
+
+   The armoury's screens answer "where is this item". This answers the other
+   question, the one actually asked at a בדיקת נשק: for each man, his weapon
+   number, and whether he is holding a sight — and if so, which.
+
+   It takes two sources, because neither knows the whole answer. The record
+   carries the numbers the soldier registered himself: a weapon, an אקילה, and
+   one כוונת. It has no field for a night sight at all, and it never did — a
+   night sight belongs to the unit, goes out for a night and comes back, so the
+   only thing that knows who has one is the armoury register. The record
+   supplies the day sight it knows about, the register supplies the rest, and a
+   soldier holding a night sight he never registered still appears with it.
+
+   Only what is actually with him counts. A sight registered to his name and
+   sitting on the shelf is not a sight he has, and answering "יש" for it is how
+   a check passes on paper and fails in the room.
+
+   `regHoldings` matches on the personal number first and falls back to the
+   name; a name match is a guess, so it is marked as one rather than presented
+   as a fact — the same rule the soldier's own card uses. */
+function weaponScopeRows(recs) {
+  return recs
+    .map((rec) => {
+      const d = rec.data;
+      const held = regHoldings(d).filter((h) => h.withHim && h.reg === REGISTERS.armon);
+      const serials = (kind) => held.filter((h) => h.x.kind === kind).map((h) => h.x.serial);
+      // Both sources can name a day sight, and they can name different ones.
+      // Two numbers are two sights, not one badly recorded — so both are shown
+      // and neither is quietly dropped in favour of the other.
+      const day = [...new Set([d.scope, ...serials('dscope')].filter(Boolean))];
+      const night = [...new Set(serials('nscope'))];
+      const byName = held.some((h) => h.byName && (h.x.kind === 'dscope' || h.x.kind === 'nscope'));
+      return { rid: rec.rid, name: d.name, pn: d.pn, weapon: d.weapon || '', day, night, byName };
+    })
+    // A soldier with neither a weapon nor a sight has nothing to check, and a
+    // sheet of empty rows is a sheet nobody reads to the end.
+    .filter((r) => r.weapon || r.day.length || r.night.length)
+    .sort((a, b) => String(a.weapon).localeCompare(String(b.weapon), 'en', { numeric: true }));
+}
+
+const scopeCell = (list) => (list.length ? list.join(' · ') : '');
+
+/* The rows on screen, above the buttons that export them. A report you cannot
+   read before you print it is a report you find the mistake in afterwards. */
+function scopesPanel(approved) {
+  const rows = weaponScopeRows(applyFilters(approved));
+
+  const cell = (list) => (list.length
+    ? `<span class="wpn">${esc(list.join(' · '))}</span>`
+    : '<span class="dim">·</span>');
+
+  const body = rows.map((r) => `
+    <tr>
+      <td>${esc(r.name)}${r.byName ? ' <small class="kit-have">התאמה לפי שם</small>' : ''}</td>
+      <td class="num">${esc(r.pn)}</td>
+      <td class="num wpn">${r.weapon ? esc(r.weapon) : '<span class="dim">ללא נשק רשום</span>'}</td>
+      <td class="num">${cell(r.day)}</td>
+      <td class="num">${cell(r.night)}</td>
+    </tr>`).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">נשקים וכוונות</h2>
+      <p class="panel-sub">חמישה שדות בלבד: שם, מספר אישי, מספר נשק, וכוונת יום ולילה אם יש. הכוונת נלקחת גם מהרישום של החייל וגם ממרשם הארמון — כוונת לילה קיימת רק בארמון, ולכן היא נספרת משם. נספרת רק כוונת שנמצאת <strong>אצלו</strong>, לא כזו שרשומה עליו ויושבת על המדף. <strong>ללא טלפון ובלי מחלקה</strong> — מכבד את החיפוש והסינון.</p>
+      <div class="stat-row">
+        <div class="stat"><span class="stat-n num">${rows.length}</span><span class="stat-l">שורות</span></div>
+        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.weapon).length}</span><span class="stat-l">עם נשק</span></div>
+        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.day.length).length}</span><span class="stat-l">עם כוונת</span></div>
+        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.night.length).length}</span><span class="stat-l">עם כוונת לילה</span></div>
+      </div>
+      ${rows.length
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,2,3,4">
+               <thead><tr>
+                 <th>שם</th><th class="num">מספר אישי</th><th class="num">מספר נשק</th>
+                 <th class="num">כוונת</th><th class="num">כוונת לילה</th>
+               </tr></thead>
+               <tbody>${body}</tbody>
+             </table>
+           </div>
+           ${reportButtons('scopes')}`
+        : '<p class="empty">אין חייל עם נשק או כוונת שתואם את החיפוש והסינון.</p>'}
+    </section>`;
+}
+
 /* ── Reports: one definition per table, two outputs ────────────────────
    Every exportable table is described once — name, columns, rows — and both
    the CSV and the printable PDF are generated from that description. Adding a
@@ -5393,6 +5480,26 @@ const REPORTS = {
           const d = rec.data;
           return [d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone];
         }),
+      };
+    },
+  },
+
+  /* The same question as `weapons`, asked smaller. That one is the full sheet
+     — אקילה, מחלקה and a phone number per soldier — and a phone number in an
+     unencrypted file is a cost that has to buy something. For a weapon check
+     it buys nothing, so this sheet does not carry one: name, personal number,
+     weapon, and the two sights. Nothing else leaves the encryption.
+
+     It exports exactly the rows on screen, filters and search included, so the
+     sheet and the table it sits under can never say different things. */
+  scopes: {
+    name: 'נשקים וכוונות', file: 'tzayad-weapons-scopes', sensitive: true,
+    build() {
+      const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged && r.data);
+      const rows = weaponScopeRows(applyFilters(approved));
+      return {
+        head: ['שם', 'מספר אישי', 'מספר נשק', 'כוונת', 'כוונת לילה'],
+        rows: rows.map((r) => [r.name, r.pn, r.weapon, scopeCell(r.day), scopeCell(r.night)]),
       };
     },
   },
