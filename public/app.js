@@ -253,6 +253,8 @@ const S = {
   midBad: [],                   // records whose id does not match their number
   midRan: 0,                    // how many were checked, 0 = not run
   msnQ: '',                     // shift-report search box
+  missions: [],                 // the office's mission definitions, for the picker
+  msnPick: '',                  // which one the commander chose, '' = none
   msnEdit: '',                  // shift report open for correction in the console
   msnDraft: null,               // its working copy, until saved
   homeCat: '',                  // which subject of the front page is open
@@ -1348,17 +1350,47 @@ const msnKmOk = () => !S.msnVeh || /^\d{1,7}$/.test(String(S.msnKm).trim());
  * So an item is optional, and an item that was answered has to be finished:
  * "יש" costs a number and a picture, "חסר" costs a sentence. A report with
  * nothing answered at all is not a report, so one item is the floor. */
-const msnAnswered = () => MISSION_ITEMS.filter((it) => msnRow(it.id).have);
+/* The rows this report is about.
+ *
+ * With a mission chosen it is that mission's kit and nothing else, because
+ * what a mission carries is the unit's rule rather than something to be
+ * remembered at 05:00 by the man walking out — and every row of it has to be
+ * answered. With no mission chosen the whole catalogue is offered and every
+ * row is optional, which is what the form did before missions existed and is
+ * still the right behaviour for a shift nobody has defined yet. */
+const msnDef = () => (S.missions || []).find((m) => m.id === S.msnPick) || null;
 
-const msnReady = () => msnKmOk() && msnAnswered().length >= 1
-  && msnAnswered().every((it) => {
-    const r = msnRow(it.id);
-    if (r.have === 'no') return r.why.trim().length >= 2;
-    return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
-  });
+const msnScope = () => {
+  const def = msnDef();
+  if (!def) return MISSION_ITEMS.map((it) => ({ ...it, qty: 0 }));
+  return def.items
+    .map((x) => {
+      const cat = MISSION_ITEMS.find((m) => m.id === x.id);
+      return cat ? { ...cat, qty: Number(x.qty) || 1 } : null;
+    })
+    .filter(Boolean);
+};
+
+const msnAnswered = () => msnScope().filter((it) => msnRow(it.id).have);
+
+const msnItemDone = (it) => {
+  const r = msnRow(it.id);
+  if (r.have === 'no') return r.why.trim().length >= 2;
+  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id];
+  return false;
+};
+
+const msnReady = () => {
+  if (!msnKmOk()) return false;
+  const scope = msnScope();
+  // A defined mission is answered in full; an undefined one needs one item.
+  if (msnDef()) return scope.length > 0 && scope.every(msnItemDone);
+  return msnAnswered().length >= 1 && msnAnswered().every(msnItemDone);
+};
 
 function msnItemCard(it) {
   const r = msnRow(it.id);
+  const must = !!msnDef();
   const shot = S.msnPhotos[it.id];
   const pick = (v, label, cls) => `
     <label class="msn-pick ${r.have === v ? `on ${cls}` : ''}">
@@ -1368,8 +1400,10 @@ function msnItemCard(it) {
     </label>`;
 
   return `
-    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${r.have ? '' : ' unanswered'}">
-      <h3 class="fsec msn-name">${esc(it.name)}</h3>
+    <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${
+      r.have ? '' : (must ? ' required' : ' unanswered')}">
+      <h3 class="fsec msn-name">${esc(it.name)}${
+        it.qty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
       <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
 
       ${r.have === 'yes' ? `
@@ -1411,6 +1445,7 @@ function msnAskFleet() {
   api('/cards')
     .then((r) => {
       S.fleet = r.vehicles || [];
+      S.missions = r.missions || [];
       /* Two forms wait on this list, and redrawing only one of them left the
          other showing an empty picker for ever — the fleet arrived and
          nothing asked the page to say so. */
@@ -1569,9 +1604,17 @@ function renderMission() {
                      maxlength="10" value="${esc(v.phone)}" placeholder="0501234567" required>
             </label>
             <label class="field">
-              <span class="field-label">משמרת / משימה</span>
+              <span class="field-label">משימה</span>
+              <select class="input" data-act="msn-pick">
+                <option value=""${S.msnPick ? '' : ' selected'}>— ללא משימה מוגדרת —</option>
+                ${(S.missions || []).map((m) => `<option value="${esc(m.id)}"${
+                  S.msnPick === m.id ? ' selected' : ''}>${esc(m.label)}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">משמרת / שעה</span>
               <input class="input" name="shift" autocomplete="off" maxlength="60"
-                     value="${esc(v.shift)}" placeholder="לדוגמה: שג״ם לילה, 22:00">
+                     value="${esc(v.shift)}" placeholder="לדוגמה: 22:00">
             </label>
           </div>
         </div>
@@ -1599,13 +1642,15 @@ function renderMission() {
             </label>` : ''}
         </div>
 
-        ${MISSION_ITEMS.map(msnItemCard).join('')}
+        ${msnScope().map(msnItemCard).join('')}
 
         <p class="form-err" data-err></p>
         <p class="field-hint">${missing
           ? `<strong>${missing}</strong> ${missing === 1 ? 'פריט מסומן כחסר' : 'פריטים מסומנים כחסרים'} — ${
               missing === 1 ? 'הוא יופיע' : 'הם יופיעו'} כדיווח אצל מנהל הציוד.`
-          : 'סמנו רק את הפריטים שרלוונטיים למשמרת הזו. מה שלא נלקח — השאירו ריק.'}</p>
+          : msnDef()
+            ? 'זה הציוד שהוגדר למשימה הזו. יש לענות על כל הפריטים.'
+            : 'סמנו רק את הפריטים שרלוונטיים למשמרת הזו. מה שלא נלקח — השאירו ריק.'}</p>
         <div class="formbar">
           <button class="btn primary" type="submit" ${msnReady() ? '' : 'disabled'}>שליחת הדוח</button>
           <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
@@ -1669,7 +1714,7 @@ async function missionSubmit(form) {
     // The checklist as filed, and the photo slot each picture went into, so
     // the console can fetch them without guessing at the order.
     const shots = [];
-    const items = MISSION_ITEMS.filter((it) => msnRow(it.id).have).map((it) => {
+    const items = msnScope().filter((it) => msnRow(it.id).have).map((it) => {
       const r = msnRow(it.id);
       const i = MISSION_ITEMS.findIndex((m) => m.id === it.id);   // the photo slot
       const out = { id: it.id, have: r.have };
@@ -1683,8 +1728,13 @@ async function missionSubmit(form) {
     });
 
     const veh = (S.fleet || []).find((f) => f.id === S.msnVeh);
+    const def = msnDef();
     const sealed = await seal(pubKey, {
       kind: 'mission', pn, name, phone, shift, items,
+      // The mission's name travels with the report: a definition can be
+      // renamed or deleted afterwards, and a report that then says nothing
+      // about what it was for is worth much less than one that does.
+      ...(def ? { missionId: def.id, missionName: def.label } : {}),
       // The label rides along so the console can still name the vehicle if it
       // has since left the fleet and the id no longer resolves.
       ...(veh ? { vehId: veh.id, vehLabel: veh.label, km: Number(String(S.msnKm).trim()) } : {}),
@@ -1707,6 +1757,7 @@ async function missionSubmit(form) {
     S.msnPhotos = {};
     S.msnVeh = '';
     S.msnKm = '';
+    S.msnPick = '';
     renderMission();
   });
   if (!S.msnSent) {
@@ -2920,6 +2971,7 @@ const TABS = [
   { id: 'reports', name: 'בקשות חוסר',   needs: ['reports'] },
   { id: 'faults',  name: 'תקלות בינוי',  needs: ['reports'] },
   { id: 'mission', name: 'דוחות משמרת', needs: ['reports'] },
+  { id: 'mdefs',   name: 'משימות',      needs: ['vault'] },
   { id: 'inv',     name: 'מלאי',         needs: ['records', 'vault'] },
   { id: 'armon',   name: 'ארמון',        needs: ['vault', 'reports'] },
   { id: 'comms',   name: 'דוח קשר',      needs: ['vault'] },
@@ -2979,6 +3031,7 @@ function renderConsole() {
     ['reports', 'בקשות חוסר',   openReps, openReps > 0],
     ['faults',  'תקלות בינוי',  openFaults() || null, openFaults() > 0],
     ['mission', 'דוחות משמרת', msnShort() || null, msnShort() > 0],
+    ['mdefs',   'משימות',      null, false],
     ['inv',     'מלאי',         null],
     // a deposit waiting for approval outranks the item count — it needs action
     ['armon',   'ארמון',        openDeposits() || armonCount() || null, openDeposits() > 0],
@@ -3014,6 +3067,7 @@ function renderConsole() {
   else if (S.tab === 'track') body = renderTrackTab();
   else if (S.tab === 'reports') body = renderReportsTab();
   else if (S.tab === 'mission') body = renderMissionTab();
+  else if (S.tab === 'mdefs') body = renderMissionDefsTab();
   else if (S.tab === 'faults') body = renderFaultsTab();
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'armon') body = renderArmonTab();
@@ -5402,7 +5456,8 @@ const REPORTS = {
         const d = r.data;
         for (const it of msnItems(r)) {
           rows.push([
-            fmtDate(d.createdAt), d.name || '', d.pn || '', d.phone || '', d.shift || '',
+            fmtDate(d.createdAt), d.name || '', d.pn || '', d.phone || '',
+            d.missionName || '', d.shift || '',
             d.vehLabel || '', d.km || '',
             missionItemName(it.id),
             it.have === 'no' ? 'חסר' : 'יש',
@@ -5411,9 +5466,9 @@ const REPORTS = {
           ]);
         }
       }
-      const short = rows.filter((x) => x[8] === 'חסר').length;
+      const short = rows.filter((x) => x[9] === 'חסר').length;
       return {
-        head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משמרת', 'רכב', 'ק״מ', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
+        head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משימה', 'משמרת', 'רכב', 'ק״מ', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
         rows,
         summary: `${missionReports().filter((r) => !r.damaged).length} דוחות · ` +
           `${rows.length} פריטים נבדקו · ${short} חסרים`,
@@ -5869,7 +5924,7 @@ function ledgerPanel(approved) {
 const emptyInv = () => ({
   open: {}, extra: [], notes: '',
   armon: [], armonLog: [], comms: [], commsLog: [],
-  ammo: [], ammoLog: [], vehicles: [], fuel: [], countedAt: {},
+  ammo: [], ammoLog: [], vehicles: [], fuel: [], missions: [], countedAt: {},
 });
 
 // The two counting registers are the same thing with different names, so they
@@ -7189,6 +7244,72 @@ const kmApply = (id) =>
     renderConsole();
     toast(`${hit.label} עודכן ל-${hit.km.toLocaleString('he-IL')} ק״מ`);
   });
+
+/* Missions the office defines, and the kit each one requires.
+ *
+ * The shift form used to offer the whole catalogue and let the commander pick
+ * what was relevant, which put the decision in the wrong place: what a mission
+ * carries is the unit's rule, not something to be remembered at 05:00 by the
+ * man walking out. Defined here, the form can put exactly those rows in front
+ * of him and require every one of them.
+ *
+ * A mission with no name or no kit is not published. Half-written work stays
+ * in the vault where it can be finished. */
+function renderMissionDefsTab() {
+  const all = (S.inv && S.inv.missions) || [];
+
+  const cards = all.map((m, i) => {
+    const rows = MISSION_ITEMS.map((mi) => {
+      const it = (m.items || []).find((x) => x.id === mi.id);
+      const qty = it ? it.qty : 0;
+      return `
+        <div class="mdef-row${qty ? ' on' : ''}">
+          <span class="mdef-name">${esc(mi.name)}</span>
+          <span class="mdef-qty num">${qty || '—'}</span>
+          <span class="rec-row-tools step">
+            <button type="button" class="step-btn" data-act="mdef-qty" data-i="${i}"
+                    data-item="${mi.id}" data-d="-1" aria-label="פחות ${esc(mi.name)}"
+                    ${qty <= 0 ? 'disabled' : ''}>−</button>
+            <button type="button" class="step-btn" data-act="mdef-qty" data-i="${i}"
+                    data-item="${mi.id}" data-d="1" aria-label="עוד ${esc(mi.name)}"
+                    ${qty >= 99 ? 'disabled' : ''}>+</button>
+          </span>
+        </div>`;
+    }).join('');
+
+    const count = (m.items || []).length;
+    return `
+      <section class="panel mdef">
+        <div class="fuel-entry">
+          <label class="field mb0 grow">
+            <span class="field-label">שם המשימה</span>
+            <input class="input" type="text" maxlength="60" value="${esc(m.name || '')}"
+                   data-act="mdef-name" data-i="${i}" placeholder="לדוגמה: שג״ם לילה / סיור בוקר">
+          </label>
+          ${delCell(`mdef:${i}`, 'mdef-del', { i }, '✕ מחיקה', 'מחיקת המשימה')}
+        </div>
+        <p class="field-hint">${count
+          ? `${count === 1 ? 'פריט אחד נדרש' : `<span class="num">${count}</span> פריטים נדרשים`} במשימה הזו. החייל יידרש למק״ט וצילום על כל אחד מהם.`
+          : 'בחרו כמות לפריט אחד לפחות — משימה בלי ציוד לא תוצע לחיילים.'}</p>
+        <div class="mdef-grid">${rows}</div>
+      </section>`;
+  }).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">משימות</h2>
+      <p class="panel-sub">מה שמוגדר כאן מופיע לחייל כרשימה נפתחת בדוח המשימה. ברגע שהוא בוחר משימה, הציוד שלה נפתח לפניו — <strong>וכל השדות חובה</strong>: מק״ט וצילום לכל פריט.</p>
+      ${all.length ? '' : '<p class="empty">עדיין לא הוגדרו משימות. הוסיפו את הראשונה למטה.</p>'}
+    </section>
+    ${cards}
+    <section class="panel">
+      <div class="rec-actions">
+        <button class="btn ghost" data-act="mdef-add">+ הוספת משימה</button>
+        <button class="btn primary" data-act="inv-save">שמירת השינויים</button>
+      </div>
+      <p class="field-hint mb0">שמירה גם מפרסמת את הרשימה לטופס של החיילים.</p>
+    </section>`;
+}
 
 function renderVehTab() {
   const all = (S.inv && S.inv.vehicles) || [];
@@ -8737,7 +8858,8 @@ function renderMissionTab() {
           </button>
         </td>
         <td class="num">${esc(d.pn || '')}</td>
-        <td>${esc(d.shift || '—')}</td>
+        <td>${esc(d.missionName || d.shift || '—')}${
+          d.missionName && d.shift ? `<span class="dim"> · ${esc(d.shift)}</span>` : ''}</td>
         <td class="num">${esc(fmtShort(d.createdAt))}</td>
         <td>${short
           ? `<span class="state wait">${short === 1
@@ -8760,7 +8882,7 @@ function renderMissionTab() {
         ? `<div class="tbl-scroll">
              <table class="tbl roster" data-phone="0,4,-1">
                <thead><tr>
-                 <th>מפקד</th><th class="num">מ״א</th><th>משמרת</th>
+                 <th>מפקד</th><th class="num">מ״א</th><th>משימה</th>
                  <th class="num">דווח</th><th>מצב</th><th></th>
                </tr></thead>
                <tbody>${rows}</tbody>
@@ -10538,6 +10660,7 @@ const VAULT_PARTS = [
   ['ammoLog', ['ammoLog']],
   ['vehicles', ['vehicles']],
   ['fuel', ['fuel']],
+  ['missions', ['missions']],
 ];
 
 const partSlice = (inv, keys) => {
@@ -10658,7 +10781,17 @@ async function publishCards() {
   const vehicles = ((S.inv && S.inv.vehicles) || [])
     .filter((v) => String(v.plate || '').trim().length >= 5)   // a blank new row is not a vehicle
     .map((v) => ({ id: v.id, label: vehLabel(v).slice(0, 60) }));
-  await api('/admin/cards', { method: 'PUT', body: { cards, vehicles } }).catch(() => {});
+  /* A mission with no name or no kit is a row somebody started and did not
+     finish. It is kept in the vault — losing half-written work is worse than
+     showing it — and simply not offered to anyone. */
+  const missions = ((S.inv && S.inv.missions) || [])
+    .filter((m) => String(m.name || '').trim().length >= 2 && (m.items || []).length)
+    .map((m) => ({
+      id: m.id,
+      label: String(m.name).trim().slice(0, 60),
+      data: JSON.stringify((m.items || []).map((it) => ({ id: it.id, qty: it.qty }))),
+    }));
+  await api('/admin/cards', { method: 'PUT', body: { cards, vehicles, missions } }).catch(() => {});
 }
 
 // Hebrew names for the parts, for the one message that has to name one.
@@ -12714,6 +12847,7 @@ $app.addEventListener('input', (e) => {
     case 'tz-search':   S.regQ = { ...S.regQ, tzelem: el.value }; rerenderKeepFocus(el); break;
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
     case 'veh-search':  S.regQ = { ...S.regQ, veh: el.value };    rerenderKeepFocus(el); break;
+    case 'mdef-name':   S.inv.missions[+el.dataset.i].name = el.value; break;
     case 'veh-plate':   S.inv.vehicles[+el.dataset.i].plate = el.value; break;
     case 'veh-company': S.inv.vehicles[+el.dataset.i].company = el.value; break;
     case 'veh-km':
@@ -12809,6 +12943,18 @@ $app.addEventListener('change', (e) => {
     return;
   }
   // Picking a vehicle brings the odometer field with it, so the form redraws.
+  if (el.dataset.act === 'msn-pick') {
+    captureMissionForm();
+    S.msnPick = el.value;
+    /* Answers to items the new mission does not carry are dropped. Keeping
+       them would file a report about kit this mission never had, and leaving
+       them on screen would ask the commander to finish rows he cannot see. */
+    const keep = new Set(msnScope().map((it) => it.id));
+    for (const id of Object.keys(S.msnRows)) if (!keep.has(id)) delete S.msnRows[id];
+    for (const id of Object.keys(S.msnPhotos)) if (!keep.has(id)) delete S.msnPhotos[id];
+    renderMission();
+    return;
+  }
   if (el.dataset.act === 'msn-veh') {
     captureMissionForm();
     S.msnVeh = el.value;
@@ -13406,6 +13552,35 @@ function dispatch(act, el) {
     case 'flt-qclear': S.fltQ = ''; S.page = {}; renderConsole(); break;
     case 'msn-qclear': S.msnQ = ''; S.page = {}; renderConsole(); break;
     case 'km-apply': kmApply(el.dataset.id); break;
+    case 'mdef-add':
+      S.inv.missions = [...(S.inv.missions || []), { id: rndId(), name: '', items: [] }];
+      renderConsole();
+      break;
+    case 'mdef-del':
+      S.askDel = '';
+      S.inv.missions = (S.inv.missions || []).filter((_, n) => n !== +el.dataset.i);
+      renderConsole();
+      break;
+    case 'mdef-qty': {
+      const i = +el.dataset.i;
+      const m = (S.inv.missions || [])[i];
+      if (!m) break;
+      const items = [...(m.items || [])];
+      const at = items.findIndex((x) => x.id === el.dataset.item);
+      const next = Math.max(0, Math.min(99, (at >= 0 ? items[at].qty : 0) + Number(el.dataset.d || 0)));
+      // A count of zero is not "none of this item" — it is the item not being
+      // part of the mission, so the row leaves rather than sitting at nought.
+      if (next === 0) { if (at >= 0) items.splice(at, 1); }
+      else if (at >= 0) items[at] = { ...items[at], qty: next };
+      else items.push({ id: el.dataset.item, qty: next });
+      // Kept in the catalogue's order, so a mission always reads the same way.
+      S.inv.missions[i] = {
+        ...m,
+        items: MISSION_ITEMS.map((mi) => items.find((x) => x.id === mi.id)).filter(Boolean),
+      };
+      renderConsole();
+      break;
+    }
     case 'msn-edit': {
       const rec = missionReports().find((r) => r.id === el.dataset.id);
       if (!rec || rec.damaged) break;

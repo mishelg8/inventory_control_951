@@ -3357,3 +3357,43 @@ body.printing .printdoc {
   gap: 0.6rem;
   flex-wrap: wrap;
 }
+
+/* Defining a mission: the catalogue down one side, a count against each item.
+   A grid rather than a table — there are six rows and two of them matter, and
+   a table's chrome would be most of what you see. */
+.mdef { margin-block-start: 0.75rem; }
+
+.mdef-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.5rem;
+}
+
+.mdef-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--bg-2);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+/* An item the mission actually requires stands out from one it does not. */
+.mdef-row.on {
+  border-color: var(--pine);
+  background: var(--pine-tint);
+}
+
+.mdef-name { flex: 1; font-weight: 600; font-size: var(--t-sm); }
+.mdef-qty { min-width: 1.6rem; text-align: center; color: var(--muted); }
+.mdef-row.on .mdef-qty { color: var(--pine-deep); font-weight: 700; }
+
+.fuel-entry .grow { flex: 1; }
+
+/* How many of an item a mission requires, beside its name on the form. */
+.msn-qty { color: var(--muted); font-weight: 600; }
+
+/* Under a defined mission every row must be answered, so an unanswered one is
+   outstanding work rather than something to leave alone. */
+.msn-card.required { border-color: var(--warn-line, var(--line-hard)); }

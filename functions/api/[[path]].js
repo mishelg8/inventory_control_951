@@ -48,7 +48,7 @@ const VAULT_MAX_B64 = 600000;
 const VAULT_PARTS = [
   'stock', 'countedAt',
   'armon', 'armonLog', 'comms', 'commsLog',
-  'ammo', 'ammoLog', 'vehicles', 'fuel',
+  'ammo', 'ammoLog', 'vehicles', 'fuel', 'missions',
 ];
 const VAULT_PART_MAX_B64 = 400000;
 
@@ -384,6 +384,7 @@ const TAB_NEEDS = {
   reports: ['reports'],
   faults: ['reports'],
   mission: ['reports'],
+  mdefs: ['vault'],
   inv: ['records', 'vault'],
   armon: ['vault', 'reports'],
   comms: ['vault'],
@@ -610,12 +611,21 @@ export async function onRequest(context) {
     // merely discouraged.
     if (seg[0] === 'cards' && seg.length === 1 && method === 'GET') {
       const { results } = await db
-        .prepare('SELECT kind, id, label FROM pub_pick ORDER BY kind, sort')
+        .prepare('SELECT kind, id, label, data FROM pub_pick ORDER BY kind, sort')
         .all()
         .catch(() => ({ results: [] }));
       const rows = results || [];
       const of = (k) => rows.filter((r) => r.kind === k).map((r) => ({ id: r.id, label: r.label }));
-      return json({ cards: of('card'), vehicles: of('vehicle') });
+      /* A mission carries the kit it requires, so the shift form can put the
+         right rows in front of the commander instead of the whole catalogue.
+         Parsed here rather than in the browser: a row that will not parse is
+         a row the form should not see at all. */
+      const missions = rows.filter((r) => r.kind === 'mission').map((r) => {
+        let items = [];
+        try { const p = JSON.parse(r.data || '[]'); if (Array.isArray(p)) items = p; } catch { items = []; }
+        return { id: r.id, label: r.label, items };
+      });
+      return json({ cards: of('card'), vehicles: of('vehicle'), missions });
     }
 
     // ── GET /api/serial?tag=… ────────────────────────────────────────
@@ -1289,13 +1299,19 @@ export async function onRequest(context) {
         const b = await readBody(request);
         if (!b) return err(400, 'בקשה לא תקינה');
         const lists = {};
-        for (const [key, kind] of [['cards', 'card'], ['vehicles', 'vehicle']]) {
+        for (const [key, kind] of [['cards', 'card'], ['vehicles', 'vehicle'], ['missions', 'mission']]) {
           if (b[key] === undefined) continue;
           if (!Array.isArray(b[key])) return err(400, 'בקשה לא תקינה');
           const list = b[key].slice(0, 500);
           for (const c of list) {
             if (!c || typeof c.id !== 'string' || c.id.length > 40 ||
                 typeof c.label !== 'string' || c.label.length > 60) {
+              return err(400, 'בקשה לא תקינה');
+            }
+            /* Only a mission carries a payload, and it is bounded here rather
+               than trusted: this row is read by an endpoint with no login in
+               front of it, so what can be stored decides what can be served. */
+            if (c.data !== undefined && (typeof c.data !== 'string' || c.data.length > 2000)) {
               return err(400, 'בקשה לא תקינה');
             }
           }
@@ -1307,8 +1323,8 @@ export async function onRequest(context) {
           await db.prepare('DELETE FROM pub_pick WHERE kind = ?1').bind(kind).run();
           for (let i = 0; i < list.length; i += 1) {
             await db
-              .prepare('INSERT OR REPLACE INTO pub_pick (kind, id, label, sort, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)')
-              .bind(kind, list[i].id, list[i].label, i, now)
+              .prepare('INSERT OR REPLACE INTO pub_pick (kind, id, label, sort, updated_at, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)')
+              .bind(kind, list[i].id, list[i].label, i, now, list[i].data ?? null)
               .run();
           }
           n += list.length;

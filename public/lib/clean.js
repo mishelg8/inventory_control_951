@@ -105,6 +105,28 @@ function cleanRecord(raw) {
 
 // Shortage reports and armoury deposits share the /reports pipe — the server
 // stores an opaque blob either way, so telling them apart is a client concern.
+/* A mission the office defined: a name, and the kit it requires with counts.
+   Both halves are whitelisted — the item ids against the catalogue, the counts
+   against a ceiling — because this is published to an endpoint with no login
+   in front of it and read by a form that makes every row of it mandatory. A
+   duplicate item is dropped rather than merged: two rows for the same thing
+   would ask the commander to photograph it twice. */
+function cleanMission(x) {
+  const seen = new Set();
+  const items = [];
+  for (const it of Array.isArray(x && x.items) ? x.items : []) {
+    const id = MISSION_ITEMS.some((m) => m.id === (it && it.id)) ? it.id : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    items.push({ id, qty: Math.max(1, asCount(it && it.qty, 99)) });
+  }
+  return {
+    id: asText(x && x.id, 40) || rndId(),
+    name: asText(x && x.name, 60),
+    items,
+  };
+}
+
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
@@ -132,6 +154,12 @@ function cleanReport(raw) {
       : [],
     // mission-only: which shift or task this was filed for. Free text.
     shift: asText(raw.shift, 60),
+    /* Which defined mission this was filed against, if any. The name is kept
+       beside the id because a definition can be renamed or deleted, and a
+       report that then says nothing about what it was for is worth much less
+       than one that still names it. */
+    missionId: asText(raw.missionId, 40),
+    missionName: asText(raw.missionName, 60),
     /* mission-only: the vehicle the shift drove and its odometer as the
        commander read it. The id is the vault's own vehicle id, so the console
        can match the reading back to the vehicle; the label rides along
@@ -310,6 +338,7 @@ function cleanInv(raw) {
     ammo: arr(src.ammo, cleanAmmo, 1000),
     ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
     vehicles: arr(src.vehicles, cleanVehicle, 500),
+    missions: arr(src.missions, cleanMission, 200),
     fuel: arr(src.fuel, cleanFuel, 300),
     countedAt: { tzelem: asTime(counted.tzelem), armon: asTime(counted.armon) },
     updatedAt: asTime(src.updatedAt),
@@ -323,6 +352,7 @@ export {
   asTime,
   cleanAmmo,
   cleanAmmoLog,
+  cleanMission,
   cleanArmLog,
   cleanFuel,
   cleanInv,
