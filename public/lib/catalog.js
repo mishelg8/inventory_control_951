@@ -126,9 +126,15 @@ const ARM_KINDS = [
   // The unit's own, kept on the shelf and lent out for a night — which is what
   // the armoury was asked for in the first place. Same sort of device, quite a
   // different thing to the register: this one comes back.
-  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  /* 'mission' belongs to whatever the armoury actually lends out. It was on
+     צל״ם alone, on the reading that a mission is a צל״ם thing — but an
+     אמר״ל and a night sight go out on exactly the same night, to the same
+     named operation, and the form refused to let them. What stays off the
+     list is the personal kit below: a weapon, an אקילה and a day scope
+     belong to one soldier and go out under his name, never under a mission's. */
+  { id: 'amral', name: 'אמר״ל', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
   { id: 'dscope', name: 'כוונת יום', locs: ['armon', 'soldier', ...LIFECYCLE], noLoan: true },
-  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier', ...LIFECYCLE] },
+  { id: 'nscope', name: 'כוונת לילה', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
   { id: 'tzelem', name: 'צל״ם', locs: ['armon', 'soldier', 'mission', ...LIFECYCLE] },
 ];
 

@@ -969,13 +969,13 @@ function renderRoute() {
  * The pages themselves did not move — every href here is the same hash it
  * always was, so a link somebody was sent still lands where it did. */
 const HOME_CATS = [
-  { id: 'log',  t: 'לוגיסטיקה', s: 'רישום, חתימה על ציוד ובקשות חוסר',
+  { id: 'log',  t: 'לוגיסטיקה', s: 'רישום, חתימה על ציוד, בקשות חוסר ותקלות בינוי',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></svg>` },
   { id: 'arms', t: 'נשק', s: 'רישום נשק ואפסון בארמון',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5h14l3 3v2h-4l-2 3h-4l-1.5-3H3z"/><path d="M7 13.5V17"/></svg>` },
   { id: 'veh',  t: 'רכב', s: 'תדלוק וקילומטראז׳',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 16.4h16.8v-3.3l-1.6-4a1.6 1.6 0 0 0-1.5-1H6.7a1.6 1.6 0 0 0-1.5 1l-1.6 4z"/><path d="M6.4 16.4v2H4.6v-2M19.4 16.4v2h-1.8v-2"/></svg>` },
-  { id: 'ops',  t: 'משמרת ותקלות', s: 'דוח לפני משמרת ודיווח תקלות בינוי',
+  { id: 'ops',  t: 'משמרת', s: 'דוח ציוד לפני עלייה למשמרת',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/><path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/><path d="M8.4 12.6l1.8 1.8 3.8-3.8"/></svg>` },
 ];
 
@@ -1012,7 +1012,7 @@ const HOME_ITEMS = [
     t: 'דוח משימה לפני משמרת',
     s: 'מפקד? עברו על הציוד פריט־פריט לפני העלייה.',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M9 4.5h6a1.5 1.5 0 0 1 1.5 1.5v1.5h-9V6A1.5 1.5 0 0 1 9 4.5z"/> <path d="M16.5 6.8h2A1.5 1.5 0 0 1 20 8.3v11.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5V8.3a1.5 1.5 0 0 1 1.5-1.5h2"/> <path d="M8.4 12.6l1.8 1.8 3.8-3.8"/> <path d="M8.4 17.6h7.2"/> </svg>` },
-  { id: 'fault', cat: 'ops', cls: 'bld',
+  { id: 'fault', cat: 'log', cls: 'bld',
     t: 'דיווח תקלות בינוי',
     s: 'דלת שבורה, נזילה, חשמל, מזגן? דווחו כאן ונטפל.',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"> <path d="M3 21h18"/> <path d="M5.5 21V6.5l7-3.5v18"/> <path d="M12.5 10.5H19V21"/> <path d="M8.6 9.2h.01M8.6 13h.01M15.6 14h.01"/> </svg>` },
