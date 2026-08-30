@@ -588,15 +588,20 @@ test('a damaged or nameless record cannot poison the index', () => {
 function liftSerials() {
   const src = readFileSync(join(root, 'public/app.js'), 'utf8');
   const from = src.indexOf('function serialIndex(except) {');
-  const to = src.indexOf('// Returns [] when nothing is suspicious');
+  const to = src.indexOf('// Saving a correction. The same duplicate and near-miss checks');
   if (from < 0 || to < 0 || to < from) throw new Error('serial helpers not found in app.js');
 
   const SERIAL_FIELDS = [['weapon', 'נשק'], ['amral', 'אקילה'], ['scope', 'כוונת']];
   const REGISTERS = { armon: { key: 'armon', kinds: [{ id: 'weapon', name: 'נשק אישי' }], title: 'ארמון' } };
+  // `nrm` and `editDistance` live elsewhere in the client; the helpers under
+  // test only borrow them, so they are handed in rather than sliced out.
+  const nrm = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+  const editDistance = (a, b) => (a === b ? 0 : Math.abs(a.length - b.length) + 9);
   return (S) => new Function(
-    'S', 'SERIAL_FIELDS', 'REGISTERS', 'nameOf',
-    `${src.slice(from, to)}\n return { serialIndex, serialTaken };`
-  )(S, SERIAL_FIELDS, REGISTERS, (list, id) => (list.find((k) => k.id === id) || {}).name || id);
+    'S', 'SERIAL_FIELDS', 'REGISTERS', 'nameOf', 'nrm', 'editDistance',
+    `${src.slice(from, to)}\n return { serialIndex, serialTaken, serialWarnings };`
+  )(S, SERIAL_FIELDS, REGISTERS,
+    (list, id) => (list.find((k) => k.id === id) || {}).name || id, nrm, editDistance);
 }
 
 const soldier = (name, pn, weapon) => ({
@@ -643,6 +648,58 @@ test('once filed, the record and the register are counted as one object', () => 
   assert.equal(hits[0].kind, 'ארמון', 'the register is where it physically is');
   // and it is still taken as far as anybody else is concerned
   assert.match(serialTaken('47886692', 'other', '9999999'), /כבר רשום על/);
+});
+
+/* The other direction, which is the one that was broken.
+
+   She deposited her rifle and went home, so it stands in the armoury under her
+   name. Then the office opens her record to write down that this is her weapon
+   — and was refused: "כבר רשום על מעיין בן שיטרית (ארמון)". It is. That is the
+   point. The exemption only ever looked at the record side, so it covered the
+   deposit and refused the paperwork that follows it. */
+test('her own weapon in the armoury does not block her own record', () => {
+  const S = {
+    recs: [],
+    inv: { armon: [{ id: 'a1', kind: 'weapon', serial: '47872192',
+                     owner: 'מעיין בן שיטרית', ownerPn: '9001376' }] },
+    reports: [],
+  };
+  const { serialTaken, serialWarnings } = liftSerials()(S);
+  assert.equal(serialTaken('47872192', 'rid-x', '9001376', 'מעיין בן שיטרית'), '',
+    'the rifle in the armoury is the rifle on her record');
+  const warns = serialWarnings({ pn: '9001376', name: 'מעיין בן שיטרית', weapon: '47872192' }, 'rid-x');
+  assert.deepEqual(warns.filter((w) => w.startsWith('⛔')), [],
+    'and the console must not refuse the save either');
+});
+
+// A register row entered by typing an owner carries no personal number, so the
+// name is all there is to match on — the same fallback the soldier's card uses.
+test('a register row with no personal number is matched by name', () => {
+  const S = {
+    recs: [],
+    inv: { armon: [{ id: 'a1', kind: 'weapon', serial: '47872192', owner: 'מעיין בן שיטרית' }] },
+    reports: [],
+  };
+  const { serialTaken } = liftSerials()(S);
+  assert.equal(serialTaken('47872192', 'rid-x', '9001376', 'מעיין  בן שיטרית'), '',
+    'spacing is normalised, as it is everywhere else names are compared');
+  assert.match(serialTaken('47872192', 'rid-x', '9001376', 'מישהו אחר'), /כבר רשום על/);
+});
+
+// The rule it exists for is untouched: somebody else's weapon still blocks,
+// and a personal number that does not match is not excused by anything.
+test('somebody else\'s weapon in the armoury still blocks', () => {
+  const S = {
+    recs: [],
+    inv: { armon: [{ id: 'a1', kind: 'weapon', serial: '47872192',
+                     owner: 'מעיין בן שיטרית', ownerPn: '9001376' }] },
+    reports: [],
+  };
+  const { serialTaken, serialWarnings } = liftSerials()(S);
+  assert.match(serialTaken('47872192', 'rid-x', '9272028', 'מעיין פינטו'), /כבר רשום על/);
+  const warns = serialWarnings({ pn: '9272028', name: 'מעיין פינטו', weapon: '47872192' }, 'rid-x');
+  assert.equal(warns.filter((w) => w.startsWith('⛔')).length, 1,
+    'two soldiers cannot hold one rifle');
 });
 
 test('the same serial under two different soldiers is still two rows', () => {

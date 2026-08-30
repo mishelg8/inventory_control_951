@@ -1,0 +1,37 @@
+# The shift watcher runs beside the Pages project, not inside it: Pages
+# Functions have no cron triggers, so anything that has to happen when nobody
+# is looking at a screen lives here.
+#
+# It binds the same D1 database the app uses. It reads two tables and writes
+# one, and it can decrypt nothing — the reports are sealed with a key that
+# only the admin's browser holds.
+name = "tzayad-watch"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Four times an hour. The handover times themselves are not in here — they are
+# set per mission in the console, so adding a patrol is a field in the app and
+# never a redeploy.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tzayad"
+database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
+
+[vars]
+META_GRAPH_API_VERSION = "v26.0"
+WA_TPL_UPDATE = "tzayad_update"
+WA_TPL_LANG = "he"
+WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
+
+# How late a report may be before anybody is woken up, how far back a restart
+# looks, and how early a report still counts for the handover it precedes.
+ALERT_GRACE_MIN = "30"
+ALERT_WINDOW_HOURS = "6"
+ALERT_EARLY_MIN = "60"
+
+# ALERT_TO, WHATSAPP_TOKEN and WATCH_KEY are secrets, set with
+# `wrangler secret put` — phone numbers are personal data and this repository
+# is public.

@@ -1839,6 +1839,37 @@ main { flex: 1; padding-top: 22px; padding-bottom: 44px; }
 .stat-n { display: block; font-size: var(--t-2xl); font-weight: 700; line-height: 1.15; }
 .stat-l { display: block; font-size: var(--t-2xs); color: var(--muted); font-weight: 600; }
 
+/* A tile that answers its own number.
+
+   The count was always the interesting part of the panel and never the
+   reachable one: "38 ללא נשק רשום" is a question, and reading the table to
+   find out which 38 is not an answer. So the tile is a button — press it and
+   the table below narrows to exactly the rows it counted.
+
+   It has to keep looking like a tile while being one. Buttons bring their own
+   font, colour and alignment, and inside a right-to-left panel a button that
+   quietly centres its text is a tile that no longer lines up with the ones
+   beside it. */
+button.stat {
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+button.stat:hover { border-color: var(--line-hard); }
+button.stat:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+button.stat[aria-pressed="true"] {
+  border-color: var(--pine);
+  background: var(--pine-tint);
+  box-shadow: inset 0 0 0 1px var(--pine-ring);
+}
+button.stat[aria-pressed="true"] .stat-n,
+button.stat[aria-pressed="true"] .stat-l { color: var(--pine-deep); }
+/* What is on, said in words as well as in colour — the tile is the only thing
+   on the screen that says why the table is short. */
+.stat-clear { margin: -6px 0 13px; }
+
 /* ── Landing chooser ───────────────────────────────────────────────── */
 .hero { padding-bottom: 18px; }
 .choices { display: grid; gap: var(--s-5); }

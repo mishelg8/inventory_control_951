@@ -367,6 +367,7 @@ const S = {
   invQ: '',                     // search over the extra-inventory rows
   regQ: {},                     // section key -> search query
   regKind: {},                  // register id -> item-type filter ('all' or a kind)
+  statPick: {},                 // panel id -> the summary tile pressed, if any
   tab: 'over',
   /* The tracking screen opens on everybody. It used to open on 'ציוד בחוץ',
      which is the right question to ask about kit and the wrong one to ask of
@@ -1391,10 +1392,39 @@ const msnScope = () => {
 
 const msnAnswered = () => msnScope().filter((it) => msnRow(it.id).have);
 
+/* Whether this item is identified by a number at all.
+
+   Two kinds are not. An item with a breakdown is counted per type rather than
+   named once, and ceramic plates carry a size and a batch where a serial would
+   be. Asked for one anyway, the form blocks on a field the soldier can only
+   answer by inventing something — so the question is not asked, and the
+   photograph carries the check.
+
+   The card and `msnItemDone` both read this. They disagreed once already, and
+   a form that demands what it does not draw cannot be completed at all. */
+/* How long after a handover a report may still arrive before anybody is
+   woken up. Short enough that a missed shift is noticed while it is still the
+   same shift; long enough that a commander walking the line with a phone in
+   his pocket is not reported for being ten minutes late. */
+const MSN_GRACE_MIN = 30;
+
+const msnNeedsMk = (it) => !it.bare && !msnParts(it).length && !it.noMk;
+
+/* What "no" is called for this item. "חסר" opens a shortage the store has to
+   answer for; a gate key that is simply not there is "אין" and nothing more.
+   The console reads the same rule as the form, because a screen that reports
+   a word the commander never pressed is a screen that has invented something. */
+const msnNoWord = (id) =>
+  ((MISSION_ITEMS.find((m) => m.id === id) || {}).bare ? 'אין' : 'חסר');
+
 const msnItemDone = (it) => {
   const r = msnRow(it.id);
+  if (it.bare) return !!r.have;
   if (r.have === 'no') return r.why.trim().length >= 2;
-  if (r.have === 'yes') return r.mk.trim().length >= 1 && !!S.msnPhotos[it.id] && msnPartsDone(it);
+  if (r.have === 'yes') {
+    return (!msnNeedsMk(it) || r.mk.trim().length >= 1)
+      && !!S.msnPhotos[it.id] && msnPartsDone(it);
+  }
   return false;
 };
 
@@ -1422,16 +1452,16 @@ function msnItemCard(it) {
       r.have ? '' : (must ? ' required' : ' unanswered')}">
       <h3 class="fsec msn-name">${esc(it.name)}${
         it.qty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
-      <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
+      <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', msnNoWord(it.id), 'no')}</div>
 
-      ${r.have === 'yes' ? `
-        ${msnParts(it).length ? '' : `
+      ${r.have === 'yes' && !it.bare ? `
+        ${msnNeedsMk(it) ? `
           <label class="field">
             <span class="field-label">מק״ט <span class="req" aria-hidden="true">*</span></span>
             <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
                    value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
                    placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
-          </label>`}
+          </label>` : ''}
         ${msnParts(it).length ? `
           <div class="msn-parts">
             <p class="field-label">כמה מכל סוג יש בפועל</p>
@@ -1461,7 +1491,7 @@ function msnItemCard(it) {
              <p class="field-hint">חובה לצלם כאן ועכשיו — אין העלאה מהגלריה.</p>`}
       ` : ''}
 
-      ${r.have === 'no' ? `
+      ${r.have === 'no' && !it.bare ? `
         <label class="field mb0">
           <span class="field-label">מה קרה לו? <span class="req" aria-hidden="true">*</span></span>
           <input class="input" maxlength="120" autocomplete="off" value="${esc(r.why)}"
@@ -1784,7 +1814,13 @@ async function missionSubmit(form) {
       ...(veh ? { vehId: veh.id, vehLabel: veh.label, km: Number(String(S.msnKm).trim()) } : {}),
       createdAt: Date.now(),
     });
-    await api('/reports', { body: { id, ticket: await getTicket(), ...sealed } });
+    /* The mission travels beside the sealed report, in the clear, and only
+       when one was picked. It is the one thing a watcher outside the browser
+       can act on: the server cannot open the report, so without this it
+       cannot tell a mission that reported from one that went silent. */
+    await api('/reports', {
+      body: { id, ticket: await getTicket(), ...sealed, ...(def ? { beat: def.id } : {}) },
+    });
 
     // Separately, like every other photograph here, so listing shift reports
     // never drags image data around with it.
@@ -4810,14 +4846,23 @@ function refreshCell(r) {
     : '<span class="ok">✓</span> <span class="muted-txt">ללא תאריך</span>';
 }
 
+const LIC_TILES = [
+  { id: 'valid',   label: '✓ בתוקף',      pick: (r) => r.st === 'valid' },
+  { id: 'soon',    label: 'פגים בקרוב',   pick: (r) => r.st === 'soon' },
+  { id: 'expired', label: '⚠ פג תוקף',    pick: licExpired },
+  { id: 'none',    label: '⚠ אין רישיון', pick: licMissing },
+  { id: 'refresh', label: 'עברו רענון',   pick: (r) => r.refresh },
+];
+
 function licencePanel(approved) {
-  const rows = licenceRows(approved);
-  const refreshed = rows.filter((r) => r.refresh);
-  const gone = rows.filter(licExpired);
-  const missing = rows.filter(licMissing);
-  const bad = rows.filter(licBlocked);
-  const soon = rows.filter((r) => r.st === 'soon');
-  const ok = rows.filter((r) => r.st === 'valid');
+  const all = licenceRows(approved);
+  const tiles = LIC_TILES.map((t) => ({ ...t, n: all.filter(t.pick).length }));
+  const rows = statRows('lic', tiles, all);
+  // The alert below counts the whole panel, not the slice being looked at:
+  // narrowing to "בתוקף" must not make the expired licences stop existing.
+  const gone = all.filter(licExpired);
+  const missing = all.filter(licMissing);
+  const bad = all.filter(licBlocked);
 
   const body = rows
     .slice()
@@ -4880,14 +4925,8 @@ function licencePanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רישיונות נהיגה</h2>
-      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. ״פג תוקף״ הוא רישיון שהתאריך שלו כבר עבר; מי שאין לו רישיון כלל מסומן ״אין רישיון״ — שניהם באדום, ושניהם אסורים בנהיגה. אזרחי בלבד, בלי רישיון צבאי — מסומן בצהוב. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. מכבד את החיפוש והסינון.</p>
-      <div class="stat-row quad">
-        <div class="stat"><span class="stat-n num">${ok.length}</span><span class="stat-l">✓ בתוקף</span></div>
-        <div class="stat"><span class="stat-n num">${soon.length}</span><span class="stat-l">פגים בקרוב</span></div>
-        <div class="stat"><span class="stat-n num">${gone.length}</span><span class="stat-l">⚠ פג תוקף</span></div>
-        <div class="stat"><span class="stat-n num">${missing.length}</span><span class="stat-l">⚠ אין רישיון</span></div>
-        <div class="stat"><span class="stat-n num">${refreshed.length}</span><span class="stat-l">עברו רענון</span></div>
-      </div>
+      <p class="panel-sub">מי מחזיק רישיון אזרחי בתוקף ומי לא. ״פג תוקף״ הוא רישיון שהתאריך שלו כבר עבר; מי שאין לו רישיון כלל מסומן ״אין רישיון״ — שניהם באדום, ושניהם אסורים בנהיגה. אזרחי בלבד, בלי רישיון צבאי — מסומן בצהוב. בעמודת הצילום נפתחים שני הרישיונות יחד, האזרחי והצבאי; לחיצה על תמונה מגדילה אותה. לחיצה על מספר למעלה מסננת אליו. מכבד את החיפוש והסינון.</p>
+      ${statTiles('lic', tiles)}
       ${bad.length
         ? `<div class="callout alert"><p class="mb0">${[
             gone.length ? `<strong class="num">${gone.length}</strong> ${
@@ -4910,7 +4949,7 @@ function licencePanel(approved) {
              </table>
            </div>
            ${reportButtons('licences', licShotsBtn(rows))}`
-        : '<p class="empty">אין רשומות מאושרות.</p>'}
+        : `<p class="empty">${S.statPick.lic ? 'אין שורה שתואמת את הסינון.' : 'אין רשומות מאושרות.'}</p>`}
     </section>`;
 }
 
@@ -5109,19 +5148,87 @@ function renderFoodTab() {
 
 // Weapon register: serial → holder. The one table a logistics NCO reaches for
 // when a serial turns up and they need to know whose it is.
+/* ── Summary tiles that answer their own number ────────────────────────
+
+   Every one of these panels opens with a row of counts: 40 נשקים משויכים,
+   38 ללא נשק רשום, 12 כוונת רשומה. Each is a question — which 38? — and the
+   only way to ask it was to read the table underneath and count, which is
+   the work the tile was supposed to have done for you.
+
+   So a tile is a button. Press it and the table below shows exactly the rows
+   that number counted; press it again, or press "ניקוי הסינון", and everything
+   comes back. One tile at a time per panel: two counts that overlap would
+   turn a filter into a puzzle about whether it means and or or.
+
+   The pick is held per panel and applies to that panel's export too, so the
+   sheet is always the table you were looking at when you pressed the button.
+   Counts are computed before the pick is applied — otherwise pressing one
+   tile would zero the others and there would be no way back except undoing
+   the thing you just did. */
+
+const statPickOf = (panel, tiles) =>
+  tiles.find((t) => t.id === S.statPick[panel]) || null;
+
+// The rows the panel shows: everything, or what one tile counted.
+const statRows = (panel, tiles, rows) => {
+  const t = statPickOf(panel, tiles);
+  return t ? rows.filter(t.pick) : rows;
+};
+
+function statTiles(panel, tiles) {
+  const on = S.statPick[panel] || '';
+  return `
+    <div class="stat-row${tiles.length > 3 ? ' quad' : ''}">
+      ${tiles.map((t) => `
+        <button type="button" class="stat" data-act="stat-pick"
+                data-panel="${esc(panel)}" data-id="${esc(t.id)}"
+                aria-pressed="${on === t.id ? 'true' : 'false'}">
+          <span class="stat-n num">${t.n}</span>
+          <span class="stat-l">${t.label}</span>
+        </button>`).join('')}
+    </div>
+    ${on
+      ? `<p class="stat-clear field-hint">מוצג רק <strong>${esc((statPickOf(panel, tiles) || {}).label || '')}</strong> ·
+           <button type="button" class="linkbtn" data-act="stat-pick"
+                   data-panel="${esc(panel)}" data-id="${esc(on)}">ניקוי הסינון</button></p>`
+      : ''}`;
+}
+
+/* What the weapons list's tiles count. The rows are records, so the picks read
+   the record directly — this panel is the full sheet, phone number and all,
+   and it predates the reduced one below it. */
+const WEAPON_TILES = [
+  { id: 'armed',  label: 'נשקים משויכים', pick: (r) => !!r.data.weapon },
+  { id: 'amral',  label: 'אקילה רשום',    pick: (r) => !!r.data.weapon && !!r.data.amral },
+  { id: 'scope',  label: 'כוונת רשומה',   pick: (r) => !!r.data.weapon && !!r.data.scope },
+  { id: 'noarm',  label: 'ללא נשק רשום',  pick: (r) => !r.data.weapon },
+];
+
 function weaponsPanel(approved) {
   const visible = applyFilters(approved);
-  const armed = visible.filter((r) => r.data.weapon);
-  const unarmed = visible.filter((r) => !r.data.weapon);
+  const tiles = WEAPON_TILES.map((t) => ({ ...t, n: visible.filter(t.pick).length }));
 
-  const rows = armed
+  /* Unpressed, this table is what it has always been: the weapons, sorted by
+     number. "ללא נשק רשום" counts the rows it deliberately leaves out, and
+     that number was unreachable — you could see that 38 men had no weapon on
+     the books and had no way to ask which 38. Pressing a tile now shows
+     exactly what it counted, this one included. */
+  const picked = statPickOf('weapons', tiles);
+  const rows = (picked ? visible.filter(picked.pick) : visible.filter((r) => r.data.weapon))
     .slice()
-    .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }))
+    .sort((a, b) => {
+      if (!a.data.weapon !== !b.data.weapon) return a.data.weapon ? -1 : 1;
+      return a.data.weapon
+        ? String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true })
+        : a.data.name.localeCompare(b.data.name, 'he');
+    });
+
+  const body = rows
     .map((rec) => {
       const d = rec.data;
       const shown = S.revealed.has(rec.rid);
-      return `<tr>
-          <td class="num wpn">${esc(d.weapon)}</td>
+      return `<tr${d.weapon ? '' : ' class="row-short"'}>
+          <td class="num wpn">${d.weapon ? esc(d.weapon) : '<span class="bad">ללא נשק רשום</span>'}</td>
           <td class="num">${d.amral ? esc(d.amral) : '<span class="dim">·</span>'}</td>
           <td class="num">${d.scope ? esc(d.scope) : '<span class="dim">·</span>'}</td>
           <td>${esc(d.name)}</td>
@@ -5138,22 +5245,17 @@ function weaponsPanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">רשימת נשקים</h2>
-      <p class="panel-sub">מספר סידורי של הנשק, האקילה והכוונת מול המחזיק, ממוין לפי מספר הנשק. מכבד את החיפוש והסינון.</p>
-      <div class="stat-row">
-        <div class="stat"><span class="stat-n num">${armed.length}</span><span class="stat-l">נשקים משויכים</span></div>
-        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.amral).length}</span><span class="stat-l">אקילה רשום</span></div>
-        <div class="stat"><span class="stat-n num">${armed.filter((r) => r.data.scope).length}</span><span class="stat-l">כוונת רשומה</span></div>
-        <div class="stat"><span class="stat-n num">${unarmed.length}</span><span class="stat-l">ללא נשק רשום</span></div>
-      </div>
-      ${armed.length
+      <p class="panel-sub">מספר סידורי של הנשק, האקילה והכוונת מול המחזיק, ממוין לפי מספר הנשק. לחיצה על מספר למעלה מסננת אליו — כולל מי שלא רשם נשק כלל. מכבד את החיפוש והסינון.</p>
+      ${statTiles('weapons', tiles)}
+      ${rows.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,3">
                <thead><tr><th class="num">מס׳ נשק</th><th class="num">אקילה</th><th class="num">כוונת</th><th>שם</th><th class="num">מ״א</th><th>מחלקה</th><th class="num">טלפון</th></tr></thead>
-               <tbody>${rows}</tbody>
+               <tbody>${body}</tbody>
              </table>
            </div>
            ${reportButtons('weapons')}`
-        : '<p class="empty">אף חייל לא רשם מספר נשק עדיין.</p>'}
+        : `<p class="empty">${picked ? 'אין שורה שתואמת את הסינון.' : 'אף חייל לא רשם מספר נשק עדיין.'}</p>`}
     </section>`;
 }
 
@@ -5192,28 +5294,52 @@ function weaponScopeRows(recs) {
       const byName = held.some((h) => h.byName && (h.x.kind === 'dscope' || h.x.kind === 'nscope'));
       return { rid: rec.rid, name: d.name, pn: d.pn, weapon: d.weapon || '', day, night, byName };
     })
-    // A soldier with neither a weapon nor a sight has nothing to check, and a
-    // sheet of empty rows is a sheet nobody reads to the end.
-    .filter((r) => r.weapon || r.day.length || r.night.length)
-    .sort((a, b) => String(a.weapon).localeCompare(String(b.weapon), 'en', { numeric: true }));
+    /* Everybody, including the man with nothing registered at all.
+
+       This filtered those rows out at first, on the reasoning that a row of
+       empty cells has nothing to check. That was backwards. A soldier with no
+       weapon number on the books is not an empty row — he is the row the whole
+       sheet exists to surface, because either he genuinely has no weapon or he
+       has one nobody wrote down, and the sheet is where you find out which.
+
+       They sort to the bottom, so the sheet still reads as a weapon list, and
+       among themselves by name, since there is no number to sort them by. */
+    .sort((a, b) => {
+      if (!a.weapon !== !b.weapon) return a.weapon ? -1 : 1;
+      return a.weapon
+        ? String(a.weapon).localeCompare(String(b.weapon), 'en', { numeric: true })
+        : a.name.localeCompare(b.name, 'he');
+    });
 }
 
 const scopeCell = (list) => (list.length ? list.join(' · ') : '');
 
+/* What each tile counts, and therefore what pressing it shows. Defined once
+   and shared by the panel and the export, so the number on the tile, the rows
+   in the table and the lines in the sheet can never be three answers. */
+const SCOPE_TILES = [
+  { id: 'armed',  label: 'עם נשק',        pick: (r) => !!r.weapon },
+  { id: 'noarm',  label: 'ללא נשק רשום',  pick: (r) => !r.weapon },
+  { id: 'day',    label: 'עם כוונת',       pick: (r) => r.day.length > 0 },
+  { id: 'night',  label: 'עם כוונת לילה',  pick: (r) => r.night.length > 0 },
+];
+
 /* The rows on screen, above the buttons that export them. A report you cannot
    read before you print it is a report you find the mistake in afterwards. */
 function scopesPanel(approved) {
-  const rows = weaponScopeRows(applyFilters(approved));
+  const all = weaponScopeRows(applyFilters(approved));
+  const tiles = SCOPE_TILES.map((t) => ({ ...t, n: all.filter(t.pick).length }));
+  const rows = statRows('scopes', tiles, all);
 
   const cell = (list) => (list.length
     ? `<span class="wpn">${esc(list.join(' · '))}</span>`
     : '<span class="dim">·</span>');
 
   const body = rows.map((r) => `
-    <tr>
+    <tr${r.weapon ? '' : ' class="row-short"'}>
       <td>${esc(r.name)}${r.byName ? ' <small class="kit-have">התאמה לפי שם</small>' : ''}</td>
       <td class="num">${esc(r.pn)}</td>
-      <td class="num wpn">${r.weapon ? esc(r.weapon) : '<span class="dim">ללא נשק רשום</span>'}</td>
+      <td class="num wpn">${r.weapon ? esc(r.weapon) : '<span class="bad">ללא נשק רשום</span>'}</td>
       <td class="num">${cell(r.day)}</td>
       <td class="num">${cell(r.night)}</td>
     </tr>`).join('');
@@ -5221,13 +5347,8 @@ function scopesPanel(approved) {
   return `
     <section class="panel">
       <h2 class="panel-title">נשקים וכוונות</h2>
-      <p class="panel-sub">חמישה שדות בלבד: שם, מספר אישי, מספר נשק, וכוונת יום ולילה אם יש. הכוונת נלקחת גם מהרישום של החייל וגם ממרשם הארמון — כוונת לילה קיימת רק בארמון, ולכן היא נספרת משם. נספרת רק כוונת שנמצאת <strong>אצלו</strong>, לא כזו שרשומה עליו ויושבת על המדף. <strong>ללא טלפון ובלי מחלקה</strong> — מכבד את החיפוש והסינון.</p>
-      <div class="stat-row">
-        <div class="stat"><span class="stat-n num">${rows.length}</span><span class="stat-l">שורות</span></div>
-        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.weapon).length}</span><span class="stat-l">עם נשק</span></div>
-        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.day.length).length}</span><span class="stat-l">עם כוונת</span></div>
-        <div class="stat"><span class="stat-n num">${rows.filter((r) => r.night.length).length}</span><span class="stat-l">עם כוונת לילה</span></div>
-      </div>
+      <p class="panel-sub">חמישה שדות בלבד: שם, מספר אישי, מספר נשק, וכוונת יום ולילה אם יש. <strong>כל החיילים מופיעים</strong> — גם מי שלא דיווח נשק כלל, כי זו בדיוק השורה שצריך לראות. הכוונת נלקחת מהרישום של החייל וגם ממרשם הארמון — כוונת לילה קיימת רק בארמון. נספרת רק כוונת שנמצאת <strong>אצלו</strong>, לא כזו שרשומה עליו ויושבת על המדף. <strong>ללא טלפון ובלי מחלקה</strong>. לחיצה על מספר מסננת אליו.</p>
+      ${statTiles('scopes', tiles)}
       ${rows.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,2,3,4">
@@ -5239,7 +5360,7 @@ function scopesPanel(approved) {
              </table>
            </div>
            ${reportButtons('scopes')}`
-        : '<p class="empty">אין חייל עם נשק או כוונת שתואם את החיפוש והסינון.</p>'}
+        : '<p class="empty">אין שורה שתואמת את החיפוש והסינון.</p>'}
     </section>`;
 }
 
@@ -5426,7 +5547,8 @@ const REPORTS = {
     name: 'רישיונות נהיגה', file: 'tzayad-licences', sensitive: true,
     build() {
       const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged);
-      const rows = licenceRows(approved).slice()
+      const tiles = LIC_TILES.map((t) => ({ ...t, n: 0 }));
+      const rows = statRows('lic', tiles, licenceRows(approved)).slice()
         .sort((a, b) => LIC_RANK[a.st] - LIC_RANK[b.st] || a.name.localeCompare(b.name, 'he'));
       return {
         head: ['שם', 'מספר אישי', 'מחלקה', 'מספר רישיון', 'בתוקף עד', 'סטטוס',
@@ -5471,14 +5593,24 @@ const REPORTS = {
   weapons: {
     name: 'רשימת נשקים', file: 'tzayad-weapons', sensitive: true,
     build() {
-      const armed = S.recs
-        .filter((r) => r.status === 'approved' && !r.damaged && r.data && r.data.weapon)
-        .sort((a, b) => String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true }));
+      // The sheet is the table: same filters, same tile, same order — so what
+      // was on screen when the button was pressed is what comes out.
+      const visible = applyFilters(S.recs.filter((r) => r.status === 'approved' && !r.damaged && r.data));
+      const tiles = WEAPON_TILES.map((t) => ({ ...t, n: 0 }));
+      const picked = statPickOf('weapons', tiles);
+      const rows = (picked ? visible.filter(picked.pick) : visible.filter((r) => r.data.weapon))
+        .slice()
+        .sort((a, b) => {
+          if (!a.data.weapon !== !b.data.weapon) return a.data.weapon ? -1 : 1;
+          return a.data.weapon
+            ? String(a.data.weapon).localeCompare(String(b.data.weapon), 'en', { numeric: true })
+            : a.data.name.localeCompare(b.data.name, 'he');
+        });
       return {
         head: ['מספר נשק', 'מספר אקילה', 'מספר כוונת', 'שם', 'מספר אישי', 'מחלקה', 'טלפון'],
-        rows: armed.map((rec) => {
+        rows: rows.map((rec) => {
           const d = rec.data;
-          return [d.weapon, d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone];
+          return [d.weapon || '', d.amral || '', d.scope || '', d.name, d.pn, deptName(d.dept), d.phone];
         }),
       };
     },
@@ -5496,7 +5628,9 @@ const REPORTS = {
     name: 'נשקים וכוונות', file: 'tzayad-weapons-scopes', sensitive: true,
     build() {
       const approved = S.recs.filter((r) => r.status === 'approved' && !r.damaged && r.data);
-      const rows = weaponScopeRows(applyFilters(approved));
+      const all = weaponScopeRows(applyFilters(approved));
+      const tiles = SCOPE_TILES.map((t) => ({ ...t, n: 0 }));
+      const rows = statRows('scopes', tiles, all);
       return {
         head: ['שם', 'מספר אישי', 'מספר נשק', 'כוונת', 'כוונת לילה'],
         rows: rows.map((r) => [r.name, r.pn, r.weapon, scopeCell(r.day), scopeCell(r.night)]),
@@ -5614,7 +5748,7 @@ const REPORTS = {
             d.missionName || '', d.shift || '',
             d.vehLabel || '', d.km || '',
             missionItemName(it.id),
-            it.have === 'no' ? 'חסר' : 'יש',
+            it.have === 'no' ? msnNoWord(it.id) : 'יש',
             it.have === 'no' ? '' : (it.mk || ''),
             it.have === 'no' ? (it.why || '') : '',
           ]);
@@ -6673,7 +6807,7 @@ const depApprove = (id) =>
     // — and the deposit itself is excluded so it does not collide with itself.
     for (const [f, label] of SERIAL_FIELDS) {
       // His own record holding this weapon is the reason he is depositing it.
-      const clash = serialTaken(d[f], rec.id, d.pn);
+      const clash = serialTaken(d[f], rec.id, d.pn, d.name);
       if (clash) { toast(`${label}: ${clash}`, true); return; }
     }
     S.askDel = '';
@@ -7567,6 +7701,15 @@ function renderMissionDefsTab() {
         <p class="field-hint">${count
           ? `${count === 1 ? 'פריט אחד נדרש' : `<span class="num">${count}</span> פריטים נדרשים`} במשימה הזו. החייל יידרש למק״ט וצילום על כל אחד מהם.`
           : 'בחרו כמות לפריט אחד לפחות — משימה בלי ציוד לא תוצע לחיילים.'}</p>
+        <label class="field">
+          <span class="field-label">שעות חילופים</span>
+          <input class="input" type="text" maxlength="80" value="${esc((m.times || []).join(' '))}"
+                 data-act="mdef-times" data-i="${i}"
+                 placeholder="05:00 11:00 17:00 23:00" inputmode="numeric">
+          <span class="field-hint mb0">${(m.times || []).length
+            ? `אם לא יתקבל דוח עד <strong>${MSN_GRACE_MIN}</strong> דקות אחרי אחת מהשעות האלו, תצא התראה בוואטסאפ.`
+            : 'ריק = בלי מעקב. מלאו שעות מופרדות ברווח כדי לקבל התראה על משמרת שלא דיווחה.'}</span>
+        </label>
         <div class="mdef-grid">${rows}</div>
         ${alphaRows}
       </section>`;
@@ -8433,11 +8576,14 @@ function armAdd(form) {
   // whole unit — not once per register, and not once per kind. A מק״ט typed
   // twice is either the same item entered twice or a transcription error, and
   // both are worth stopping at the point of entry.
-  const taken = serialTaken(serial);
+  // Whose it is, before the check rather than after it: a number already on
+  // this soldier's own record is the same object arriving from the other side,
+  // not a second one.
+  const ownerPn = (form.ownerPn && form.ownerPn.value) || '';
+  const taken = serialTaken(serial, '', ownerPn, owner);
   if (taken) return setFormErr(form, taken);
   setFormErr(form, '');
   const now = Date.now();
-  const ownerPn = (form.ownerPn && form.ownerPn.value) || '';
   S.inv[reg.key] = [...(S.inv[reg.key] || []),
     { id: rndId(), kind, name, serial, owner, ownerPn, loc: reg.home, note: '', addedAt: now }];
   logPush(reg.logKey, { t: now, action: 'add', kind, name, serial, owner, dest: '', note: '' });
@@ -8920,7 +9066,7 @@ function msnDetail(rec) {
     if (item.have === 'no') {
       return `<tr class="msn-short">
           <td>${esc(name)}</td>
-          <td><span class="state wait">חסר</span></td>
+          <td><span class="state wait">${esc(msnNoWord(item.id))}</span></td>
           <td colspan="2">${esc(item.why || '—')}</td>
         </tr>`;
     }
@@ -11132,10 +11278,17 @@ async function publishCards() {
     .map((m) => ({
       id: m.id,
       label: String(m.name).trim().slice(0, 60),
-      data: JSON.stringify((m.items || []).map((it) => ({
-        id: it.id, qty: it.qty,
-        ...(it.parts && it.parts.length ? { parts: it.parts } : {}),
-      }))),
+      /* Was a bare array of items. It carries the handover times too now, so
+         the shape grew an envelope — the reader still accepts the old array,
+         because a published row written by the previous version is sitting in
+         the table right now and must not stop offering its kit. */
+      data: JSON.stringify({
+        items: (m.items || []).map((it) => ({
+          id: it.id, qty: it.qty,
+          ...(it.parts && it.parts.length ? { parts: it.parts } : {}),
+        })),
+        ...(m.times && m.times.length ? { times: m.times } : {}),
+      }),
     }));
   await api('/admin/cards', { method: 'PUT', body: { cards, vehicles, missions } }).catch(() => {});
 }
@@ -11956,14 +12109,36 @@ function serialIndex(except) {
    forbidden: the weapon is on his record because he signed for it, and the
    deposit is that same weapon moving to the armoury. A match under any other
    personal number is still a refusal. */
-function serialTaken(value, except, ownPn = '') {
+/* Whose number this already is, and whether that is the same person.
+
+   A weapon written on a soldier's record and the same weapon standing in the
+   armoury under her name are not two weapons. They are one object seen from
+   two sides, and that is the normal state from the moment she deposits it and
+   goes home — the register says where the thing is, the record says she signed
+   for it. Both are true and neither is a duplicate.
+
+   The exemption used to cover only the record side, so it worked in the one
+   direction it was written for (filing a deposit) and refused the other: with
+   the rifle already in the armoury under her name, her own record could not be
+   given its number. That is not an edge case, it is what happens every time
+   somebody goes home, and it left the number unrecordable exactly when the
+   record most needed to say whose weapon it is.
+
+   Matched on the personal number where the row has one, and on the name where
+   it does not — a register row added by typing an owner never got a number
+   attached. The same rule, in the same order, as the soldier's own card. */
+const sameHolder = (entry, pn, name) => {
+  const low = (v) => String(v || '').trim().toLowerCase();
+  if (entry.pn) return !!low(pn) && low(entry.pn) === low(pn);
+  return !!nrm(name) && nrm(entry.who) === nrm(name);
+};
+
+function serialTaken(value, except, ownPn = '', ownName = '') {
   const v = String(value || '').trim().toLowerCase();
   if (!v) return '';
-  const mine = String(ownPn || '').trim().toLowerCase();
   const hit = serialIndex(except).find((o) => {
     if (o.v.trim().toLowerCase() !== v) return false;
-    if (mine && o.kind === 'חייל' && String(o.pn || '').trim().toLowerCase() === mine) return false;
-    return true;
+    return !sameHolder(o, ownPn, ownName);
   });
   return hit ? `⛔ ${value} כבר רשום על ${hit.who || 'ללא שם'} (${hit.kind}) — מספר חייב להיות ייחודי` : '';
 }
@@ -11979,8 +12154,12 @@ function serialWarnings(d, exceptRid) {
     for (const other of index) {
       const o = other.v.toLowerCase();
       if (o === lower) {
+        // Her own weapon, in the armoury, under her name. One object.
+        if (sameHolder(other, d.pn, d.name)) continue;
         out.push(`⛔ ${label} ${val} כבר רשום על ${other.who} (${other.kind}) — אותו מספר לא יכול להיות בשני מקומות`);
       } else if (editDistance(lower, o) === 1) {
+        // A near miss is still worth saying even against her own row: one
+        // character out is what a typo looks like, whoever it belongs to.
         out.push(`⚠ ${label} ${val} שונה בתו אחד בלבד מ-${other.v} של ${other.who} (${other.kind}) — ודאו שאין טעות הקלדה`);
       }
     }
@@ -13212,6 +13391,12 @@ $app.addEventListener('input', (e) => {
     case 'ammo-search': S.regQ = { ...S.regQ, ammo: el.value };   rerenderKeepFocus(el); break;
     case 'veh-search':  S.regQ = { ...S.regQ, veh: el.value };    rerenderKeepFocus(el); break;
     case 'mdef-name':   S.inv.missions[+el.dataset.i].name = el.value; break;
+    /* Kept as the raw string while it is being typed, and only turned into a
+       list of times on the way out. Parsing every keystroke would rewrite
+       "0" into nothing and take the cursor with it. */
+    case 'mdef-times':
+      S.inv.missions[+el.dataset.i].times = el.value.split(/[\s,]+/).filter(Boolean);
+      break;
     case 'akind-name': {
       const n = +el.dataset.n;
       S.inv.alphaKinds[n] = { ...S.inv.alphaKinds[n], name: el.value };
@@ -13531,6 +13716,16 @@ function dispatch(act, el) {
       else S.revealed.add(rid);
       renderConsole();
       break;
+    // Pressing the tile that is already on turns it off, which is also what
+    // "הצגת הכול" does — same action, so there is one way to undo a filter
+    // and it is the control you just pressed.
+    case 'stat-pick': {
+      const panel = el.dataset.panel;
+      S.statPick[panel] = S.statPick[panel] === el.dataset.id ? '' : el.dataset.id;
+      S.page = {};                 // a narrower table starts at its first page
+      renderConsole();
+      break;
+    }
     case 'adj': adminAdjust(rid, item, d); break;
     case 'approve': adminApprove(rid); break;
     case 'credit': adminCredit(rid, item, d); break;
@@ -13674,7 +13869,7 @@ function dispatch(act, el) {
       // check exists for, so the editor stays open until it is resolved.
       const reg = regOf(el);
       const it = (S.inv[reg.key] || []).find((x) => x.id === S.armEdit);
-      const clash = it ? serialTaken(it.serial, it.id) : '';
+      const clash = it ? serialTaken(it.serial, it.id, it.ownerPn, it.owner) : '';
       if (clash) { toast(clash, true); break; }
       S.armEdit = '';
       invSave();

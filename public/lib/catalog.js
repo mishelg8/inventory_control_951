@@ -78,8 +78,18 @@ const MISSION_ITEMS = [
   { id: 'amral',  name: 'אמר״ל' },
   { id: 'comms',  name: 'ציוד קשר' },
   { id: 'alpha',  name: 'ציוד אלפא' },
-  { id: 'plates', name: 'פלטות קרמיות' },
+  /* Ceramic plates carry no number worth copying. A מק״ט was being demanded
+     on a shift report for an item whose marking is a size and a batch, not a
+     serial — so the field was either invented or left blocking the form. The
+     photograph is the whole check here: you can see the plates or you cannot. */
+  { id: 'plates', name: 'פלטות קרמיות', noMk: true },
   { id: 'lionet', name: 'ליונט' },
+  /* A key is held or it is not, and there is nothing else true about it. No
+     part number to read off it, nothing a photograph would prove, and no
+     shortage report worth opening — a gate key that did not come across at
+     handover is a sentence to the outgoing shift, not a case for the store.
+     So `bare` means exactly two buttons and no third question. */
+  { id: 'gatekey', name: 'מפתח שערים', bare: true },
 ];
 
 const missionItemName = (id) =>

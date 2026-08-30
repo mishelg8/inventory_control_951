@@ -135,10 +135,30 @@ function cleanMission(x) {
     }
     items.push({ id, qty: Math.max(1, asCount(it && it.qty, 99)), ...(parts.length ? { parts } : {}) });
   }
+  /* When this mission changes hands.
+     A watcher outside the browser has to know when a report is due, and only
+     the office knows that — so it is part of the mission's definition rather
+     than a setting somewhere else that has to be kept in step with it.
+     Coerced to HH:MM and sorted, because the watcher compares them against a
+     clock and "5:00", "05:00 " and "17:0" are the same handover typed three
+     ways. Anything that is not a time is dropped rather than repaired. */
+  const times = [];
+  for (const t of Array.isArray(x && x.times) ? x.times : []) {
+    const m = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(String(t || ''));
+    if (!m) continue;
+    const h = Number(m[1]);
+    const mi = Number(m[2]);
+    if (h > 23 || mi > 59) continue;
+    const hhmm = `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+    if (!times.includes(hhmm)) times.push(hhmm);
+  }
+  times.sort();
+
   return {
     id: asText(x && x.id, 40) || rndId(),
     name: asText(x && x.name, 60),
     items,
+    ...(times.length ? { times: times.slice(0, 12) } : {}),
   };
 }
 

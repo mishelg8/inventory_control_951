@@ -624,7 +624,16 @@ export async function onRequest(context) {
          a row the form should not see at all. */
       const missions = rows.filter((r) => r.kind === 'mission').map((r) => {
         let items = [];
-        try { const p = JSON.parse(r.data || '[]'); if (Array.isArray(p)) items = p; } catch { items = []; }
+        /* Two shapes. A bare array is what the console published before
+           missions carried handover times; an object carries both. Rows of
+           the older shape are still in the table, so both are read rather
+           than one being migrated — a mission that stops offering its kit
+           because of a format change is a shift that cannot file a report. */
+        try {
+          const p = JSON.parse(r.data || '[]');
+          if (Array.isArray(p)) items = p;
+          else if (p && Array.isArray(p.items)) items = p.items;
+        } catch { items = []; }
         return { id: r.id, label: r.label, items };
       });
       return json({ cards: of('card'), vehicles: of('vehicle'), missions });
@@ -748,6 +757,31 @@ export async function onRequest(context) {
         )
         .bind(id, ek, iv, ct, now)
         .run();
+      /* A shift report leaves one fact in the clear: this mission reported,
+         now. Nothing else — not who, not what, not the report's own id, which
+         would tie the two together and hand an outsider a way to count a
+         particular mission's paperwork against its content.
+
+         It is what lets anything outside the browser notice a handover that
+         passed in silence. The mission must be one the console actually
+         published: this endpoint has no login in front of it, and an id
+         accepted on trust would let a passer-by silence tonight's alert by
+         inventing a beat.
+
+         The report is already written and the answer is already 'ok' — a
+         watchdog's bookkeeping does not get to fail a commander's report. */
+      if (typeof b.beat === 'string' && b.beat && b.beat.length <= 40) {
+        try {
+          const known = await db
+            .prepare("SELECT id FROM pub_pick WHERE kind = 'mission' AND id = ?1")
+            .bind(b.beat).first();
+          if (known) {
+            await db
+              .prepare('INSERT OR IGNORE INTO shift_beats (mission_id, at) VALUES (?1, ?2)')
+              .bind(b.beat, now).run();
+          }
+        } catch { /* the report stands either way */ }
+      }
       return json({ ok: true });
     }
 
