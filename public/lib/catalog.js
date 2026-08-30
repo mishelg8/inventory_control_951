@@ -261,13 +261,17 @@ const AMMO_ACTIONS = [
 // 'used' is consumption: a gas or stun grenade that was thrown went nowhere
 // and to nobody, so it needs no recipient — which is why it stops being a
 // free-text field and becomes a choice.
-// `loan` marks the two that can come back. Rounds drawn by a soldier or for an
-// operation are owed to the armoury until they are returned or accounted for;
-// what was thrown or credited is gone, and asking for it back is meaningless.
+// `loan` marks the three that can come back. Rounds drawn by a soldier, for an
+// operation or into a vehicle are owed to the armoury until they are returned
+// or accounted for; what was thrown or credited is gone, and asking for it back
+// is meaningless. A vehicle is a holder like the other two — ammunition kept in
+// a jeep is out of the store and owed by whoever signed for that jeep — and it
+// was missing here while every other register already had it.
 const AMMO_DESTS = [
   { id: 'used', name: 'שומש', noWho: true },
-  { id: 'mission', name: 'משימה', loan: true },
   { id: 'soldier', name: 'חייל', loan: true },
+  { id: 'mission', name: 'משימה', loan: true },
+  { id: 'vehicle', name: 'רכב', loan: true },
   { id: 'credit', name: 'זיכוי', noWho: true },
 ];
 

@@ -655,3 +655,38 @@ test('the same serial under two different soldiers is still two rows', () => {
   assert.equal(serialIndex().filter((o) => o.v === 'W-9').length, 2,
     'different owners means a genuine clash, not one object');
 });
+
+/* Ammunition is issued from one screen and every other kind of kit from
+   another, and for a long time the two disagreed about where kit can go: the
+   registers would lend to a soldier, an operation or a vehicle, while the
+   ammunition screen offered only the first two. Rounds kept in a jeep had
+   nowhere to be recorded, so they were recorded as consumed, or not at all.
+
+   The destinations are not the same list — 'שומש' and 'זיכוי' are movements
+   that belong to a count and to nothing else — but the ones that are loans
+   have to be, because they are the same act. */
+test('ammunition can be lent everywhere the registers can lend', () => {
+  const consts = app.match(/const LIFECYCLE = [\s\S]*?const NAMED_LOCS = \{[\s\S]*?\n\};/)[0];
+  const dests = app.match(/const AMMO_DESTS = \[[\s\S]*?\n\];/)[0];
+  const loanLocs = app.match(/const LOAN_LOCS = new Set\(\[[^\]]*\]\);/)[0];
+  const { AMMO_DESTS, NAMED_LOCS, LOAN_LOCS } = new Function(
+    `${consts}\n${loanLocs}\n${dests}\nreturn { AMMO_DESTS, NAMED_LOCS, LOAN_LOCS };`
+  )();
+
+  const loans = AMMO_DESTS.filter((d) => d.loan).map((d) => d.id);
+  assert.deepEqual(loans.slice().sort(), [...LOAN_LOCS].sort(),
+    'the ammunition screen and the registers disagree about who can hold kit');
+
+  // Every loan asks who is holding it, and asks in the words the rest of the
+  // app uses. A destination with no label falls back to a bare "שם", which is
+  // how a vehicle number ends up requested as a soldier's name.
+  for (const id of loans) {
+    assert.ok(NAMED_LOCS[id], `${id} is lent to nobody the app can name`);
+  }
+
+  // The other two are consumption, and consumption has no holder to ask for.
+  for (const d of AMMO_DESTS.filter((x) => !x.loan)) {
+    assert.ok(d.noWho, `${d.id} is neither a loan nor a consumption`);
+    assert.ok(!NAMED_LOCS[d.id], `${d.id} cannot be both consumed and held`);
+  }
+});

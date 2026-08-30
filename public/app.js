@@ -7059,6 +7059,88 @@ function renderTzelemTab() {
 
 /* ── Ammunition & alpha ────────────────────────────────────────────── */
 
+// What the recipient field is asking for. The three loan destinations are the
+// three named locations every other register already uses, so they are named
+// here in the same words rather than in a second set of their own.
+const ammoWho = (dest) => (NAMED_LOCS[dest] || {}).label || 'שם';
+
+/* Signing rounds out, as an act with a form of its own.
+
+   The stock table could always do this: every row carries a destination, a
+   name, a quantity and three buttons. But those are the first columns to fold
+   away when the table will not fit, and on a phone the row shows the count and
+   little else — so the one screen where ammunition is actually issued looked,
+   to everybody standing at the shelf with a phone, like a screen that could
+   not issue anything. That is what was reported, and the columns being one tap
+   away inside the row's drawer is not an answer to it.
+
+   So the act gets the shape the armoury uses, above the table instead of
+   inside it: what, to whom, how many. The row controls stay for whoever is at
+   a desk with the whole table in front of them — this adds a way in, it does
+   not take one away. Only the destinations that come back are offered here;
+   what was thrown or credited is a correction to the count, not a loan, and it
+   stays in the row where the count is.  */
+function ammoLoanPanel() {
+  const shelf = ((S.inv && S.inv.ammo) || [])
+    .filter((x) => x.qty > 0)
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+  const dests = AMMO_DESTS.filter((d) => d.loan);
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">השאלת תחמושת ואלפא</h2>
+      <p class="panel-sub">הוצאת כמות לחייל, למשימה או לרכב. ההשאלה נשארת פתוחה בטבלת "בהשאלה עכשיו" עד שמחזירים אותה. מה ששומש או זוכה אינו השאלה — רושמים אותו בשורת הפריט בטבלת המלאי.</p>
+      <form data-form="ammo-loan" novalidate>
+        <div class="grid2">
+          <label class="field">
+            <span class="field-label">הפריט <span class="req" aria-hidden="true">*</span></span>
+            <select class="input select" name="item" required>
+              <option value="">— בחרו פריט מהמלאי —</option>
+              ${shelf.map((x) => `<option value="${esc(x.id)}">${esc(x.name)} · ${x.qty} במלאי</option>`).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">כמות <span class="req" aria-hidden="true">*</span></span>
+            <input class="input num" name="qty" type="text" inputmode="numeric" maxlength="6"
+                   placeholder="10" required>
+          </label>
+          <label class="field">
+            <span class="field-label">לאן <span class="req" aria-hidden="true">*</span></span>
+            <select class="input select" name="loc" data-act="loan-loc" required>
+              ${dests.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}
+            </select>
+          </label>
+          ${whoPicker('אצל מי / איזו משימה / איזה רכב', 'who', 'ישראל ישראלי')}
+        </div>
+        <p class="form-err" data-err></p>
+        <button class="btn primary wide" type="submit"${shelf.length ? '' : ' disabled'}>
+          ${shelf.length ? 'רישום השאלה' : 'אין תחמושת במלאי להשאלה'}
+        </button>
+      </form>
+    </section>`;
+}
+
+// One movement, written the way the row writes it, so the loan panel below and
+// the log read the same whichever screen it was entered from.
+function ammoLoan(form) {
+  const it = ((S.inv && S.inv.ammo) || []).find((x) => x.id === form.item.value);
+  const d = AMMO_DESTS.find((x) => x.id === form.loc.value);
+  const n = Math.max(0, parseInt(String(form.qty.value || '').replace(/\D/g, ''), 10) || 0);
+  const who = form.who.value.trim().slice(0, 60);
+  if (!it) return setFormErr(form, 'נא לבחור פריט');
+  if (!d || !d.loan) return setFormErr(form, 'נא לבחור לאן הציוד יוצא');
+  if (!n) return setFormErr(form, 'נא למלא כמות חיובית');
+  if (n > it.qty) return setFormErr(form, `אין מספיק במלאי — יש ${it.qty}`);
+  if (who.length < 2) return setFormErr(form, `נא למלא את ${ammoWho(d.id)}`);
+  setFormErr(form, '');
+  it.qty = Math.max(0, it.qty - n);
+  logPush('ammoLog', {
+    t: Date.now(), action: 'issue', name: it.name, qty: n, dest: d.id, who, note: '',
+  });
+  invSave();
+}
+
 function renderAmmoTab() {
   const all = (S.inv && S.inv.ammo) || [];
   const log = (S.inv && S.inv.ammoLog) || [];
@@ -7088,7 +7170,7 @@ function renderAmmoTab() {
         </select>
         ${dest.noWho ? '' : `<input class="input mini mt-xs" type="text" maxlength="60"
                value="${esc(draft.who)}" data-act="ammo-who" data-id="${esc(x.id)}"
-               placeholder="${dest.id === 'soldier' ? 'שם החייל' : 'שם המשימה'}" aria-label="למי">`}
+               placeholder="${esc(ammoWho(dest.id))}" aria-label="למי">`}
       </td>
       <td>
         <input class="input mini" type="text" maxlength="120" value="${esc(draft.note || '')}"
@@ -7163,6 +7245,8 @@ function renderAmmoTab() {
       </form>
     </section>
 
+    ${ammoLoanPanel()}
+
     <section class="panel">
       <h2 class="panel-title">מלאי תחמושת ואלפא</h2>
       <div class="kpis">
@@ -7191,7 +7275,7 @@ function renderAmmoTab() {
 
     <section class="panel${out.length ? ' alert' : ''}">
       <h2 class="panel-title">בהשאלה עכשיו ${out.length ? `<span class="pill warn num">${out.reduce((n, r) => n + r.n, 0)}</span>` : ''}</h2>
-      <p class="panel-sub">מה שנמסר לחייל או למשימה וטרם הוחזר, מחושב מהיומן. ↩ החזרה בשורה מחזירה את הכמות למלאי וסוגרת את ההשאלה. פריט שכבר נמחק מהמלאי — ההשאלה נסגרת בלבד, בלי להוסיף למלאי שאינו קיים.</p>
+      <p class="panel-sub">מה שנמסר לחייל, למשימה או לרכב וטרם הוחזר, מחושב מהיומן. ↩ החזרה בשורה מחזירה את הכמות למלאי וסוגרת את ההשאלה. פריט שכבר נמחק מהמלאי — ההשאלה נסגרת בלבד, בלי להוסיף למלאי שאינו קיים.</p>
       ${out.length
         ? `<div class="tbl-scroll">
              <table class="tbl" data-phone="0,1,-1">
@@ -8361,7 +8445,7 @@ function ammoMove(i, action) {
     dest = d.id;
     who = d.noWho ? '' : (draft.who || '').trim().slice(0, 60);
     if (!d.noWho && who.length < 2) {
-      toast(d.id === 'soldier' ? 'נא למלא שם חייל' : 'נא למלא שם משימה', true);
+      toast(`נא למלא את ${ammoWho(d.id)}`, true);
       return;
     }
   }
@@ -13270,6 +13354,7 @@ $app.addEventListener('submit', (e) => {
   else if (kind === 'arm-add') armAdd(form);
   else if (kind === 'arm-loan') armLoan(form);
   else if (kind === 'ammo-add') ammoAdd(form);
+  else if (kind === 'ammo-loan') ammoLoan(form);
 });
 
 function dispatch(act, el) {
