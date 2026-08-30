@@ -177,6 +177,37 @@ const COMMS_KINDS = [
   { id: 'commsAcc', name: 'אביזר נוסף', locs: COMMS_PLACES },
 ];
 
+/* Alpha equipment that is a thing rather than a count.
+ *
+ * The תחמושת screen holds what is measured in units — rounds, grenades — and
+ * answers "how many are left". This register holds the pieces of alpha kit
+ * that are single objects with a number stamped on them, and answers "where
+ * is this one and who has it". They are different questions and neither
+ * screen can answer the other's.
+ *
+ * Same places as the signals store, because alpha kit goes to the same three
+ * destinations: a soldier, a vehicle, a named operation. */
+const ALPHA_PLACES = ['store', 'soldier', 'vehicle', 'mission', ...LIFECYCLE];
+
+const ALPHA_KINDS = [
+  { id: 'vest', name: 'אפוד', locs: ALPHA_PLACES },
+  { id: 'plate', name: 'פלטה קרמית', locs: ALPHA_PLACES },
+  { id: 'pouch', name: 'נרתיק / פאוץ׳', locs: ALPHA_PLACES },
+  { id: 'launcher', name: 'משגר', locs: ALPHA_PLACES },
+  { id: 'optic', name: 'אמצעי ראייה', locs: ALPHA_PLACES },
+  { id: 'alphaAcc', name: 'אביזר נוסף', locs: ALPHA_PLACES },
+];
+
+const ALPHA_LOCS = [
+  { id: 'store', name: 'מחסן אלפא' },
+  { id: 'soldier', name: 'אצל חייל' },
+  { id: 'vehicle', name: 'ברכב' },
+  { id: 'mission', name: 'במשימה' },
+  { id: 'repair', name: 'בתיקון' },
+  { id: 'lost', name: 'אבוד' },
+  { id: 'decom', name: 'מושבת' },
+];
+
 const COMMS_LOCS = [
   { id: 'store', name: 'מחסן קשר' },
   { id: 'soldier', name: 'אצל חייל' },
@@ -271,6 +302,16 @@ const REGISTERS = {
     addTitle: 'הוספת פריט קשר',
     namePh: 'לדוגמה: מדף / אנטנה קצרה', serialPh: 'PRC-77012',
     stockNote: 'רק מה שנמצא פיזית במחסן הקשר עכשיו. ברגע שמסמנים פריט "אצל חייל", "ברכב" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת — ואז חובה לרשום ברכב או במשימה איזו. שינוי מיקום נשמר עם "שמירת השינויים".',
+  },
+
+  alpha: {
+    id: 'alpha', tab: 'alphaReg', key: 'alphaReg', logKey: 'alphaRegLog',
+    kinds: ALPHA_KINDS, locs: ALPHA_LOCS, home: 'store', unique: '',
+    deposits: false,
+    title: 'ציוד אלפא', place: 'המחסן', placeTo: 'למחסן', placeIn: 'במחסן',
+    addTitle: 'הוספת פריט אלפא',
+    namePh: 'לדוגמה: אפוד קרמי / משגר', serialPh: 'AL-10021',
+    stockNote: 'רק מה שנמצא פיזית במחסן עכשיו. ברגע שמסמנים פריט "אצל חייל", "ברכב" או "במשימה" הוא יורד מהרשימה הזו ועובר לטבלה שמתחת — ואז חובה לרשום אצל מי או באיזו משימה. שינוי מיקום נשמר עם "שמירת השינויים".',
   },
 };
 

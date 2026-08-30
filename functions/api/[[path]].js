@@ -49,6 +49,7 @@ const VAULT_PARTS = [
   'stock', 'countedAt',
   'armon', 'armonLog', 'comms', 'commsLog',
   'ammo', 'ammoLog', 'vehicles', 'fuel', 'missions',
+  'alphaReg', 'alphaRegLog',
 ];
 const VAULT_PART_MAX_B64 = 400000;
 
@@ -385,6 +386,7 @@ const TAB_NEEDS = {
   faults: ['reports'],
   mission: ['reports'],
   mdefs: ['vault'],
+  alphaReg: ['vault'],
   inv: ['records', 'vault'],
   armon: ['vault', 'reports'],
   comms: ['vault'],

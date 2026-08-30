@@ -1424,7 +1424,7 @@ function msnItemCard(it) {
         it.qty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
       <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', 'חסר', 'no')}</div>
 
-      ${r.have === 'yes' ? `
+      ${r.have === 'yes' && !msnParts(it).length ? `
         <label class="field">
           <span class="field-label">מק״ט <span class="req" aria-hidden="true">*</span></span>
           <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
@@ -1447,14 +1447,14 @@ function msnItemCard(it) {
                          placeholder="0" aria-label="${esc(p.name)} — כמה יש">
                 </label>`;
             }).join('')}
-            <p class="field-hint mb0">ספרו בפועל. פחות מהנדרש נרשם כחוסר ומוצג למנהל הציוד.</p>
+            <p class="field-hint mb0">ספרו בפועל — כל סוג בנפרד. פחות מהנדרש נרשם כחוסר ומוצג למנהל הציוד. אחרי הספירה צלמו את הכל יחד בתמונה אחת.</p>
           </div>` : ''}
         ${shot
           ? `<div class="lic-shot">
                <img class="shot-img" src="${shot.preview}" alt="צילום ${esc(it.name)}">
                <button type="button" class="btn ghost small" data-act="msn-drop" data-item="${it.id}">צילום מחדש</button>
              </div>`
-          : `<label class="btn ghost wide">📷 צילום הפריט
+          : `<label class="btn ghost wide">📷 ${msnParts(it).length ? 'צילום כל הציוד יחד' : 'צילום הפריט'}
                <input class="vis-hidden" type="file" accept="image/*" capture="environment"
                       data-act="msn-file" data-item="${it.id}"></label>
              <p class="field-hint">חובה לצלם כאן ועכשיו — אין העלאה מהגלריה.</p>`}
@@ -3015,6 +3015,7 @@ const TABS = [
   { id: 'faults',  name: 'תקלות בינוי',  needs: ['reports'] },
   { id: 'mission', name: 'דוחות משמרת', needs: ['reports'] },
   { id: 'mdefs',   name: 'משימות',      needs: ['vault'] },
+  { id: 'alphaReg', name: 'ציוד אלפא',  needs: ['vault'] },
   { id: 'inv',     name: 'מלאי',         needs: ['records', 'vault'] },
   { id: 'armon',   name: 'ארמון',        needs: ['vault', 'reports'] },
   { id: 'comms',   name: 'דוח קשר',      needs: ['vault'] },
@@ -3075,6 +3076,7 @@ function renderConsole() {
     ['faults',  'תקלות בינוי',  openFaults() || null, openFaults() > 0],
     ['mission', 'דוחות משמרת', msnShort() || null, msnShort() > 0],
     ['mdefs',   'משימות',      null, false],
+    ['alphaReg', 'ציוד אלפא',  null, false],
     ['inv',     'מלאי',         null],
     // a deposit waiting for approval outranks the item count — it needs action
     ['armon',   'ארמון',        openDeposits() || armonCount() || null, openDeposits() > 0],
@@ -3115,6 +3117,7 @@ function renderConsole() {
   else if (S.tab === 'inv') body = renderInvTab();
   else if (S.tab === 'armon') body = renderArmonTab();
   else if (S.tab === 'comms') body = renderCommsTab();
+  else if (S.tab === 'alphaReg') body = renderAlphaRegTab();
   else if (S.tab === 'tzelem') body = renderTzelemTab();
   else if (S.tab === 'ammo') body = renderAmmoTab();
   else if (S.tab === 'veh') body = renderVehTab();
@@ -5523,6 +5526,9 @@ const REPORTS = {
   armonLog: regLogReport(REGISTERS.armon, 'יומן פעולות ארמון', 'tzayad-armon-log'),
   armonLoans: regLoanReport(REGISTERS.armon, 'השאלות פתוחות — ארמון', 'tzayad-armon-loans'),
   comms: regReport(REGISTERS.comms, 'ציוד קשר', 'tzayad-comms'),
+  alphaReg: regReport(REGISTERS.alpha, 'ציוד אלפא', 'tzayad-alpha'),
+  alphaRegLog: regLogReport(REGISTERS.alpha, 'יומן ציוד אלפא', 'tzayad-alpha-log'),
+  alphaRegLoans: regLoanReport(REGISTERS.alpha, 'השאלות פתוחות — אלפא', 'tzayad-alpha-loans'),
   commsLog: regLogReport(REGISTERS.comms, 'יומן פעולות קשר', 'tzayad-comms-log'),
   commsLoans: regLoanReport(REGISTERS.comms, 'השאלות פתוחות — קשר', 'tzayad-comms-loans'),
 
@@ -5967,7 +5973,8 @@ function ledgerPanel(approved) {
 const emptyInv = () => ({
   open: {}, extra: [], notes: '',
   armon: [], armonLog: [], comms: [], commsLog: [],
-  ammo: [], ammoLog: [], vehicles: [], fuel: [], missions: [], alphaKinds: [], countedAt: {},
+  ammo: [], ammoLog: [], vehicles: [], fuel: [], missions: [], alphaKinds: [],
+  alphaReg: [], alphaRegLog: [], countedAt: {},
 });
 
 // The two counting registers are the same thing with different names, so they
@@ -6636,6 +6643,7 @@ function regVisible(reg, where) {
 
 const renderArmonTab = () => renderRegisterTab(REGISTERS.armon);
 const renderCommsTab = () => renderRegisterTab(REGISTERS.comms);
+const renderAlphaRegTab = () => renderRegisterTab(REGISTERS.alpha);
 
 /* ── Loans ─────────────────────────────────────────────────────────────
    An item that is at the workshop, written off or lost is also "not here",
@@ -10797,6 +10805,8 @@ const VAULT_PARTS = [
   ['armonLog', ['armonLog']],
   ['comms', ['comms']],
   ['commsLog', ['commsLog']],
+  ['alphaReg', ['alphaReg']],
+  ['alphaRegLog', ['alphaRegLog']],
   ['ammo', ['ammo']],
   ['ammoLog', ['ammoLog']],
   ['vehicles', ['vehicles']],

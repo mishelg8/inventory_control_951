@@ -103,20 +103,18 @@ function cleanRecord(raw) {
   };
 }
 
-// Shortage reports and armoury deposits share the /reports pipe — the server
-// stores an opaque blob either way, so telling them apart is a client concern.
-/* A mission the office defined: a name, and the kit it requires with counts.
-   Both halves are whitelisted — the item ids against the catalogue, the counts
-   against a ceiling — because this is published to an endpoint with no login
-   in front of it and read by a form that makes every row of it mandatory. A
-   duplicate item is dropped rather than merged: two rows for the same thing
-   would ask the commander to photograph it twice. */
 /* A kind of grenade the unit carries. Named by the office once, so a mission
    picks counts against a list rather than retyping the names each time. */
 function cleanAlphaKind(x) {
   return { id: asText(x && x.id, 40) || rndId(), name: asText(x && x.name, 40) };
 }
 
+/* A mission the office defined: a name, and the kit it requires with counts.
+   Both halves are whitelisted — the item ids against the catalogue, the counts
+   against a ceiling — because this is published to an endpoint with no login
+   in front of it and read by a form that makes every row of it mandatory. A
+   duplicate item is dropped rather than merged: two rows for the same thing
+   would ask the commander to photograph it twice. */
 function cleanMission(x) {
   const seen = new Set();
   const items = [];
@@ -144,6 +142,8 @@ function cleanMission(x) {
   };
 }
 
+// Shortage reports and armoury deposits share the /reports pipe — the server
+// stores an opaque blob either way, so telling them apart is a client concern.
 function cleanReport(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('bad payload');
   return {
@@ -363,6 +363,8 @@ function cleanInv(raw) {
     armonLog: arr(src.armonLog, cleanArmLog, 5000),
     comms: arr(src.comms, cleanRegItem(REGISTERS.comms), 4000),
     commsLog: arr(src.commsLog, cleanArmLog, 5000),
+    alphaReg: arr(src.alphaReg, cleanRegItem(REGISTERS.alpha), 4000),
+    alphaRegLog: arr(src.alphaRegLog, cleanArmLog, 5000),
     ammo: arr(src.ammo, cleanAmmo, 1000),
     ammoLog: arr(src.ammoLog, cleanAmmoLog, 5000),
     vehicles: arr(src.vehicles, cleanVehicle, 500),
