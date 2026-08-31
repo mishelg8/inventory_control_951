@@ -82,7 +82,12 @@ const MISSION_ITEMS = [
      on a shift report for an item whose marking is a size and a batch, not a
      serial — so the field was either invented or left blocking the form. The
      photograph is the whole check here: you can see the plates or you cannot. */
-  { id: 'plates', name: 'פלטות קרמיות', noMk: true },
+  /* "פלטות קרמיות × 4" was read by commanders as an instruction — four of
+     something to enter, four photographs to take — when it is only the number
+     the mission asks for, and the card has nowhere to record it per unit
+     anyway. The requirement is still on the mission's own screen; here it was
+     only creating a question. */
+  { id: 'plates', name: 'פלטות קרמיות', noMk: true, hideQty: true },
   { id: 'lionet', name: 'ליונט' },
   /* A key is held or it is not, and there is nothing else true about it. No
      part number to read off it, nothing a photograph would prove, and no

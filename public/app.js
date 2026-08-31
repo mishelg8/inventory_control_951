@@ -368,6 +368,7 @@ const S = {
   regQ: {},                     // section key -> search query
   regKind: {},                  // register id -> item-type filter ('all' or a kind)
   statPick: {},                 // panel id -> the summary tile pressed, if any
+  msnBig: new Set(),            // shift-report photos opened to full size
   tab: 'over',
   /* The tracking screen opens on everybody. It used to open on 'ציוד בחוץ',
      which is the right question to ask about kit and the wrong one to ask of
@@ -1422,10 +1423,58 @@ const msnItemDone = (it) => {
   if (it.bare) return !!r.have;
   if (r.have === 'no') return r.why.trim().length >= 2;
   if (r.have === 'yes') {
-    return (!msnNeedsMk(it) || r.mk.trim().length >= 1)
-      && !!S.msnPhotos[it.id] && msnPartsDone(it);
+    /* The grenade counts are deliberately not required here.
+       Five were asked for and two were found: that is precisely the thing the
+       report exists to say, and refusing to send it until the numbers agree
+       means the only shift that cannot file is the one with a shortage. What
+       is counted still travels, the shortfall is still marked in red on the
+       way past, and the store still hears about it — the form simply stops
+       arguing with the man holding the two. */
+    return (!msnNeedsMk(it) || r.mk.trim().length >= 1) && !!S.msnPhotos[it.id];
   }
   return false;
+};
+
+/* Why the button is grey.
+
+   It used to say nothing at all: the send button sat disabled and the form
+   left the commander to find the empty field himself, on a screen of seven
+   cards each with four ways to be incomplete. On a phone, at five in the
+   morning, that is a form that does not get sent.
+
+   So the reasons are listed, by name, in the order the cards appear. This is
+   the same set of conditions `msnItemDone` checks — written once more in
+   Hebrew rather than derived from it, because a list that says "משקפת" when
+   the form wants a photograph of the אמר״ל is worse than no list. */
+function msnBlockers() {
+  const out = [];
+  if (!msnKmOk()) out.push('קילומטראז׳ — נא למלא את קריאת המונה');
+
+  const must = !!msnDef();
+  const rows = must ? msnScope() : msnAnswered();
+  if (!must && !rows.length) return ['לא סומן אף פריט — סמנו לפחות אחד'];
+
+  for (const it of rows) {
+    const r = msnRow(it.id);
+    if (!r.have) { out.push(`${it.name} — לא סומן ${msnNoWord(it.id) === 'אין' ? 'יש או אין' : 'יש או חסר'}`); continue; }
+    if (it.bare) continue;
+    if (r.have === 'no') {
+      if (r.why.trim().length < 2) out.push(`${it.name} — חסר הסבר מה קרה לו`);
+      continue;
+    }
+    const need = [];
+    if (msnNeedsMk(it) && !r.mk.trim()) need.push('מק״ט');
+    if (!S.msnPhotos[it.id]) need.push('צילום');
+    if (need.length) out.push(`${it.name} — חסר ${need.join(' ו')}`);
+  }
+  return out;
+}
+
+const msnBlockList = () => {
+  const b = msnBlockers();
+  if (!b.length) return '';
+  return `<p class="callout-title">כדי לשלוח צריך להשלים:</p>
+    <ul class="msn-todo-list">${b.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
 };
 
 const msnReady = () => {
@@ -1451,7 +1500,7 @@ function msnItemCard(it) {
     <div class="fcard msn-card${r.have === 'no' ? ' missing' : ''}${
       r.have ? '' : (must ? ' required' : ' unanswered')}">
       <h3 class="fsec msn-name">${esc(it.name)}${
-        it.qty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
+        it.qty && !it.hideQty ? ` <small class="msn-qty">× ${it.qty}</small>` : ''}</h3>
       <div class="msn-picks">${pick('yes', 'יש', 'yes')}${pick('no', msnNoWord(it.id), 'no')}</div>
 
       ${r.have === 'yes' && !it.bare ? `
@@ -1482,7 +1531,11 @@ function msnItemCard(it) {
           </div>` : ''}
         ${shot
           ? `<div class="lic-shot">
-               <img class="shot-img" src="${shot.preview}" alt="צילום ${esc(it.name)}">
+               <button type="button" class="lic-shot-btn" data-act="msn-big" data-item="${it.id}"
+                       title="${S.msnBig.has(it.id) ? 'להקטנה' : 'להגדלה'}">
+                 <img class="doc-img${S.msnBig.has(it.id) ? ' big' : ''}"
+                      src="${shot.preview}" alt="צילום ${esc(it.name)}">
+               </button>
                <button type="button" class="btn ghost small" data-act="msn-drop" data-item="${it.id}">צילום מחדש</button>
              </div>`
           : `<label class="btn ghost wide">📷 ${msnParts(it).length ? 'צילום כל הציוד יחד' : 'צילום הפריט'}
@@ -1718,6 +1771,7 @@ function renderMission() {
           : msnDef()
             ? 'זה הציוד שהוגדר למשימה הזו. יש לענות על כל הפריטים.'
             : 'סמנו רק את הפריטים שרלוונטיים למשמרת הזו. מה שלא נלקח — השאירו ריק.'}</p>
+        <div class="callout risk msn-todo" data-todo ${msnBlockers().length ? '' : 'hidden'}>${msnBlockList()}</div>
         <div class="formbar">
           <button class="btn primary" type="submit" ${msnReady() ? '' : 'disabled'}>שליחת הדוח</button>
           <a class="btn ghost backbtn" href="#">${ICO.back}חזרה לתפריט</a>
@@ -1734,6 +1788,11 @@ function msnSyncSend() {
   if (!form) return;
   const btn = form.querySelector('button[type=submit]');
   if (btn) btn.disabled = !msnReady();
+  const todo = form.querySelector('[data-todo]');
+  if (todo) {
+    todo.innerHTML = msnBlockList();
+    todo.hidden = !todo.innerHTML;
+  }
 }
 
 // Keeps what is typed across the re-render each tick of the checklist causes.
@@ -5754,12 +5813,17 @@ const REPORTS = {
           ]);
         }
       }
-      const short = rows.filter((x) => x[9] === 'חסר').length;
+      /* Counted from the reports rather than from the words in the sheet.
+         It used to filter on the string 'חסר', which quietly stopped being
+         true the day an item started answering 'אין' instead. */
+      const live = missionReports().filter((r) => !r.damaged);
+      const short = live.reduce((n, r) => n + msnMissingOf(r).length, 0);
+      const partial = live.reduce((n, r) => n + msnPartialOf(r).length, 0);
       return {
         head: ['דווח', 'מפקד', 'מ״א', 'טלפון', 'משימה', 'משמרת', 'רכב', 'ק״מ', 'פריט', 'מצב', 'מק״ט', 'סיבת החוסר'],
         rows,
-        summary: `${missionReports().filter((r) => !r.damaged).length} דוחות · ` +
-          `${rows.length} פריטים נבדקו · ${short} חסרים`,
+        summary: `${live.length} דוחות · ${rows.length} פריטים נבדקו · ` +
+          `${short} חסרים · ${partial} בכמות חלקית`,
       };
     },
   },
@@ -8874,11 +8938,29 @@ const missionReports = () => S.reports.filter(isMission);
    shift nobody needs to look at. */
 const msnItems = (r) => (r.data && Array.isArray(r.data.items) ? r.data.items : []);
 const msnMissingOf = (r) => msnItems(r).filter((i) => i.have === 'no');
+
+/* Present, and not enough of it.
+
+   Five grenades were asked for and two were counted. The item is there, so it
+   is not "חסר" — and until now that was the end of it: the screen printed the
+   shortfall in red on one line and "אף משמרת לא עלתה בחוסר" on the next.
+
+   Three short of a mission's grenades is a shortage whoever reads this page
+   has to do something about, so it is counted. It is counted separately from
+   an item that never turned up, because those are different problems and a
+   single number that merges them tells the store-keeper to go and look at
+   the wrong thing. */
+const msnPartialOf = (r) => msnItems(r).filter((i) => i.have === 'yes'
+  && Array.isArray(i.parts)
+  && i.parts.some((p) => Number(p.got) < Number(p.qty)));
+
+// Anything on this report that needs somebody's attention.
+const msnTroubleOf = (r) => msnMissingOf(r).length + msnPartialOf(r).length;
 // What the shift was actually supposed to carry — "לא נדרש" is not a holding
 // and not a shortage, so it is out of both counts.
 const msnAskedOf = (r) => msnItems(r).filter((i) => i.have !== 'na');
 const msnShort = () =>
-  missionReports().filter((r) => !r.damaged && msnMissingOf(r).length).length;
+  missionReports().filter((r) => !r.damaged && msnTroubleOf(r)).length;
 const depositReports = () => S.reports.filter(isDeposit);
 const faultReports = () => S.reports.filter(isFault);
 const refuelReports = () => S.reports.filter(isRefuel);
@@ -9317,8 +9399,8 @@ function renderMissionTab() {
 
   // Short shifts first, then most recent — the order somebody reads this in.
   const ordered = [...visible].sort((a, b) => {
-    const sa = a.damaged ? 0 : msnMissingOf(a).length;
-    const sb = b.damaged ? 0 : msnMissingOf(b).length;
+    const sa = a.damaged ? 0 : msnTroubleOf(a);
+    const sb = b.damaged ? 0 : msnTroubleOf(b);
     if (!!sa !== !!sb) return sb - sa;
     return Number((b.data && b.data.createdAt) || 0) - Number((a.data && a.data.createdAt) || 0);
   });
@@ -9330,6 +9412,7 @@ function renderMissionTab() {
     }
     const d = rec.data;
     const short = msnMissingOf(rec).length;
+    const partial = msnPartialOf(rec).length;
     const total = msnAskedOf(rec).length;
     const open = S.expanded.has(rec.id);
     return `
@@ -9343,17 +9426,18 @@ function renderMissionTab() {
         <td>${esc(d.missionName || d.shift || '—')}${
           d.missionName && d.shift ? `<span class="dim"> · ${esc(d.shift)}</span>` : ''}</td>
         <td class="num">${esc(fmtShort(d.createdAt))}</td>
-        <td>${short
-          ? `<span class="state wait">${short === 1
-              ? `חסר 1 מתוך ${total}`
-              : `חסרים ${short} מתוך ${total}`}</span>`
+        <td>${short || partial
+          ? `<span class="state wait">${[
+              short ? (short === 1 ? 'חסר 1' : `חסרים ${short}`) : '',
+              partial ? (partial === 1 ? 'חלקי 1' : `חלקיים ${partial}`) : '',
+            ].filter(Boolean).join(' · ')} מתוך ${total}</span>`
           : '<span class="state done">✓ הכול נמצא</span>'}</td>
         <td></td>
       </tr>
       ${open ? `<tr class="sub"><td colspan="6">${msnDetail(rec)}</td></tr>` : ''}`;
   }).join('');
 
-  const short = ordered.filter((r) => !r.damaged && msnMissingOf(r).length).length;
+  const short = ordered.filter((r) => !r.damaged && msnTroubleOf(r)).length;
 
   return `
     <section class="panel">
@@ -13719,6 +13803,15 @@ function dispatch(act, el) {
     // Pressing the tile that is already on turns it off, which is also what
     // "הצגת הכול" does — same action, so there is one way to undo a filter
     // and it is the control you just pressed.
+    // A photograph is proof, not decoration: it arrives small so the card
+    // stays readable, and opens when somebody actually wants to look at it.
+    case 'msn-big': {
+      const id = el.dataset.item;
+      if (S.msnBig.has(id)) S.msnBig.delete(id);
+      else S.msnBig.add(id);
+      renderMission();
+      break;
+    }
     case 'stat-pick': {
       const panel = el.dataset.panel;
       S.statPick[panel] = S.statPick[panel] === el.dataset.id ? '' : el.dataset.id;

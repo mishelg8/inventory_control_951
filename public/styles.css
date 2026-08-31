@@ -2325,6 +2325,20 @@ body:not(.is-console) .emblem { background: #FFFFFF; }
    photograph in a frame */
 .doc-img.sig-img { max-height: 190px; background: #fff; object-fit: contain; }
 
+/* Why the shift report cannot be sent yet, listed by name.
+
+   A disabled button is not an answer to "what did I miss" on a form of seven
+   cards. Red, because it is the thing standing between the commander and the
+   shift, and directly above the button it explains. */
+.msn-todo { margin-top: 11px; }
+.msn-todo-list {
+  margin: 5px 0 0;
+  padding-inline-start: 18px;
+  font-size: var(--t-sm);
+  line-height: 1.55;
+}
+.msn-todo-list li { margin-bottom: 2px; }
+
 /* ── Report text ───────────────────────────────────────────────────── */
 .rep-text {
   margin: 9px 0;
