@@ -16,8 +16,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { overdueSlots } = await import(
-  pathToFileURL(join(root, 'watcher/src/index.js')).href
+/* Imported from the shared module rather than through the Worker: the Worker
+   now re-exports it, and a test that goes the long way round would fail on
+   the Worker's own imports rather than on the arithmetic it is checking. */
+const { overdueSlots, slotCovered, slotEnd } = await import(
+  pathToFileURL(join(root, 'public/lib/schedule.js')).href
 );
 
 const MIN = 60 * 1000;
@@ -102,4 +105,40 @@ test('a time that is not a time is dropped, not guessed at', () => {
 
 test('a mission with no times is never watched', () => {
   assert.deepEqual(overdueSlots([], Date.now(), GRACE, WINDOW), []);
+});
+
+/* A shift ends when the next one begins.
+
+   This is the rule that was missing, and its absence was invisible: coverage
+   was "did anything arrive after the handover", and anything that arrives is
+   after every handover earlier in the day. One report at 22:40 marked 05:00,
+   11:00 and 17:00 as reported, so a day in which nobody filed anything until
+   the evening looked like a day in which everybody filed. */
+test('a report answers for its own handover and not for the ones before it', () => {
+  const times = ['05:00', '11:00', '17:00', '23:00'];
+  const at1700 = il('2026-08-31T14:00:00Z');          // 17:00 Israel
+  const at1100 = il('2026-08-31T08:00:00Z');          // 11:00 Israel
+  const evening = [il('2026-08-31T19:40:00Z')];       // a report at 22:40
+
+  assert.equal(slotCovered(times, at1100, evening, 60 * MIN), false,
+    'an evening report does not cover the morning handover');
+  assert.equal(slotCovered(times, at1700, evening, 60 * MIN), true,
+    'it does cover the 17:00 shift, which runs until 23:00');
+});
+
+test('a report filed shortly before its handover still counts', () => {
+  const times = ['05:00', '11:00'];
+  const at0500 = il('2026-08-31T02:00:00Z');
+  const early = [il('2026-08-31T01:52:00Z')];         // 04:52, eight minutes before
+  assert.equal(slotCovered(times, at0500, early, 60 * MIN), true);
+  // but not an hour and a half before, which belongs to the shift before it
+  const tooEarly = [il('2026-08-31T00:30:00Z')];      // 03:30
+  assert.equal(slotCovered(times, at0500, tooEarly, 60 * MIN), false);
+});
+
+test('a mission with one handover a day gets the whole day', () => {
+  const times = ['17:00'];
+  const at1700 = il('2026-08-31T14:00:00Z');
+  assert.equal(slotEnd(times, at1700) - at1700, 24 * 60 * MIN,
+    'the next handover is tomorrow, so the shift is a day long');
 });

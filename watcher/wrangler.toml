@@ -22,9 +22,18 @@ database_id = "2da039e5-6258-485a-b1bc-0353006db54e"
 
 [vars]
 META_GRAPH_API_VERSION = "v26.0"
+# Set this to a UTILITY-category template once one is approved. Marketing
+# templates are rate-limited per recipient and silently dropped over the cap,
+# which is what swallowed a full day of alerts.
+WA_TPL_ALERT = "tzayad_update"
 WA_TPL_UPDATE = "tzayad_update"
 WA_TPL_LANG = "he"
 WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
+
+# The sentence that goes out. {mission} and {time} are filled in.
+# Editable from the Cloudflare dashboard without a deploy, which is the point
+# — the wording is the thing somebody wants to change in the evening.
+ALERT_TEXT = "לא התקבל דוח משמרת מ{mission} למשמרת של {time}"
 
 # How late a report may be before anybody is woken up, how far back a restart
 # looks, and how early a report still counts for the handover it precedes.

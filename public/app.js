@@ -18,6 +18,7 @@ import {
   asText, asCount, asTime, cleanRecord, cleanReport, cleanRegItem, cleanArmLog,
   cleanAmmo, cleanAmmoLog, cleanVehicle, cleanFuel, cleanInv,
 } from './lib/clean.js';
+import { overdueSlots, hhmm, slotCovered } from './lib/schedule.js';
 
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
@@ -369,6 +370,7 @@ const S = {
   regKind: {},                  // register id -> item-type filter ('all' or a kind)
   statPick: {},                 // panel id -> the summary tile pressed, if any
   msnBig: new Set(),            // shift-report photos opened to full size
+  msnSeen: new Set(),           // silent handovers the admin has acknowledged
   tab: 'over',
   /* The tracking screen opens on everybody. It used to open on 'ציוד בחוץ',
      which is the right question to ask about kit and the wrong one to ask of
@@ -3268,7 +3270,7 @@ function renderConsole() {
       </aside>
       <div class="cmain">${body}</div>
     </div>
-    ${creditDialog()}${gearDialog()}${gearDelDialog()}${deleteDialog()}${repDeleteDialog()}`);
+    ${creditDialog()}${gearDialog()}${gearDelDialog()}${deleteDialog()}${repDeleteDialog()}${msnOverdueDialog()}`);
   if (S.role === 'viewer') stripWriteControls();
   autoDocs();
 }
@@ -8956,6 +8958,38 @@ const msnPartialOf = (r) => msnItems(r).filter((i) => i.have === 'yes'
 
 // Anything on this report that needs somebody's attention.
 const msnTroubleOf = (r) => msnMissingOf(r).length + msnPartialOf(r).length;
+
+/* Handovers that came and went with nobody filing anything.
+
+   The console is the right place to ask this, and it took a detour through a
+   Worker and WhatsApp to notice. The Worker cannot read a report — it works
+   from a beat, which says only "this mission filed something" — while this
+   screen has already decrypted every report in front of it and knows exactly
+   which mission filed what, and when. So here the question is answered from
+   the reports themselves, and nothing has to be inferred.
+
+   A report filed shortly before the handover counts for it: the commander who
+   signed off at 04:52 for the 05:00 did the thing being checked. */
+const MSN_WATCH_HOURS = 12;
+const MSN_EARLY_MIN = 60;
+
+function msnOverdue(now = Date.now()) {
+  const out = [];
+  const reps = missionReports().filter((r) => !r.damaged && r.data);
+  for (const m of (S.inv && S.inv.missions) || []) {
+    if (!m.times || !m.times.length) continue;
+    const slots = overdueSlots(m.times, now, MSN_GRACE_MIN * 60000, MSN_WATCH_HOURS * 3600000);
+    const filedAt = reps.filter((r) => r.data.missionId === m.id).map((r) => r.data.createdAt);
+    for (const slot of slots) {
+      if (!slotCovered(m.times, slot, filedAt, MSN_EARLY_MIN * 60000)) {
+        out.push({ id: m.id, name: m.name, slot });
+      }
+    }
+  }
+  // Most recent first: the handover that just passed is the one somebody can
+  // still do something about.
+  return out.sort((a, b) => b.slot - a.slot);
+}
 // What the shift was actually supposed to carry — "לא נדרש" is not a holding
 // and not a shortage, so it is out of both counts.
 const msnAskedOf = (r) => msnItems(r).filter((i) => i.have !== 'na');
@@ -12914,6 +12948,48 @@ function creditDialog() {
    So this one leaves the row. It says whose record it is, what is on it, and
    the one fact that turns a frightening question into an answerable one —
    that the record goes to the bin and comes back from it for thirty days. */
+/* A handover nobody reported, put in front of the person who can chase it.
+
+   This started life as a WhatsApp message from a Worker, which needed a
+   database table, a cron, a Meta template and an approval — and then failed
+   silently on a marketing rate limit. The console needs none of that: it has
+   the reports open in front of it, so it can simply say so.
+
+   It is the app's own modal, not the browser's: `alert()` cannot be styled,
+   cannot be read in Hebrew properly, and blocks the page.
+
+   Acknowledged handovers are remembered for the session only. A missed 05:00
+   is still missed after a refresh, and the office should be reminded of it —
+   what it should not do is reappear every time the screen redraws. */
+function msnOverdueDialog() {
+  const late = msnOverdue().filter((x) => !S.msnSeen.has(`${x.id}:${x.slot}`));
+  if (!late.length) return '';
+  const one = late.length === 1;
+
+  return `
+    <div class="modal-back" data-act="modal-close">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="msnq" data-act="modal-keep">
+        <h2 class="modal-title" id="msnq">${one
+          ? 'לא התקבל דוח משמרת'
+          : `לא התקבלו ${late.length} דוחות משמרת`}</h2>
+        <p class="modal-sub">${one ? 'החילופים הבאים עברו' : 'החילופים הבאים עברו'} ללא דיווח,
+          יותר מ-${MSN_GRACE_MIN} דקות אחרי השעה שנקבעה למשימה.</p>
+
+        <ul class="modal-list">${late.map((x) => `
+          <li class="kit-row">
+            <span class="kit-name">${esc(x.name)}</span>
+            <span class="kit-count num">${esc(hhmm(x.slot))}</span>
+            <span class="reg-where">${esc(fmtShort(x.slot))}</span>
+          </li>`).join('')}</ul>
+
+        <div class="modal-acts">
+          <button class="btn primary" data-act="msn-pop-go">לדוחות המשמרת</button>
+          <button class="btn ghost" data-act="msn-pop-close">סגירה</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function deleteDialog() {
   if (!S.delAsk) return '';
   const rec = findRec(S.delAsk);
@@ -13341,7 +13417,19 @@ $app.addEventListener('click', (e) => {
 
 /* Both dialogs are questions, and closing one without answering is always the
    safe outcome — nothing is written until the confirm button is pressed. */
+const msnPopAck = () => {
+  for (const x of msnOverdue()) S.msnSeen.add(`${x.id}:${x.slot}`);
+};
+
 function closeModals() {
+  /* The overdue notice closes on a click outside like the rest, and closing
+     it is an acknowledgement — otherwise the next render puts it straight
+     back and the console is unusable until every handover is chased. */
+  if (msnOverdue().some((x) => !S.msnSeen.has(`${x.id}:${x.slot}`))) {
+    msnPopAck();
+    renderConsole();
+    return true;
+  }
   if (!S.creditAsk && !S.gearAdd && !S.gearDel && !S.delAsk && !S.repDelAsk) return false;
   S.creditAsk = '';
   S.delAsk = '';
@@ -13831,6 +13919,13 @@ function dispatch(act, el) {
     case 'repdel-cancel': S.repDelAsk = ''; renderConsole(); break;
     case 'repdel-ok': S.repDelAsk = ''; repDelete(el.dataset.id); break;
     case 'modal-close': closeModals(); break;
+    case 'msn-pop-close': msnPopAck(); renderConsole(); break;
+    case 'msn-pop-go':
+      msnPopAck();
+      S.tab = 'mission';
+      S.page = {};
+      renderConsole();
+      break;
     case 'gear-add': S.gearAdd = rid; S.gearDraft = {}; renderConsole(); break;
     case 'gear-del': S.gearDel = rid; S.gearDelDraft = {}; renderConsole(); break;
     case 'gear-del-cancel': S.gearDel = ''; S.gearDelDraft = {}; renderConsole(); break;

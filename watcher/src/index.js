@@ -16,79 +16,9 @@
  * handover from a reported one.
  */
 
-const TZ = 'Asia/Jerusalem';
-
-const FMT = new Intl.DateTimeFormat('en-US', {
-  timeZone: TZ, hour12: false,
-  year: 'numeric', month: '2-digit', day: '2-digit',
-  hour: '2-digit', minute: '2-digit', second: '2-digit',
-});
+import { overdueSlots, hhmm, slotEnd } from '../../public/lib/schedule.js';
 
 const MIN = 60 * 1000;
-const DAY = 24 * 60 * MIN;
-
-/* Israel's clock at a given instant.
-   The alternative was to write the handovers into the cron expression as UTC
-   hours, which is correct for seven months of the year and an hour wrong for
-   the other five — silently, and in the direction nobody checks. */
-function wall(ms) {
-  const p = {};
-  for (const { type, value } of FMT.formatToParts(new Date(ms))) p[type] = value;
-  // Some engines render midnight as hour 24 under hour12:false.
-  return {
-    y: +p.year, mo: +p.month, d: +p.day,
-    h: +p.hour % 24, mi: +p.minute, s: +p.second,
-  };
-}
-
-// How far Israel's wall clock is from UTC at that instant.
-function offsetAt(ms) {
-  const w = wall(ms);
-  return Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi, w.s) - Math.floor(ms / 1000) * 1000;
-}
-
-/* The instant at which Israel's clock reads this date and time.
-   Two passes, because the offset depends on the instant and the instant
-   depends on the offset. One correction settles every case except a time
-   inside the hour a spring-forward skips — which is 02:00 to 03:00, and not
-   an hour anybody schedules a handover in. */
-function instantOf(y, mo, d, h, mi) {
-  const naive = Date.UTC(y, mo - 1, d, h, mi, 0);
-  const once = naive - offsetAt(naive);
-  return naive - offsetAt(once);
-}
-
-/* Which handovers are now overdue.
-
-   A handover is due at its time and overdue `grace` later. Anything older
-   than `window` is left alone: a watcher that was down for a day should
-   report this morning's silence, not last week's, and a burst of stale alarms
-   is how somebody decides to mute the number. */
-export function overdueSlots(times, now, grace, window) {
-  const out = new Set();
-  for (const t of times) {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '').trim());
-    if (!m) continue;
-    const h = +m[1];
-    const mi = +m[2];
-    if (h > 23 || mi > 59) continue;
-    // Today and yesterday, because at 00:30 the 23:00 handover is yesterday's
-    // and is exactly the one worth shouting about.
-    for (const back of [0, 1]) {
-      const w = wall(now - back * DAY);
-      const slot = instantOf(w.y, w.mo, w.d, h, mi);
-      const age = now - slot;
-      if (age >= grace && age < window) out.add(slot);
-    }
-  }
-  return [...out].sort((a, b) => a - b);
-}
-
-// The handover as a person would say it.
-const hhmm = (ms) => {
-  const w = wall(ms);
-  return `${String(w.h).padStart(2, '0')}:${String(w.mi).padStart(2, '0')}`;
-};
 
 /* The times a mission is watched at, out of the row the console published.
    Both shapes are read: a bare array is a row written before missions carried
@@ -111,6 +41,23 @@ const recipients = (env) =>
     .map((n) => n.replace(/\D/g, ''))
     .filter((n) => n.length >= 9 && n.length <= 15);
 
+/* The sentence itself, as a setting rather than a string in the source.
+
+   The wording is the part somebody wants to change at ten at night without
+   waiting for a deploy, so it is a variable with two placeholders in it. A
+   template parameter may not contain a newline, so whatever is put here has
+   to stay one line — anything longer is trimmed rather than sent and refused
+   by Meta with an error nobody will be reading at that hour. */
+const ALERT_DEFAULT = 'לא התקבל דוח משמרת מ{mission} למשמרת של {time}';
+
+const alertText = (env, mission, at) =>
+  String(env.ALERT_TEXT || ALERT_DEFAULT)
+    .replace(/\{mission\}/g, mission)
+    .replace(/\{time\}/g, at)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 900);
+
 /* One template message. Business-initiated messages must be templates, and
    tzayad_update is already approved: "שלום {{1}}, {{2}}". Newlines are not
    allowed inside a parameter, so the sentence stays one line. */
@@ -122,13 +69,24 @@ async function send(env, to, mission, at) {
     to,
     type: 'template',
     template: {
-      name: env.WA_TPL_UPDATE || 'tzayad_update',
+      /* The alert's own template, separate from the app's.
+
+         tzayad_update is categorised MARKETING, and WhatsApp caps how many
+         marketing templates one person may receive in a day — over the cap
+         the API still returns a message id and the message is never
+         delivered. A whole day of alerts read as sent and no phone rang.
+
+         A shift that did not report is operational, not promotional, so the
+         alert belongs in a UTILITY template, which carries no such cap. This
+         is a variable rather than a constant so switching to it is a setting,
+         not a deploy. */
+      name: env.WA_TPL_ALERT || env.WA_TPL_UPDATE || 'tzayad_update',
       language: { code: env.WA_TPL_LANG || 'he' },
       components: [{
         type: 'body',
         parameters: [
           { type: 'text', text: 'מפקד' },
-          { type: 'text', text: `לא התקבל דוח משמרת מ${mission} לחילופים של ${at}` },
+          { type: 'text', text: alertText(env, mission, at) },
         ],
       }],
     },
@@ -148,7 +106,25 @@ async function send(env, to, mission, at) {
     // Never the token, never the recipient in full — this goes to a log.
     throw new Error(`graph ${res.status}: ${text.slice(0, 300)}`);
   }
+
+  /* What "sent" actually meant, written down.
+
+     It meant "Meta returned 200", and nothing else — the API accepts a message
+     for a number that does not exist, is not on WhatsApp, or has blocked the
+     sender, and only says otherwise in a delivery callback that arrives later
+     and that nothing here was listening for. So a whole day of alerts could
+     read as sent, in a table, while no phone rang.
+
+     The id and the last four digits are enough to take to the Meta dashboard
+     and ask what became of a specific message. The rest of the number is not
+     logged: it identifies a person, and this line goes somewhere I do not
+     control the retention of. */
+  const id = await res.json().then((j) => (j.messages && j.messages[0] && j.messages[0].id) || '?')
+    .catch(() => '?');
+  console.log(`watch.send.ok to=••${String(to).slice(-4)} wamid=${id}`);
 }
+
+export { overdueSlots };
 
 export async function runWatch(env, now = Date.now()) {
   const db = env.DB;
@@ -175,16 +151,19 @@ export async function runWatch(env, now = Date.now()) {
     .catch(() => ({ results: [] }));
 
   for (const m of results || []) {
-    const slots = overdueSlots(timesOf(m.data), now, grace, window);
+    const times = timesOf(m.data);
+    const slots = overdueSlots(times, now, grace, window);
     for (const slot of slots) {
       const already = await db
         .prepare('SELECT slot FROM shift_alerts WHERE mission_id = ?1 AND slot = ?2')
         .bind(m.id, slot).first();
       if (already) continue;
 
+      /* Bounded at both ends. `<= now` let a beat from this evening answer for
+         a handover at dawn, so one report a day silenced every alert. */
       const beat = await db
-        .prepare('SELECT at FROM shift_beats WHERE mission_id = ?1 AND at >= ?2 AND at <= ?3 LIMIT 1')
-        .bind(m.id, slot - early, now).first();
+        .prepare('SELECT at FROM shift_beats WHERE mission_id = ?1 AND at >= ?2 AND at < ?3 LIMIT 1')
+        .bind(m.id, slot - early, slotEnd(times, slot)).first();
       if (beat) continue;
 
       /* Claimed before it is sent, not after. Two overlapping runs would
