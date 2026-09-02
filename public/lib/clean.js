@@ -197,7 +197,20 @@ function cleanReport(raw) {
             got: asCount(p && p.got, 999),
           })).filter((p) => p.id)
           : [],
-        shot: asCount(it && it.shot, MISSION_ITEMS.length - 1),
+        /* Which photo slot this item's picture went into — and nothing at all
+           when there is no picture.
+
+           `asCount` turns a missing value into 0, and 0 is a real slot: the
+           first item on the checklist. So every item nobody photographed came
+           out of here claiming the first item's photograph, and the console
+           duly showed it. מפתח שערים, which cannot be photographed, was
+           displaying the משקפת's picture.
+
+           An absent slot has to stay absent, so it is only carried when it is
+           actually a number. */
+        ...(Number.isFinite(it && it.shot)
+          ? { shot: asCount(it.shot, MISSION_ITEMS.length - 1) }
+          : {}),
       })).filter((it) => it.id)
       : [],
     // mission-only: which shift or task this was filed for. Free text.

@@ -77,7 +77,12 @@ const MISSION_ITEMS = [
   { id: 'binocs', name: 'משקפת' },
   { id: 'amral',  name: 'אמר״ל' },
   { id: 'comms',  name: 'ציוד קשר' },
-  { id: 'alpha',  name: 'ציוד אלפא' },
+  /* What the photograph is actually of. The card asks for one picture of the
+     whole holding, and commanders were photographing the alpha kit itself —
+     which is not what the check is for. Said in red, above the camera, where
+     it is read before the picture is taken rather than after. */
+  { id: 'alpha',  name: 'ציוד אלפא',
+    shotNote: 'יש לצלם רק את המטלון ואת הרינגו — אין צורך באלפא' },
   /* Ceramic plates carry no number worth copying. A מק״ט was being demanded
      on a shift report for an item whose marking is a size and a batch, not a
      serial — so the field was either invented or left blocking the form. The

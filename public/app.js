@@ -159,8 +159,13 @@ const FAULT_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
 
 /* One key per item on the shift checklist, in the checklist's own order, so
    slot i always belongs to MISSION_ITEMS[i]. Kept in step with
-   MISSION_DOC_KINDS in functions/api/[[path]].js. */
-const MISSION_KINDS = ['msn1', 'msn2', 'msn3', 'msn4', 'msn5', 'msn6'];
+   MISSION_DOC_KINDS in functions/api/[[path]].js.
+
+   Derived from the checklist rather than typed out beside it. It was a literal
+   list of six, and the seventh item was added to the catalogue without it —
+   so the last item on the checklist had no slot to put a photograph in, and
+   nothing said so. */
+const MISSION_KINDS = MISSION_ITEMS.map((_, i) => `msn${i + 1}`);
 const FAULT_PHOTO_MAX = FAULT_KINDS.length;
 
 // The gallery button keeps `accept="image/*"`, and three attempts to improve on
@@ -1540,7 +1545,8 @@ function msnItemCard(it) {
                </button>
                <button type="button" class="btn ghost small" data-act="msn-drop" data-item="${it.id}">צילום מחדש</button>
              </div>`
-          : `<label class="btn ghost wide">📷 ${msnParts(it).length ? 'צילום כל הציוד יחד' : 'צילום הפריט'}
+          : `${it.shotNote ? `<p class="msn-shotnote">${esc(it.shotNote)}</p>` : ''}
+             <label class="btn ghost wide">📷 ${msnParts(it).length ? 'צילום כל הציוד יחד' : 'צילום הפריט'}
                <input class="vis-hidden" type="file" accept="image/*" capture="environment"
                       data-act="msn-file" data-item="${it.id}"></label>
              <p class="field-hint">חובה לצלם כאן ועכשיו — אין העלאה מהגלריה.</p>`}
@@ -1879,8 +1885,30 @@ async function missionSubmit(form) {
        when one was picked. It is the one thing a watcher outside the browser
        can act on: the server cannot open the report, so without this it
        cannot tell a mission that reported from one that went silent. */
+    /* The beat, and what the supervisor is told about it.
+
+       Deliberately narrow: the mission, who filed it, and how many items came
+       up short or partial. Not the part numbers, not the reasons, not the
+       photographs — those stay sealed. The recipient is configured on the
+       server and is never named here, so this cannot be turned into a way to
+       message somebody of the sender's choosing. */
+    const isPartial = (x) => x.have === 'yes'
+      && (x.parts || []).some((pt) => Number(pt.got) < Number(pt.qty));
+    const shortN = items.filter((x) => x.have === 'no').length;
+    const partialN = items.filter(isPartial).length;
+    /* The checklist's verdicts, as ids and one letter each: y held, p held but
+       short of the count, n absent. The names live in the catalogue that both
+       ends already read, so storing them here would be a second copy able to
+       drift from the first. */
+    const beatItems = items
+      .map((x) => `${x.id}:${x.have === 'no' ? 'n' : isPartial(x) ? 'p' : 'y'}`)
+      .join(',');
     await api('/reports', {
-      body: { id, ticket: await getTicket(), ...sealed, ...(def ? { beat: def.id } : {}) },
+      body: {
+        id, ticket: await getTicket(), ...sealed,
+        ...(def ? { beat: def.id, beatName: def.label, beatWho: name,
+                    beatShort: shortN, beatPartial: partialN, beatItems } : {}),
+      },
     });
 
     // Separately, like every other photograph here, so listing shift reports
@@ -9186,8 +9214,20 @@ function msnDetail(rec) {
           <td colspan="2">${esc(item.why || '—')}</td>
         </tr>`;
     }
-    const kind = MISSION_KINDS[typeof item.shot === 'number' ? item.shot : i];
-    const shot = S.docs[`${rec.id}:${kind}`];
+    /* The slot the photograph actually went into, or none.
+
+       This used to fall back to the row's position in the list when an item
+       carried no slot number — and the row's position is not the slot: the
+       list here is only the items that were answered, while a slot is an index
+       into the whole checklist. So an item photographed by nobody borrowed
+       whichever picture happened to sit at its position, and מפתח שערים, which
+       is never photographed at all, was shown the משקפת's.
+
+       An item without a slot number has no photograph. That is the whole of
+       it: `shot` is written whenever one is attached, so its absence is an
+       answer rather than something to guess around. */
+    const kind = typeof item.shot === 'number' ? MISSION_KINDS[item.shot] : '';
+    const shot = kind ? S.docs[`${rec.id}:${kind}`] : null;
     /* Grenades counted against what the mission asked for. A shortfall is the
        reason this line exists, so it is the thing the eye lands on. */
     const parts = Array.isArray(item.parts) ? item.parts : [];
@@ -9201,11 +9241,14 @@ function msnDetail(rec) {
         <td>${esc(name)}</td>
         <td><span class="state done">יש</span></td>
         <td class="num">${esc(item.mk || '—')}${partsCell ? `<br>${partsCell}` : ''}</td>
-        <td>
-          <button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
-            shot ? 'הסתרה' : '📷 צילום'}</button>
-          ${shot ? `<img class="shot-img msn-shot" src="${shot}" alt="צילום ${esc(name)}">` : ''}
-        </td>
+        <td>${kind
+          ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
+              shot ? 'הסתרה' : '📷 צילום'}</button>
+             ${shot ? `<img class="shot-img msn-shot" src="${shot}" alt="צילום ${esc(name)}">` : ''}`
+          // Nothing was photographed and nothing can be: a key is held or it is
+          // not. Offering the button anyway is offering a press that does
+          // nothing, which reads as a photograph that failed to load.
+          : '<span class="dim">—</span>'}</td>
       </tr>`;
   }).join('');
 

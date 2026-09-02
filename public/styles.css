@@ -2325,6 +2325,17 @@ body:not(.is-console) .emblem { background: #FFFFFF; }
    photograph in a frame */
 .doc-img.sig-img { max-height: 190px; background: #fff; object-fit: contain; }
 
+/* An instruction about the photograph, above the button that takes it.
+   Red because it corrects what people are already doing wrong, and a hint in
+   grey underneath the button is read after the picture has been taken. */
+.msn-shotnote {
+  margin: 0 0 7px;
+  color: var(--bad-ink);
+  font-weight: 700;
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+
 /* Why the shift report cannot be sent yet, listed by name.
 
    A disabled button is not an answer to "what did I miss" on a form of seven

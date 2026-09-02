@@ -25,7 +25,18 @@ META_GRAPH_API_VERSION = "v26.0"
 # Set this to a UTILITY-category template once one is approved. Marketing
 # templates are rate-limited per recipient and silently dropped over the cap,
 # which is what swallowed a full day of alerts.
-WA_TPL_ALERT = "tzayad_update"
+WA_TPL_ALERT = "tzayad_shift"
+# The name before the sentence, and empty on purpose.
+#
+# tzayad_update's body is "שלום {{1}}, {{2}}", so it prints a greeting whatever
+# goes here. tzayad_shift takes the sentence alone and greets nobody, which is
+# what was asked for — and being UTILITY rather than MARKETING it is also not
+# subject to the per-recipient cap that silently swallowed the first attempt.
+#
+# Empty selects the one-parameter shape. Meta refuses a message whose parameter
+# count does not match the template exactly, so this and WA_TPL_ALERT have to
+# change together.
+WA_TPL_LEAD = ""
 WA_TPL_UPDATE = "tzayad_update"
 WA_TPL_LANG = "he"
 WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"

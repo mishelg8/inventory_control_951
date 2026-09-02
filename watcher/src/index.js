@@ -17,6 +17,9 @@
  */
 
 import { overdueSlots, hhmm, slotEnd } from '../../public/lib/schedule.js';
+// The names the ids stand for. Read from the app's own catalogue rather than
+// copied, so an item renamed there is renamed here too.
+import { MISSION_ITEMS } from '../../public/lib/catalog.js';
 
 const MIN = 60 * 1000;
 
@@ -61,7 +64,7 @@ const alertText = (env, mission, at) =>
 /* One template message. Business-initiated messages must be templates, and
    tzayad_update is already approved: "שלום {{1}}, {{2}}". Newlines are not
    allowed inside a parameter, so the sentence stays one line. */
-async function send(env, to, mission, at) {
+async function send(env, to, text) {
   const url = `https://graph.facebook.com/${env.META_GRAPH_API_VERSION || 'v26.0'}` +
               `/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
   const body = {
@@ -82,11 +85,19 @@ async function send(env, to, mission, at) {
          not a deploy. */
       name: env.WA_TPL_ALERT || env.WA_TPL_UPDATE || 'tzayad_update',
       language: { code: env.WA_TPL_LANG || 'he' },
+      /* How many parameters the template declares, which is not ours to choose
+         — Meta refuses a message whose count does not match exactly.
+
+         tzayad_update reads "שלום {{1}}, {{2}}", so it needs a name before the
+         sentence and prints a greeting whether one is wanted or not. A
+         template whose whole body is {{1}} takes the sentence alone and
+         greets nobody. Setting WA_TPL_LEAD to an empty string selects that
+         shape; leaving it alone keeps working with the template in use today. */
       components: [{
         type: 'body',
         parameters: [
-          { type: 'text', text: 'מפקד' },
-          { type: 'text', text: alertText(env, mission, at) },
+          ...(env.WA_TPL_LEAD === '' ? [] : [{ type: 'text', text: env.WA_TPL_LEAD || 'מפקד' }]),
+          { type: 'text', text: String(text).replace(/\s+/g, ' ').trim().slice(0, 900) },
         ],
       }],
     },
@@ -125,6 +136,135 @@ async function send(env, to, mission, at) {
 }
 
 export { overdueSlots };
+
+/* What the supervisor is sent when reports come in.
+
+   One line each, joined with a separator rather than a newline: a template
+   parameter may not contain one, and Meta refuses the whole message if it
+   does. That constraint shapes the format — it is not a preference.
+
+   Exported so it can be read and tested without a database behind it. */
+/* The line's wording, as a setting rather than a string in the source — the
+   same reason the alert's is. Asterisks are WhatsApp's own bold markers and
+   survive a template parameter; newlines do not, which is why the lines are
+   joined with a separator further down. */
+const DIGEST_LINE = 'דוח משימה - *{mission}* · {time} · {who} · {state}';
+
+// id -> the name a person reads.
+const ITEM_NAME = Object.fromEntries(MISSION_ITEMS.map((m) => [m.id, m.name]));
+
+/* The checklist spelled out: what was there, and what was not.
+
+   "אחד חסר" is half an answer — the supervisor still has to open the console
+   to find out whether it was a pair of binoculars or the night sight. The
+   names cost a line and save the trip. */
+function itemBreak(items) {
+  const ok = [];
+  const bad = [];
+  for (const pair of String(items || '').split(',')) {
+    const [id, st] = pair.split(':');
+    const name = ITEM_NAME[id];
+    if (!name) continue;
+    if (st === 'y') ok.push(name);
+    else bad.push(st === 'p' ? `${name} (חלקי)` : name);
+  }
+  return { ok, bad };
+}
+
+export function digestText(rows, env = {}) {
+  const fmt = String(env.DIGEST_LINE || DIGEST_LINE);
+  const line = (r) => {
+    /* A tick or a cross, before the words.
+
+       The supervisor is reading this on a phone, at speed, looking for the
+       line that needs an answer. A mark carries that at a glance where "1
+       חסר · 2 חלקי" has to be read. A partial count gets the cross too: two
+       grenades where five were asked for is a shortage, not a detail. */
+    const state = r.short || r.partial
+      ? `❌ ${[r.short ? `${r.short} חסר` : '', r.partial ? `${r.partial} חלקי` : '']
+        .filter(Boolean).join(' · ')}`
+      : '✅ הכול תקין';
+    const { ok, bad } = itemBreak(r.items);
+    // The breakdown replaces the bare count when there is one to give: naming
+    // three present items and one missing says everything the count did.
+    const detail = (ok.length || bad.length)
+      ? [ok.length ? `✅ ${ok.join(', ')}` : '', bad.length ? `❌ ${bad.join(', ')}` : '']
+        .filter(Boolean).join(' · ')
+      : state;
+    return fmt
+      .replace(/\{mission\}/g, r.mission_name || 'משימה')
+      .replace(/\{time\}/g, hhmm(r.at))
+      .replace(/\{who\}/g, r.who || 'ללא שם')
+      .replace(/\{state\}/g, detail);
+  };
+  return rows.map(line).join(' | ');
+}
+
+/* One line per report that has come in since the last run.
+
+   Batched on purpose. One message per report means a shift with four missions
+   produces four notifications inside a minute, and WhatsApp's per-recipient
+   limits are precisely what swallowed the first version of this feature. One
+   message every quarter of an hour, listing what arrived, says the same thing
+   and survives the trip.
+
+   Nothing is claimed before the send: the rows are marked only once the
+   message has actually gone, so a failure leaves them to be picked up next
+   time rather than silently swallowing a shift's worth of reports. */
+export async function runDigest(env, now = Date.now()) {
+  const db = env.DB;
+  const to = String(env.SUPERVISOR_TO || '')
+    .split(/[\s,]+/).map((n) => n.replace(/\D/g, ''))
+    .filter((n) => n.length >= 9 && n.length <= 15);
+  if (!to.length) return { told: 0, why: 'no supervisor configured' };
+  if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+    return { told: 0, why: 'no token configured' };
+  }
+
+  const { results } = await db
+    .prepare('SELECT rowid AS rid, mission_name, who, short, partial, items, at '
+      + 'FROM shift_beats WHERE notified = 0 ORDER BY at LIMIT 20')
+    .all()
+    .catch(() => ({ results: [] }));
+  const rows = results || [];
+  if (!rows.length) return { told: 0 };
+
+  /* Spelled out, three reports no longer fit in one parameter, so the batch
+     is split at the limit rather than truncated. Truncating would drop the
+     last shift silently, which is the one failure this feature exists to
+     prevent. */
+  const batches = [];
+  let cur = [];
+  for (const r of rows) {
+    const next = [...cur, r];
+    if (cur.length && digestText(next, env).length > 850) { batches.push(cur); cur = [r]; }
+    else cur = next;
+  }
+  if (cur.length) batches.push(cur);
+
+
+  let told = 0;
+  for (const batch of batches) {
+    let delivered = 0;
+    for (const n of to) {
+      try {
+        await send(env, n, digestText(batch, env));
+        delivered += 1;
+      } catch (e) {
+        console.log(`digest.send.fail: ${e.message}`);
+      }
+    }
+    // Marked only once it has actually gone. A failure leaves the rows for the
+    // next run rather than swallowing a shift's worth of reports.
+    if (!delivered) break;
+    for (const r of batch) {
+      await db.prepare('UPDATE shift_beats SET notified = 1 WHERE rowid = ?1')
+        .bind(r.rid).run().catch(() => {});
+    }
+    told += batch.length;
+  }
+  return told ? { told } : { told: 0, why: 'send failed' };
+}
 
 export async function runWatch(env, now = Date.now()) {
   const db = env.DB;
@@ -179,7 +319,7 @@ export async function runWatch(env, now = Date.now()) {
       let delivered = 0;
       for (const n of to) {
         try {
-          await send(env, n, m.label, hhmm(slot));
+          await send(env, n, alertText(env, m.label, hhmm(slot)));
           delivered += 1;
           sent.push({ mission: m.label, slot: hhmm(slot) });
         } catch (e) {
@@ -201,7 +341,13 @@ export async function runWatch(env, now = Date.now()) {
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runWatch(env).catch((e) => console.log(`watch.fail: ${e.message}`)));
+    // Two independent jobs on one clock: what never arrived, and what did.
+    // Either may be switched off by leaving its recipient unset, and one
+    // failing must not stop the other.
+    ctx.waitUntil(Promise.allSettled([
+      runWatch(env).catch((e) => console.log(`watch.fail: ${e.message}`)),
+      runDigest(env).catch((e) => console.log(`digest.fail: ${e.message}`)),
+    ]));
   },
 
   /* A way to see what it would do, without waiting for a handover to pass.
@@ -213,7 +359,7 @@ export default {
         request.headers.get('x-watch-key') !== env.WATCH_KEY) {
       return new Response('not found', { status: 404 });
     }
-    const out = await runWatch(env);
+    const out = { watch: await runWatch(env), digest: await runDigest(env) };
     return Response.json(out);
   },
 };

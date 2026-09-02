@@ -421,7 +421,11 @@ const FAULT_DOC_KINDS = ['fault', 'fault2', 'fault3', 'fault4'];
    fixed by the checklist rather than by the reporter — six items, six keys,
    in the checklist's order. Kept in step with MISSION_ITEMS in
    public/lib/catalog.js. */
-const MISSION_DOC_KINDS = ['msn1', 'msn2', 'msn3', 'msn4', 'msn5', 'msn6'];
+// One per item on the shift checklist. The client derives its own list from
+// the checklist itself; this one is the gate, so it is written out — but it
+// must be extended whenever an item is added, or that item's photograph is
+// refused at the door with no explanation.
+const MISSION_DOC_KINDS = ['msn1', 'msn2', 'msn3', 'msn4', 'msn5', 'msn6', 'msn7', 'msn8'];
 
 // Which data source each kind of attachment belongs to, and therefore which
 // screen permission may read it. A photograph is not its own thing: it is part
@@ -776,9 +780,22 @@ export async function onRequest(context) {
             .prepare("SELECT id FROM pub_pick WHERE kind = 'mission' AND id = ?1")
             .bind(b.beat).first();
           if (known) {
+            /* Bounded here rather than trusted. This endpoint has no login in
+               front of it, so what may be stored is what may later be put in
+               a message — a name is 60 characters and the counts are counts. */
+            const txt = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+            const num = (v) => (Number.isFinite(v) && v >= 0 ? Math.min(99, Math.floor(v)) : 0);
             await db
-              .prepare('INSERT OR IGNORE INTO shift_beats (mission_id, at) VALUES (?1, ?2)')
-              .bind(b.beat, now).run();
+              .prepare('INSERT OR IGNORE INTO shift_beats '
+                + '(mission_id, at, mission_name, who, short, partial, items, notified) '
+                + 'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)')
+              .bind(b.beat, now, txt(b.beatName, 60), txt(b.beatWho, 60),
+                    num(b.beatShort), num(b.beatPartial),
+                    // ids and single letters only — anything else is discarded
+                    // rather than stored, because what is stored is what may
+                    // later be put into a message.
+                    (txt(b.beatItems, 300).match(/[a-zA-Z]+:[ynp]/g) || []).join(','))
+              .run();
           }
         } catch { /* the report stands either way */ }
       }
