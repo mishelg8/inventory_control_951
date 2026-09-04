@@ -60,8 +60,15 @@ export function normPhone(raw, label = '') {
   return full;
 }
 
-const numbers = (raw, label) =>
-  String(raw || '').split(/[\s,]+/).map((n) => normPhone(n, label)).filter(Boolean);
+/* The list, deduplicated.
+
+   A number typed twice — easily done in a list of seven, and more easily when
+   the same person is on two lines — is the same person twice, and would get
+   every alert twice. Normalising first means `0546733918` and `972546733918`
+   are recognised as one entry rather than two. */
+const numbers = (raw, label) => [...new Set(
+  String(raw || '').split(/[\s,]+/).map((n) => normPhone(n, label)).filter(Boolean)
+)];
 
 const recipients = (env) => numbers(env.ALERT_TO, 'ALERT_TO');
 
