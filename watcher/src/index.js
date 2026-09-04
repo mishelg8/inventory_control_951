@@ -72,15 +72,22 @@ const recipients = (env) => numbers(env.ALERT_TO, 'ALERT_TO');
    template parameter may not contain a newline, so whatever is put here has
    to stay one line — anything longer is trimmed rather than sent and refused
    by Meta with an error nobody will be reading at that hour. */
-const ALERT_DEFAULT = 'לא התקבל דוח משמרת מ{mission} למשמרת של {time}, {date}';
+/* Two lines, the same shape the digest uses, so the two kinds of message read
+   as one system rather than two. The cross is the first thing on the line for
+   the same reason the ticks are in the digest: it is what a supervisor
+   scanning a phone actually looks for. */
+const ALERT_DEFAULT = '❌ לא התקבל דוח משמרת\n*{mission}* · {date} · חילופים {time}';
 
 const alertText = (env, mission, at, day = '') =>
   String(env.ALERT_TEXT || ALERT_DEFAULT)
     .replace(/\{mission\}/g, mission)
     .replace(/\{date\}/g, day)
     .replace(/\{time\}/g, at)
-    .replace(/\s+/g, ' ')
-    .trim()
+    // Runs of spaces collapse; the line breaks are the layout and stay.
+    .replace(/[^\S\n]+/g, ' ')
+    .split('\n')
+    .map((l) => `${RLM}${l.trim()}`)
+    .join('\n')
     .slice(0, 900);
 
 /* The message as it was asked for: a line per item, ticks down the side.
@@ -434,7 +441,7 @@ export async function runWatch(env, now = Date.now()) {
       let delivered = 0;
       for (const n of to) {
         try {
-          await send(env, n, alertText(env, m.label, hhmm(slot), dmy(slot)));
+          await sendBest(env, n, alertText(env, m.label, hhmm(slot), dmy(slot)));
           delivered += 1;
           sent.push({ mission: m.label, slot: hhmm(slot) });
         } catch (e) {

@@ -44,7 +44,10 @@ WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
 # The sentence that goes out. {mission} and {time} are filled in.
 # Editable from the Cloudflare dashboard without a deploy, which is the point
 # — the wording is the thing somebody wants to change in the evening.
-ALERT_TEXT = "לא התקבל דוח משמרת מ{mission} למשמרת של {time}"
+# {mission}, {date} and {time} are filled in. Line breaks are kept when the
+# conversation window allows a free-form message and become separators when
+# only a template will go.
+ALERT_TEXT = "❌ לא התקבל דוח משמרת\n*{mission}* · {date} · חילופים {time}"
 
 # The last day this sends anything. From the 31st it goes quiet on its own —
 # both the digests and the missed-handover alerts. Clear it to run indefinitely.
