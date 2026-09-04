@@ -114,6 +114,12 @@ export function slotCovered(times, slot, stamps, earlyMs) {
   return (stamps || []).some((t) => t >= from && t < to);
 }
 
+// The date as a person here would write it: 4.9.26.
+export function dmy(ms) {
+  const w = wall(ms);
+  return `${w.d}.${w.mo}.${String(w.y).slice(-2)}`;
+}
+
 // The handover as a person would say it.
 export function hhmm(ms) {
   const w = wall(ms);

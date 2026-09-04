@@ -16,7 +16,7 @@
  * handover from a reported one.
  */
 
-import { overdueSlots, hhmm, slotEnd } from '../../public/lib/schedule.js';
+import { overdueSlots, hhmm, dmy, slotEnd } from '../../public/lib/schedule.js';
 // The names the ids stand for. Read from the app's own catalogue rather than
 // copied, so an item renamed there is renamed here too.
 import { MISSION_ITEMS } from '../../public/lib/catalog.js';
@@ -38,11 +38,32 @@ function timesOf(data) {
 
 /* Who gets told. Read from a secret rather than the repository, which is
    public — a phone number is personal data and does not go in a commit. */
-const recipients = (env) =>
-  String(env.ALERT_TO || '')
-    .split(/[\s,]+/)
-    .map((n) => n.replace(/\D/g, ''))
-    .filter((n) => n.length >= 9 && n.length <= 15);
+/* A number WhatsApp can actually route to.
+
+   `0526444573` is how the number is dialled in Israel and is not what Meta
+   wants. It passed the old length check, Meta accepted it, issued a real
+   message id — and delivered it nowhere. Two days went into finding that,
+   because every signal short of the phone itself said the message had been
+   sent.
+
+   So a leading zero is treated as the local form it is and given the country
+   code, and anything still not the length of a real international number is
+   dropped loudly rather than passed on quietly. */
+export function normPhone(raw, label = '') {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  const full = d.startsWith('0') ? `972${d.slice(1)}` : d;
+  if (full.length < 11 || full.length > 15) {
+    console.log(`phone.bad ${label}: ${full.length} digits after normalising — not sent`);
+    return '';
+  }
+  return full;
+}
+
+const numbers = (raw, label) =>
+  String(raw || '').split(/[\s,]+/).map((n) => normPhone(n, label)).filter(Boolean);
+
+const recipients = (env) => numbers(env.ALERT_TO, 'ALERT_TO');
 
 /* The sentence itself, as a setting rather than a string in the source.
 
@@ -51,15 +72,70 @@ const recipients = (env) =>
    template parameter may not contain a newline, so whatever is put here has
    to stay one line — anything longer is trimmed rather than sent and refused
    by Meta with an error nobody will be reading at that hour. */
-const ALERT_DEFAULT = 'לא התקבל דוח משמרת מ{mission} למשמרת של {time}';
+const ALERT_DEFAULT = 'לא התקבל דוח משמרת מ{mission} למשמרת של {time}, {date}';
 
-const alertText = (env, mission, at) =>
+const alertText = (env, mission, at, day = '') =>
   String(env.ALERT_TEXT || ALERT_DEFAULT)
     .replace(/\{mission\}/g, mission)
+    .replace(/\{date\}/g, day)
     .replace(/\{time\}/g, at)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 900);
+
+/* The message as it was asked for: a line per item, ticks down the side.
+
+   A template cannot carry it. Meta refuses any parameter containing a newline
+   — "(#132018) Param text cannot have new-line/tab characters" — and the
+   layout is newlines, so the layout cannot come from a parameter.
+
+   A free-form text message can carry it, and carries WhatsApp's own bold
+   markup too. The catch is the twenty-four hour window: free-form is only
+   allowed while a conversation is open, which means within a day of the
+   recipient last writing to the business number. Outside that window Meta
+   refuses it and only a template will go.
+
+   So this is tried first and the template is the fallback. When the
+   supervisor has written to the line recently — a word is enough — the
+   message arrives laid out. When they have not, it still arrives, on one
+   line. What never happens is a report going nowhere. */
+async function sendFree(env, to, text) {
+  const url = `https://graph.facebook.com/${env.META_GRAPH_API_VERSION || 'v26.0'}`
+    + `/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: String(text).slice(0, 4000), preview_url: false },
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`free ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const id = await res.json().then((j) => (j.messages && j.messages[0] && j.messages[0].id) || '?')
+    .catch(() => '?');
+  console.log(`send.free.ok to=••${String(to).slice(-4)} wamid=${id}`);
+}
+
+/* Laid out if the window allows it, on one line if it does not. */
+async function sendBest(env, to, text) {
+  try {
+    await sendFree(env, to, text);
+    return 'free';
+  } catch (e) {
+    console.log(`send.free.miss (falling back to the template): ${e.message}`);
+    // A template parameter takes no newlines, so the lines become separators.
+    await send(env, to, String(text).replace(/\n+/g, ' · '));
+    return 'template';
+  }
+}
 
 /* One template message. Business-initiated messages must be templates, and
    tzayad_update is already approved: "שלום {{1}}, {{2}}". Newlines are not
@@ -97,7 +173,7 @@ async function send(env, to, text) {
         type: 'body',
         parameters: [
           ...(env.WA_TPL_LEAD === '' ? [] : [{ type: 'text', text: env.WA_TPL_LEAD || 'מפקד' }]),
-          { type: 'text', text: String(text).replace(/\s+/g, ' ').trim().slice(0, 900) },
+          { type: 'text', text: String(text).replace(/[^\S\n]+/g, ' ').trim().slice(0, 900) },
         ],
       }],
     },
@@ -148,7 +224,20 @@ export { overdueSlots };
    same reason the alert's is. Asterisks are WhatsApp's own bold markers and
    survive a template parameter; newlines do not, which is why the lines are
    joined with a separator further down. */
-const DIGEST_LINE = 'דוח משימה - *{mission}* · {time} · {who} · {state}';
+const DIGEST_LINE = 'דוח משימה - *{mission}* · {date} {time} · {who}';
+
+/* RIGHT-TO-LEFT MARK.
+
+   Every line here begins with a tick or a cross, and an emoji carries no
+   direction of its own. The line's direction is then decided by the first
+   letter that does have one — which works, until WhatsApp puts its timestamp
+   on the last line and that line resolves the other way. The result was six
+   lines flush right and the seventh adrift.
+
+   An invisible mark at the head of each line states the direction instead of
+   leaving it to be inferred, and one at the end keeps the timestamp from
+   changing its mind. */
+const RLM = '\u200F';
 
 // id -> the name a person reads.
 const ITEM_NAME = Object.fromEntries(MISSION_ITEMS.map((m) => [m.id, m.name]));
@@ -173,31 +262,31 @@ function itemBreak(items) {
 
 export function digestText(rows, env = {}) {
   const fmt = String(env.DIGEST_LINE || DIGEST_LINE);
-  const line = (r) => {
-    /* A tick or a cross, before the words.
-
-       The supervisor is reading this on a phone, at speed, looking for the
-       line that needs an answer. A mark carries that at a glance where "1
-       חסר · 2 חלקי" has to be read. A partial count gets the cross too: two
-       grenades where five were asked for is a shortage, not a detail. */
-    const state = r.short || r.partial
-      ? `❌ ${[r.short ? `${r.short} חסר` : '', r.partial ? `${r.partial} חלקי` : '']
-        .filter(Boolean).join(' · ')}`
-      : '✅ הכול תקין';
-    const { ok, bad } = itemBreak(r.items);
-    // The breakdown replaces the bare count when there is one to give: naming
-    // three present items and one missing says everything the count did.
-    const detail = (ok.length || bad.length)
-      ? [ok.length ? `✅ ${ok.join(', ')}` : '', bad.length ? `❌ ${bad.join(', ')}` : '']
-        .filter(Boolean).join(' · ')
-      : state;
-    return fmt
+  return rows.map((r) => {
+    const head = fmt
       .replace(/\{mission\}/g, r.mission_name || 'משימה')
+      .replace(/\{date\}/g, dmy(r.at))
       .replace(/\{time\}/g, hhmm(r.at))
       .replace(/\{who\}/g, r.who || 'ללא שם')
-      .replace(/\{state\}/g, detail);
-  };
-  return rows.map(line).join(' | ');
+      .replace(/\{state\}/g, '')
+      .replace(/[·\s]+$/, '');
+    /* One line per item, in the checklist's own order rather than grouped by
+       verdict. A supervisor comparing two shifts reads down the same list both
+       times; sorting by tick and cross moves the rows about and makes that
+       comparison a search. */
+    const seen = new Map();
+    for (const pair of String(r.items || '').split(',')) {
+      const [id, st] = pair.split(':');
+      if (ITEM_NAME[id]) seen.set(id, st);
+    }
+    const lines = MISSION_ITEMS
+      .filter((m) => seen.has(m.id))
+      .map((m) => {
+        const st = seen.get(m.id);
+        return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${st === 'p' ? ' (חלקי)' : ''}`;
+      });
+    return lines.length ? `${RLM}${head}\n${lines.join('\n')}${RLM}` : `${RLM}${head}`;
+  }).join('\n\n');
 }
 
 /* One line per report that has come in since the last run.
@@ -213,9 +302,7 @@ export function digestText(rows, env = {}) {
    time rather than silently swallowing a shift's worth of reports. */
 export async function runDigest(env, now = Date.now()) {
   const db = env.DB;
-  const to = String(env.SUPERVISOR_TO || '')
-    .split(/[\s,]+/).map((n) => n.replace(/\D/g, ''))
-    .filter((n) => n.length >= 9 && n.length <= 15);
+  const to = numbers(env.SUPERVISOR_TO, 'SUPERVISOR_TO');
   if (!to.length) return { told: 0, why: 'no supervisor configured' };
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
     return { told: 0, why: 'no token configured' };
@@ -229,39 +316,29 @@ export async function runDigest(env, now = Date.now()) {
   const rows = results || [];
   if (!rows.length) return { told: 0 };
 
-  /* Spelled out, three reports no longer fit in one parameter, so the batch
-     is split at the limit rather than truncated. Truncating would drop the
-     last shift silently, which is the one failure this feature exists to
-     prevent. */
-  const batches = [];
-  let cur = [];
-  for (const r of rows) {
-    const next = [...cur, r];
-    if (cur.length && digestText(next, env).length > 850) { batches.push(cur); cur = [r]; }
-    else cur = next;
-  }
-  if (cur.length) batches.push(cur);
+  /* One message per report, not one per batch.
 
-
+     Batching was there to stay under WhatsApp's per-recipient cap on
+     MARKETING templates. The alert now goes out on a UTILITY template, which
+     carries no such cap — and a supervisor wants one message per shift, not a
+     digest to unpick. */
   let told = 0;
-  for (const batch of batches) {
+  for (const r of rows) {
     let delivered = 0;
     for (const n of to) {
       try {
-        await send(env, n, digestText(batch, env));
+        await sendBest(env, n, digestText([r], env));
         delivered += 1;
       } catch (e) {
         console.log(`digest.send.fail: ${e.message}`);
       }
     }
-    // Marked only once it has actually gone. A failure leaves the rows for the
-    // next run rather than swallowing a shift's worth of reports.
+    // Marked only once it has actually gone. A failure leaves the row for the
+    // next run rather than swallowing a shift's report.
     if (!delivered) break;
-    for (const r of batch) {
-      await db.prepare('UPDATE shift_beats SET notified = 1 WHERE rowid = ?1')
-        .bind(r.rid).run().catch(() => {});
-    }
-    told += batch.length;
+    await db.prepare('UPDATE shift_beats SET notified = 1 WHERE rowid = ?1')
+      .bind(r.rid).run().catch(() => {});
+    told += 1;
   }
   return told ? { told } : { told: 0, why: 'send failed' };
 }
@@ -319,7 +396,7 @@ export async function runWatch(env, now = Date.now()) {
       let delivered = 0;
       for (const n of to) {
         try {
-          await send(env, n, alertText(env, m.label, hhmm(slot)));
+          await send(env, n, alertText(env, m.label, hhmm(slot), dmy(slot)));
           delivered += 1;
           sent.push({ mission: m.label, slot: hhmm(slot) });
         } catch (e) {
