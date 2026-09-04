@@ -16,7 +16,7 @@
  * handover from a reported one.
  */
 
-import { overdueSlots, hhmm, dmy, slotEnd } from '../../public/lib/schedule.js';
+import { overdueSlots, hhmm, dmy, wall, slotEnd } from '../../public/lib/schedule.js';
 // The names the ids stand for. Read from the app's own catalogue rather than
 // copied, so an item renamed there is renamed here too.
 import { MISSION_ITEMS } from '../../public/lib/catalog.js';
@@ -239,6 +239,39 @@ const DIGEST_LINE = 'דוח משימה - *{mission}* · {date} {time} · {who}';
    changing its mind. */
 const RLM = '\u200F';
 
+/* The date this stops talking.
+
+   Somebody set this up for a stretch of duty, and a system that goes on
+   messaging two phones long after anybody is reading them is a system people
+   remember as a nuisance. So it has an end date, compared on the Israeli
+   calendar rather than in UTC — "until the 30th" means until the end of the
+   30th where the shifts are, not at three in the morning.
+
+   A date that will not parse does NOT stop the messages. A typo in a setting
+   should not silently take down a safety net; it is logged loudly instead and
+   the system keeps working, which is the failure worth having. */
+export function pastStop(env, now = Date.now()) {
+  const raw = String(env.STOP_AFTER || '').trim();
+  if (!raw) return false;
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw);
+  if (!m) {
+    console.log(`stop.bad STOP_AFTER="${raw}" — not a date, still sending`);
+    return false;
+  }
+  const w = wall(now);
+  return (w.y * 10000 + w.mo * 100 + w.d) > (+m[1] * 10000 + +m[2] * 100 + +m[3]);
+}
+
+/* Past the date, pending reports are closed off rather than left waiting.
+   Left waiting they would pile up, and anyone switching the messages back on
+   months later would be met by a burst of everything that happened in
+   between. The reports themselves are untouched — they are in the console,
+   where they always were. */
+async function retireBacklog(db) {
+  await db.prepare('UPDATE shift_beats SET notified = 1 WHERE notified = 0')
+    .run().catch(() => {});
+}
+
 // id -> the name a person reads.
 const ITEM_NAME = Object.fromEntries(MISSION_ITEMS.map((m) => [m.id, m.name]));
 
@@ -302,6 +335,10 @@ export function digestText(rows, env = {}) {
    time rather than silently swallowing a shift's worth of reports. */
 export async function runDigest(env, now = Date.now()) {
   const db = env.DB;
+  if (pastStop(env, now)) {
+    await retireBacklog(db);
+    return { told: 0, why: `stopped after ${env.STOP_AFTER}` };
+  }
   const to = numbers(env.SUPERVISOR_TO, 'SUPERVISOR_TO');
   if (!to.length) return { told: 0, why: 'no supervisor configured' };
   if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
@@ -353,6 +390,7 @@ export async function runWatch(env, now = Date.now()) {
   const early = (Number(env.ALERT_EARLY_MIN) || 60) * MIN;
 
   const sent = [];
+  if (pastStop(env, now)) return { sent, why: `stopped after ${env.STOP_AFTER}` };
   /* Nothing is looked at, and nothing is claimed, until there is something to
      send with. A missing token is not one failed message — it is every message
      from now on, and the slot-claiming below would quietly mark each handover

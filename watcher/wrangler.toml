@@ -46,6 +46,10 @@ WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
 # — the wording is the thing somebody wants to change in the evening.
 ALERT_TEXT = "לא התקבל דוח משמרת מ{mission} למשמרת של {time}"
 
+# The last day this sends anything. From the 31st it goes quiet on its own —
+# both the digests and the missed-handover alerts. Clear it to run indefinitely.
+STOP_AFTER = "2026-10-30"
+
 # How late a report may be before anybody is woken up, how far back a restart
 # looks, and how early a report still counts for the handover it precedes.
 ALERT_GRACE_MIN = "30"
