@@ -794,7 +794,11 @@ export async function onRequest(context) {
                     // ids and single letters only — anything else is discarded
                     // rather than stored, because what is stored is what may
                     // later be put into a message.
-                    (txt(b.beatItems, 300).match(/[a-zA-Z]+:[ynp]/g) || []).join(','))
+                    // id, verdict, and optionally a catalogue number in the
+                    // charset the sign-up form already enforces. Anything else
+                    // is dropped rather than stored.
+                    (txt(b.beatItems, 700)
+                      .match(/[a-zA-Z]+:[ynp](?::[A-Za-z0-9\-/]{1,20})?/g) || []).join(','))
               .run();
           }
         } catch { /* the report stands either way */ }

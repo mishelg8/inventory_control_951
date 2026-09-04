@@ -1901,7 +1901,15 @@ async function missionSubmit(form) {
        ends already read, so storing them here would be a second copy able to
        drift from the first. */
     const beatItems = items
-      .map((x) => `${x.id}:${x.have === 'no' ? 'n' : isPartial(x) ? 'p' : 'y'}`)
+      .map((x) => {
+        const st = x.have === 'no' ? 'n' : isPartial(x) ? 'p' : 'y';
+        /* The catalogue number rides along so the supervisor can read what was
+           actually checked rather than only that something was. It is the one
+           field from the body of the report that travels — the reasons, the
+           counts by kind and the photographs stay sealed. */
+        const mk = String(x.mk || '').trim();
+        return mk ? `${x.id}:${st}:${mk}` : `${x.id}:${st}`;
+      })
       .join(',');
     await api('/reports', {
       body: {

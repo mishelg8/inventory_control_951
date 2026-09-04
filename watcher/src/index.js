@@ -316,14 +316,17 @@ export function digestText(rows, env = {}) {
        comparison a search. */
     const seen = new Map();
     for (const pair of String(r.items || '').split(',')) {
-      const [id, st] = pair.split(':');
-      if (ITEM_NAME[id]) seen.set(id, st);
+      const [id, st, mk] = pair.split(':');
+      if (ITEM_NAME[id]) seen.set(id, { st, mk });
     }
     const lines = MISSION_ITEMS
       .filter((m) => seen.has(m.id))
       .map((m) => {
-        const st = seen.get(m.id);
-        return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${st === 'p' ? ' (חלקי)' : ''}`;
+        const { st, mk } = seen.get(m.id);
+        // The number sits after the name, so the column of names stays a
+        // column and the eye can still run down it.
+        const tail = [st === 'p' ? '(חלקי)' : '', mk || ''].filter(Boolean).join(' · ');
+        return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${tail ? ` · ${tail}` : ''}`;
       });
     return lines.length ? `${RLM}${head}\n${lines.join('\n')}${RLM}` : `${RLM}${head}`;
   }).join('\n\n');
