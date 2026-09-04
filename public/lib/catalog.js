@@ -81,7 +81,11 @@ const MISSION_ITEMS = [
      whole holding, and commanders were photographing the alpha kit itself —
      which is not what the check is for. Said in red, above the camera, where
      it is read before the picture is taken rather than after. */
-  { id: 'alpha',  name: 'ציוד אלפא',
+  /* No catalogue number, ever. Alpha kit is grenades — counted by kind, not
+     stamped with a number — so the field had nothing true to put in it and
+     was asked for anyway whenever a mission carried alpha without a
+     breakdown. `noMk` was already the way plates say the same thing. */
+  { id: 'alpha',  name: 'ציוד אלפא', noMk: true,
     shotNote: 'יש לצלם רק את המטלון ואת הרינגו — אין צורך באלפא' },
   /* Ceramic plates carry no number worth copying. A מק״ט was being demanded
      on a shift report for an item whose marking is a size and a batch, not a

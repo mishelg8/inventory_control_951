@@ -282,6 +282,15 @@ async function retireBacklog(db) {
 // id -> the name a person reads.
 const ITEM_NAME = Object.fromEntries(MISSION_ITEMS.map((m) => [m.id, m.name]));
 
+/* Items that have no catalogue number to show.
+
+   Alpha kit is grenades and plates are a size and a batch — neither carries a
+   number, so printing one beside them in the supervisor's message would be
+   inventing a fact. The form no longer collects one either, but reports
+   already filed may carry something in that slot, and those must not start
+   showing it now. */
+const NO_MK = new Set(MISSION_ITEMS.filter((m) => m.noMk || m.bare).map((m) => m.id));
+
 /* The checklist spelled out: what was there, and what was not.
 
    "אחד חסר" is half an answer — the supervisor still has to open the console
@@ -325,7 +334,8 @@ export function digestText(rows, env = {}) {
         const { st, mk } = seen.get(m.id);
         // The number sits after the name, so the column of names stays a
         // column and the eye can still run down it.
-        const tail = [st === 'p' ? '(חלקי)' : '', mk || ''].filter(Boolean).join(' · ');
+        const num = NO_MK.has(m.id) ? '' : (mk || '');
+        const tail = [st === 'p' ? '(חלקי)' : '', num].filter(Boolean).join(' · ');
         return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${tail ? ` · ${tail}` : ''}`;
       });
     return lines.length ? `${RLM}${head}\n${lines.join('\n')}${RLM}` : `${RLM}${head}`;
