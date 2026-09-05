@@ -186,6 +186,9 @@ function cleanReport(raw) {
         have: ['no', 'na'].includes(it && it.have) ? it.have : 'yes',
         mk: asText(it && it.mk, 40),
         why: asText(it && it.why, 120),
+        // How many were counted, for the items that are counted rather than
+        // numbered. Absent on every other item rather than a misleading zero.
+        ...(Number.isFinite(it && it.n) ? { n: asCount(it.n, 999) } : {}),
         /* What was actually counted, kind by kind, against what the mission
            asked for. Both numbers are kept: "two of three" is the fact, and
            either half alone is not. */

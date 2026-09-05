@@ -1343,7 +1343,7 @@ async function faultPhoto(input) {
    there is no gallery button beside it, which is the only lever HTML gives.
    It is a strong one on a phone and it is not a guarantee — see the note
    above FAULT_KINDS about what `accept` and `capture` can and cannot do. */
-const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '', got: {} };
+const msnRow = (id) => S.msnRows[id] || { have: '', mk: '', why: '', got: {}, n: 0 };
 
 /* The grenade counts a mission asks for, if it asks for any. Alpha kit is not
    one thing — a commander who "has alpha" may be two smoke short — so the
@@ -1418,6 +1418,13 @@ const MSN_GRACE_MIN = 30;
 
 const msnNeedsMk = (it) => !it.bare && !msnParts(it).length && !it.noMk;
 
+// How many of this item the commander counted, for the items that are counted
+// rather than numbered.
+const msnCount = (id) => {
+  const v = (msnRow(id) || {}).n;
+  return Number.isFinite(v) ? v : 0;
+};
+
 /* What "no" is called for this item. "חסר" opens a shortage the store has to
    answer for; a gate key that is simply not there is "אין" and nothing more.
    The console reads the same rule as the form, because a screen that reports
@@ -1437,6 +1444,7 @@ const msnItemDone = (it) => {
        is counted still travels, the shortfall is still marked in red on the
        way past, and the store still hears about it — the form simply stops
        arguing with the man holding the two. */
+    if (it.count && msnCount(it.id) < 1) return false;
     return (!msnNeedsMk(it) || r.mk.trim().length >= 1) && !!S.msnPhotos[it.id];
   }
   return false;
@@ -1470,6 +1478,7 @@ function msnBlockers() {
       continue;
     }
     const need = [];
+    if (it.count && msnCount(it.id) < 1) need.push('כמות');
     if (msnNeedsMk(it) && !r.mk.trim()) need.push('מק״ט');
     if (!S.msnPhotos[it.id]) need.push('צילום');
     if (need.length) out.push(`${it.name} — חסר ${need.join(' ו')}`);
@@ -1517,6 +1526,18 @@ function msnItemCard(it) {
             <input class="input num" inputmode="text" maxlength="40" autocomplete="off"
                    value="${esc(r.mk)}" data-act="msn-mk" data-item="${it.id}"
                    placeholder="מספר המק״ט כפי שמופיע על הפריט" required>
+          </label>` : ''}
+        ${it.count ? `
+          <label class="field">
+            <span class="field-label">כמה יש? <span class="req" aria-hidden="true">*</span></span>
+            <span class="step msn-step">
+              <button type="button" class="step-btn" data-act="msn-dec" data-item="${it.id}"
+                      aria-label="פחות" ${msnCount(it.id) <= 0 ? 'disabled' : ''}>−</button>
+              <span class="step-val num">${msnCount(it.id)}</span>
+              <button type="button" class="step-btn" data-act="msn-inc" data-item="${it.id}"
+                      aria-label="עוד" ${msnCount(it.id) >= (it.max || 20) ? 'disabled' : ''}>+</button>
+            </span>
+            <span class="field-hint mb0">ספרו בפועל, ואז צלמו את הכל יחד.</span>
           </label>` : ''}
         ${msnParts(it).length ? `
           <div class="msn-parts">
@@ -1854,6 +1875,8 @@ async function missionSubmit(form) {
       const out = { id: it.id, have: r.have };
       if (r.have === 'yes') {
         out.mk = r.mk.trim();
+        // Counted items carry their number; everything else carries none.
+        if (it.count) out.n = Number(r.n) || 0;
         const parts = msnParts(it);
         if (parts.length) {
           out.parts = parts.map((p) => ({
@@ -1907,8 +1930,10 @@ async function missionSubmit(form) {
            actually checked rather than only that something was. It is the one
            field from the body of the report that travels — the reasons, the
            counts by kind and the photographs stay sealed. */
-        const mk = String(x.mk || '').trim();
-        return mk ? `${x.id}:${st}:${mk}` : `${x.id}:${st}`;
+        // A counted item sends its number where a numbered one sends its מק״ט:
+        // one slot, and each kind of item fills it with what it actually has.
+        const tag = Number.isFinite(x.n) ? `x${x.n}` : String(x.mk || '').trim();
+        return tag ? `${x.id}:${st}:${tag}` : `${x.id}:${st}`;
       })
       .join(',');
     await api('/reports', {
@@ -9248,7 +9273,8 @@ function msnDetail(rec) {
     return `<tr>
         <td>${esc(name)}</td>
         <td><span class="state done">יש</span></td>
-        <td class="num">${esc(item.mk || '—')}${partsCell ? `<br>${partsCell}` : ''}</td>
+        <td class="num">${Number.isFinite(item.n) ? `${item.n} יח׳` : esc(item.mk || '—')}${
+          partsCell ? `<br>${partsCell}` : ''}</td>
         <td>${kind
           ? `<button class="linkbtn" data-act="doc" data-rid="${esc(rec.id)}" data-kind="${kind}">${
               shot ? 'הסתרה' : '📷 צילום'}</button>
@@ -13944,6 +13970,15 @@ function dispatch(act, el) {
     // and it is the control you just pressed.
     // A photograph is proof, not decoration: it arrives small so the card
     // stays readable, and opens when somebody actually wants to look at it.
+    case 'msn-inc':
+    case 'msn-dec': {
+      const id = el.dataset.item;
+      const it = MISSION_ITEMS.find((m) => m.id === id) || {};
+      const next = msnCount(id) + (act === 'msn-inc' ? 1 : -1);
+      S.msnRows[id] = { ...msnRow(id), n: Math.max(0, Math.min(it.max || 20, next)) };
+      renderMission();
+      break;
+    }
     case 'msn-big': {
       const id = el.dataset.item;
       if (S.msnBig.has(id)) S.msnBig.delete(id);

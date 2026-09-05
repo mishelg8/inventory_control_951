@@ -798,7 +798,7 @@ export async function onRequest(context) {
                     // charset the sign-up form already enforces. Anything else
                     // is dropped rather than stored.
                     (txt(b.beatItems, 700)
-                      .match(/[a-zA-Z]+:[ynp](?::[A-Za-z0-9\-/]{1,20})?/g) || []).join(','))
+                      .match(/[a-zA-Z]+:[ynp](?::x?[A-Za-z0-9\-/]{1,20})?/g) || []).join(','))
               .run();
           }
         } catch { /* the report stands either way */ }

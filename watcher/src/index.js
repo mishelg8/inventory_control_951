@@ -311,7 +311,11 @@ export function digestText(rows, env = {}) {
         const { st, mk } = seen.get(m.id);
         // The number sits after the name, so the column of names stays a
         // column and the eye can still run down it.
-        const num = NO_MK.has(m.id) ? '' : (mk || '');
+        /* One slot, two meanings: a catalogue number for items that carry one,
+           and a count for items that are counted. `x4` is how plates say four
+           of them, and it is shown as a quantity rather than a serial. */
+        const isCount = /^x\d+$/.test(mk || '');
+        const num = isCount ? `${mk.slice(1)} יח׳` : (NO_MK.has(m.id) ? '' : (mk || ''));
         const tail = [st === 'p' ? 'חלקי' : '', num].filter(Boolean).join(' ');
         return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${tail ? ` (${tail})` : ''}`;
       });

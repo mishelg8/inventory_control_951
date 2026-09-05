@@ -96,7 +96,11 @@ const MISSION_ITEMS = [
      the mission asks for, and the card has nowhere to record it per unit
      anyway. The requirement is still on the mission's own screen; here it was
      only creating a question. */
-  { id: 'plates', name: 'פלטות קרמיות', noMk: true, hideQty: true },
+  /* Counted, not numbered. Plates come in a stack and what matters is how
+     many are in it — so the card asks for a number with a stepper rather than
+     a catalogue number it does not have. The photograph is still required:
+     the count is what the commander says, the picture is what he shows. */
+  { id: 'plates', name: 'פלטות קרמיות', noMk: true, hideQty: true, count: true, max: 20 },
   { id: 'lionet', name: 'ליונט' },
   /* A key is held or it is not, and there is nothing else true about it. No
      part number to read off it, nothing a photograph would prove, and no
