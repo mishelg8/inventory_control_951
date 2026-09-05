@@ -97,59 +97,25 @@ const alertText = (env, mission, at, day = '') =>
     .join('\n')
     .slice(0, 900);
 
-/* The message as it was asked for: a line per item, ticks down the side.
+/* Why every message goes out as a template.
 
-   A template cannot carry it. Meta refuses any parameter containing a newline
-   — "(#132018) Param text cannot have new-line/tab characters" — and the
-   layout is newlines, so the layout cannot come from a parameter.
+   A free-form text message carries newlines and bold, and for one glorious
+   afternoon it carried exactly the layout that was asked for. It is also only
+   allowed inside a twenty-four hour window — the recipient must have written
+   to the business line recently — and outside that window Meta does not
+   refuse it at the door. It accepts the call, returns a message id, and fails
+   the message later in a delivery callback nobody was reading:
 
-   A free-form text message can carry it, and carries WhatsApp's own bold
-   markup too. The catch is the twenty-four hour window: free-form is only
-   allowed while a conversation is open, which means within a day of the
-   recipient last writing to the business number. Outside that window Meta
-   refuses it and only a template will go.
+       6 × failed, code 131047 (re-engagement)
+       1 × delivered
 
-   So this is tried first and the template is the fallback. When the
-   supervisor has written to the line recently — a word is enough — the
-   message arrives laid out. When they have not, it still arrives, on one
-   line. What never happens is a report going nowhere. */
-async function sendFree(env, to, text) {
-  const url = `https://graph.facebook.com/${env.META_GRAPH_API_VERSION || 'v26.0'}`
-    + `/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: String(text).slice(0, 4000), preview_url: false },
-    }),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`free ${res.status}: ${t.slice(0, 200)}`);
-  }
-  const id = await res.json().then((j) => (j.messages && j.messages[0] && j.messages[0].id) || '?')
-    .catch(() => '?');
-  console.log(`send.free.ok to=••${String(to).slice(-4)} wamid=${id}`);
-}
+   So the fallback built on catching an error never fired, because there was
+   no error to catch. Six people got nothing and the log said seven ok.
 
-/* Laid out if the window allows it, on one line if it does not. */
-async function sendBest(env, to, text) {
-  try {
-    await sendFree(env, to, text);
-    return 'free';
-  } catch (e) {
-    console.log(`send.free.miss (falling back to the template): ${e.message}`);
-    // A template parameter takes no newlines, so the lines become separators.
-    await send(env, to, String(text).replace(/\n+/g, ' · '));
-    return 'template';
-  }
-}
+   Templates are what business-initiated messaging is for: they reach anyone,
+   window or no window. The cost is that a template parameter may not contain
+   a newline, so the layout collapses to one line. A message that arrives on
+   one line beats a message that does not arrive.  */
 
 /* One template message. Business-initiated messages must be templates, and
    tzayad_update is already approved: "שלום {{1}}, {{2}}". Newlines are not
@@ -187,7 +153,11 @@ async function send(env, to, text) {
         type: 'body',
         parameters: [
           ...(env.WA_TPL_LEAD === '' ? [] : [{ type: 'text', text: env.WA_TPL_LEAD || 'מפקד' }]),
-          { type: 'text', text: String(text).replace(/[^\S\n]+/g, ' ').trim().slice(0, 900) },
+          { type: 'text',
+            // Newlines become a separator rather than being stripped, so the
+            // items stay separated instead of running into one another.
+            text: String(text).replace(/\n+/g, ' | ').replace(/[^\S\n]+/g, ' ')
+              .trim().slice(0, 900) },
         ],
       }],
     },
@@ -342,8 +312,8 @@ export function digestText(rows, env = {}) {
         // The number sits after the name, so the column of names stays a
         // column and the eye can still run down it.
         const num = NO_MK.has(m.id) ? '' : (mk || '');
-        const tail = [st === 'p' ? '(חלקי)' : '', num].filter(Boolean).join(' · ');
-        return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${tail ? ` · ${tail}` : ''}`;
+        const tail = [st === 'p' ? 'חלקי' : '', num].filter(Boolean).join(' ');
+        return `${RLM}${st === 'y' ? '✅' : '❌'} ${m.name}${tail ? ` (${tail})` : ''}`;
       });
     return lines.length ? `${RLM}${head}\n${lines.join('\n')}${RLM}` : `${RLM}${head}`;
   }).join('\n\n');
@@ -373,12 +343,33 @@ export async function runDigest(env, now = Date.now()) {
   }
 
   const { results } = await db
-    .prepare('SELECT rowid AS rid, mission_name, who, short, partial, items, at '
+    .prepare('SELECT rowid AS rid, mission_id, mission_name, who, short, partial, items, at '
       + 'FROM shift_beats WHERE notified = 0 ORDER BY at LIMIT 20')
     .all()
     .catch(() => ({ results: [] }));
-  const rows = results || [];
+  let rows = results || [];
   if (!rows.length) return { told: 0 };
+
+  /* A mission with no handover times is not watched, and is not reported on
+     either. One control, not two: clearing the times on a mission is how the
+     office says "stop telling me about this one", and it would be a poor
+     switch if it silenced the missed-handover alerts while the reports kept
+     arriving. Anything already waiting for such a mission is closed off so it
+     does not surface later if the times come back. */
+  const { results: defs } = await db
+    .prepare("SELECT id, data FROM pub_pick WHERE kind = 'mission'")
+    .all()
+    .catch(() => ({ results: [] }));
+  const watched = new Set((defs || [])
+    .filter((m) => timesOf(m.data).length)
+    .map((m) => m.id));
+  const muted = rows.filter((r) => !watched.has(r.mission_id));
+  for (const r of muted) {
+    await db.prepare('UPDATE shift_beats SET notified = 1 WHERE rowid = ?1')
+      .bind(r.rid).run().catch(() => {});
+  }
+  rows = rows.filter((r) => watched.has(r.mission_id));
+  if (!rows.length) return { told: 0, muted: muted.length };
 
   /* One message per report, not one per batch.
 
@@ -391,7 +382,7 @@ export async function runDigest(env, now = Date.now()) {
     let delivered = 0;
     for (const n of to) {
       try {
-        await sendBest(env, n, digestText([r], env));
+        await send(env, n, digestText([r], env));
         delivered += 1;
       } catch (e) {
         console.log(`digest.send.fail: ${e.message}`);
@@ -461,7 +452,7 @@ export async function runWatch(env, now = Date.now()) {
       let delivered = 0;
       for (const n of to) {
         try {
-          await sendBest(env, n, alertText(env, m.label, hhmm(slot), dmy(slot)));
+          await send(env, n, alertText(env, m.label, hhmm(slot), dmy(slot)));
           delivered += 1;
           sent.push({ mission: m.label, slot: hhmm(slot) });
         } catch (e) {
