@@ -9,6 +9,7 @@ import {
   COMMS_PLACES, COMMS_KINDS, COMMS_LOCS, ARM_BAD_LOCS, NAMED_LOCS, AMMO_DESTS, ARM_DESTS,
   nameOf, REGISTERS, kindLocs, VEH_KIT, FUEL_KINDS, FUEL_LOW, FUEL_OFFICE, LIC_KINDS,
   DAY_MS, EXPIRING_SOON_DAYS, LOAN_LOCS, ARM_ACTIONS, AMMO_ACTIONS, canLoan,
+  UNIFORMS, uniformName,
 } from './lib/catalog.js';
 import {
   te, td, b64, ub64, hex, rndId, deriveAuth, deriveRid, normSerial, deriveSerialTag,
@@ -1095,7 +1096,7 @@ function renderReport() {
       </section>`);
     return;
   }
-  const v = S.rep || { name: '', phone: '', text: '' };
+  const v = S.rep || { name: '', phone: '', text: '', uniform: {} };
   render(`
     <section class="panel sform center-head">
       <img class="unit-badge" src="/logo.png" alt="סמל מסייעת 951">
@@ -1117,6 +1118,27 @@ function renderReport() {
               <span class="field-hint">רק כדי שנוכל לעדכן אתכם כשהבקשה מטופלת. אפשר להשאיר ריק.</span>
             </label>
           </div>
+
+          <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.person}</span>חוסרים אישיים — מדים</h2>
+          <p class="field-hint">אם חסר לכם פריט מדים, סמנו את המידה. מה שלא חסר — השאירו על "—".</p>
+          ${UNIFORMS.map((u) => (u.free
+            ? `<label class="field uni-row">
+                 <span class="field-label">${esc(u.name)}</span>
+                 <input class="input num uni-size" name="uni-${u.id}" inputmode="numeric"
+                        maxlength="4" autocomplete="off" value="${esc((v.uniform || {})[u.id] || '')}"
+                        placeholder="${esc(u.ph || '')}" aria-label="מידת ${esc(u.name)}">
+               </label>`
+            : `<div class="field uni-row">
+                 <span class="field-label">${esc(u.name)}</span>
+                 <div class="uni-sizes">
+                   ${['', ...u.sizes].map((sz) => `
+                     <label class="uni-chip${((v.uniform || {})[u.id] || '') === sz ? ' on' : ''}">
+                       <input class="vis-hidden" type="radio" name="uni-${u.id}" value="${esc(sz)}"
+                              ${((v.uniform || {})[u.id] || '') === sz ? 'checked' : ''}>
+                       <span>${sz || '—'}</span>
+                     </label>`).join('')}
+                 </div>
+               </div>`)).join('')}
 
           <h2 class="fsec"><span class="fsec-i" aria-hidden="true">${DICO.flag}</span>מה חסר</h2>
           <label class="field">
@@ -1143,14 +1165,29 @@ async function reportSubmit(form) {
   if (phone && !/^\d{9,10}$/.test(phone)) {
     return setFormErr(form, 'טלפון: 9–10 ספרות, ללא מקפים (או להשאיר ריק)');
   }
-  if (text.length < 5) return setFormErr(form, 'נא לפרט מה חסר');
+  /* What was ticked, before the text is judged. A soldier who only needs a
+     shirt in ב has said something complete, and demanding a paragraph as well
+     is asking him to write out what he already answered. */
+  const uniform = {};
+  for (const u of UNIFORMS) {
+    const el = form[`uni-${u.id}`];
+    const val = (u.free
+      ? String((el && el.value) || '').trim()
+      : String((form.querySelector(`input[name="uni-${u.id}"]:checked`) || {}).value || '')).slice(0, 8);
+    if (val) uniform[u.id] = val;
+  }
+  const anyUniform = Object.keys(uniform).length > 0;
+  if (!anyUniform && text.length < 5) return setFormErr(form, 'נא לפרט מה חסר, או לסמן מידה בחוסרים האישיים');
   setFormErr(form, '');
-  S.rep = { name, phone, text };
+  S.rep = { name, phone, text, uniform };
   const btn = form.querySelector('button[type=submit]');
   btn.disabled = true;
   btn.textContent = 'שולח…';
   await withBusy(async () => {
-    const sealed = await seal(await importPubKey(S.config.pub), { name, phone, text, createdAt: Date.now() });
+    const sealed = await seal(await importPubKey(S.config.pub), {
+      name, phone, text, createdAt: Date.now(),
+      ...(anyUniform ? { uniform } : {}),
+    });
     await api('/reports', {
       body: { id: hex(crypto.getRandomValues(new Uint8Array(16))), ticket: await getTicket(), ...sealed },
     });
@@ -1420,6 +1457,14 @@ const msnNeedsMk = (it) => !it.bare && !msnParts(it).length && !it.noMk;
 
 // How many of this item the commander counted, for the items that are counted
 // rather than numbered.
+/* The uniform sizes a report asked for, as a person would say them.
+   Empty when none were ticked, so callers can leave the line out entirely
+   rather than printing an empty heading. */
+const uniformLine = (d) => UNIFORMS
+  .filter((u) => ((d && d.uniform) || {})[u.id])
+  .map((u) => `${u.name} ${d.uniform[u.id]}`)
+  .join(' · ');
+
 const msnCount = (id) => {
   const v = (msnRow(id) || {}).n;
   return Number.isFinite(v) ? v : 0;
@@ -5760,6 +5805,40 @@ const REPORTS = {
     },
   },
 
+  /* The store's picking list. Sizes and counts only — no name, no personal
+     number, nothing that needs an unencrypted file to carry it. */
+  uniforms: {
+    name: 'סיכום מדים', file: 'tzayad-uniforms',
+    build() {
+      const tally = uniformTally(shortageReports());
+      const rows = [];
+      for (const r of tally) {
+        for (const sz of r.order) rows.push([r.name, sz, r.counts.get(sz)]);
+      }
+      return {
+        head: ['פריט', 'מידה', 'כמות'],
+        rows,
+        summary: `${rows.reduce((n, x) => n + x[2], 0)} פריטים בבקשות שטרם טופלו`,
+      };
+    },
+  },
+
+  /* Names and sizes together. Unlike the totals beside it this one identifies
+     people, so it is marked as what it is. */
+  uniformsWho: {
+    name: 'מדים לפי חייל', file: 'tzayad-uniforms-who', sensitive: true,
+    build() {
+      const rows = uniformWho(shortageReports());
+      return {
+        head: ['חייל', 'מספר אישי', ...UNIFORMS.map((u) => u.name), 'נשלח'],
+        rows: rows.map((w) => [
+          w.name, w.pn, ...UNIFORMS.map((u) => w.sizes[u.id] || ''), fmtDate(w.at),
+        ]),
+        summary: `${rows.length} ${rows.length === 1 ? 'בקשה שטרם טופלה' : 'בקשות שטרם טופלו'}`,
+      };
+    },
+  },
+
   ledger: {
     name: 'מי חתום על מה', file: 'tzayad-ledger', sensitive: true,
     build() {
@@ -5837,13 +5916,13 @@ const REPORTS = {
       const st = (r) => (r.status === 'done' ? 'done' : r.status === 'partial' ? 'partial' : 'open');
       const roster = rosterByName();
       return {
-        head: ['דווח', 'שם', 'מ״א', 'מחלקה', 'טלפון', 'סטטוס', 'הבקשה', 'מקור הפרטים'],
+        head: ['דווח', 'שם', 'מ״א', 'מחלקה', 'טלפון', 'סטטוס', 'מדים', 'הבקשה', 'מקור הפרטים'],
         rows: ordered.map((r) => {
           const d = r.data;
           const f = fillFromRoster(d, roster);
           return [
             fmtDate(d.createdAt), d.name || '', f.pn, f.dept, f.phone,
-            REP_LABEL[st(r)], d.text || '', f.source,
+            REP_LABEL[st(r)], uniformLine(d), d.text || '', f.source,
           ];
         }),
         summary: `${ordered.filter((r) => st(r) === 'open').length} טרם טופלו · ` +
@@ -9107,6 +9186,121 @@ function repWaLink(d, st) {
   return `https://wa.me/${waPhone(d.phone)}?text=${encodeURIComponent(msg)}`;
 }
 
+/* What the store actually has to draw, added up.
+
+   Every uniform request arrives inside somebody's shortage report, so the
+   answer to "how many mediums do I need" was: open forty cards and count. The
+   sizes are the letters on the shelves, so counting them is the whole job —
+   and a total that is wrong by one is a soldier standing in a store with
+   nothing to give him.
+
+   Only requests that have not been dealt with are counted. A shirt issued
+   last week is not a shirt to fetch, and leaving it in would make the number
+   grow for ever. */
+function uniformTally(reps) {
+  const open = reps.filter((r) => !r.damaged && r.data && r.status !== 'done');
+  const tally = UNIFORMS.map((u) => ({ ...u, counts: new Map(), total: 0 }));
+  for (const r of open) {
+    const worn = r.data.uniform || {};
+    for (const row of tally) {
+      const size = String(worn[row.id] || '').trim();
+      if (!size) continue;
+      row.counts.set(size, (row.counts.get(size) || 0) + 1);
+      row.total += 1;
+    }
+  }
+  /* Listed in the order the shelves are labelled, with anything unexpected —
+     a shoe size, a letter from an older version of the form — after them
+     rather than dropped. A number nobody can account for is worse than an
+     untidy row. */
+  for (const row of tally) {
+    const known = (row.sizes || []).filter((sz) => row.counts.has(sz));
+    const extra = [...row.counts.keys()]
+      .filter((sz) => !(row.sizes || []).includes(sz))
+      .sort((a, b) => String(a).localeCompare(String(b), 'he', { numeric: true }));
+    row.order = [...known, ...extra];
+  }
+  return tally;
+}
+
+/* The same requests, read the other way: a line per soldier.
+
+   The totals say what to fetch; this says who to hand it to. Both are needed
+   and neither substitutes for the other — a storeman carrying four mediums
+   still has to know whose they are. */
+function uniformWho(reps) {
+  const roster = rosterByName();
+  return reps
+    .filter((r) => !r.damaged && r.data && r.status !== 'done'
+      && UNIFORMS.some((u) => (r.data.uniform || {})[u.id]))
+    .map((r) => {
+      const d = r.data;
+      const f = fillFromRoster(d, roster);
+      return {
+        id: r.id,
+        name: d.name || '',
+        pn: f.pn,
+        at: d.createdAt,
+        sizes: Object.fromEntries(UNIFORMS.map((u) => [u.id, (d.uniform || {})[u.id] || ''])),
+      };
+    })
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
+}
+
+function uniformPanel(reps) {
+  const tally = uniformTally(reps);
+  const grand = tally.reduce((n, r) => n + r.total, 0);
+  const who = uniformWho(reps);
+
+  const rows = tally.map((r) => `
+    <tr${r.total ? '' : ' class="msn-na"'}>
+      <td>${esc(r.name)}</td>
+      <td class="num"><strong>${r.total || '—'}</strong></td>
+      <td>${r.order.length
+        ? r.order.map((sz) => `<span class="uni-sz"><span class="uni-l">${esc(sz)}</span><span class="num">${r.counts.get(sz)}</span></span>`).join('')
+        : '<span class="dim">אין בקשות פתוחות</span>'}</td>
+    </tr>`).join('');
+
+  return `
+    <section class="panel">
+      <h2 class="panel-title">סיכום מדים ${grand ? `<span class="pill warn num">${grand}</span>` : ''}</h2>
+      <p class="panel-sub">כמה פריטים להביא מהמחסן, לפי מידה. נספרות רק בקשות שטרם טופלו — ברגע שבקשה מסומנת כטופלה היא יורדת מכאן. נעליים נספרות לפי המספר שהוקלד.</p>
+      ${grand
+        ? `<div class="tbl-scroll">
+             <table class="tbl" data-phone="0,1,2">
+               <thead><tr><th>פריט</th><th class="num">סה״כ</th><th>לפי מידה</th></tr></thead>
+               <tbody>${rows}</tbody>
+             </table>
+           </div>
+           <h3 class="fsec mt">מי ביקש מה</h3>
+           <div class="tbl-scroll">
+             <table class="tbl compact" data-phone="0,1,-1">
+               <thead><tr>
+                 <th>חייל</th><th class="num">מ״א</th>
+                 ${UNIFORMS.map((u) => `<th>${esc(u.name)}</th>`).join('')}
+                 <th class="num">נשלח</th>
+               </tr></thead>
+               <tbody>${who.map((w) => `
+                 <tr>
+                   <td>${esc(w.name)}</td>
+                   <td class="num">${esc(w.pn || '—')}</td>
+                   ${UNIFORMS.map((u) => `<td>${w.sizes[u.id]
+                     ? `<strong>${esc(w.sizes[u.id])}</strong>`
+                     : '<span class="dim">—</span>'}</td>`).join('')}
+                   <td class="num">${esc(fmtShort(w.at))}</td>
+                 </tr>`).join('')}</tbody>
+             </table>
+           </div>
+           <div class="rec-actions mt">
+             ${csvBtn('uniforms', 'ייצוא סיכום')}
+             <button class="btn ghost" data-act="rep-pdf" data-r="uniforms">PDF סיכום</button>
+             ${csvBtn('uniformsWho', 'ייצוא לפי חייל')}
+             <button class="btn ghost" data-act="rep-pdf" data-r="uniformsWho">PDF לפי חייל</button>
+           </div>`
+        : '<p class="empty">אין בקשות מדים פתוחות.</p>'}
+    </section>`;
+}
+
 function renderReportsTab() {
   const filters = [
     ['open', 'דורש טיפול'],
@@ -9166,7 +9360,10 @@ function renderReportsTab() {
                  <button class="linkbtn" data-act="rep-reveal" data-id="${esc(rec.id)}">${S.revealed.has(rec.id) ? 'הסתרה' : 'הצגה'}</button>
                </div>`
             : '<div class="rec-meta muted-txt">לא הושאר טלפון — אי אפשר לעדכן את החייל</div>'}
-          <blockquote class="rep-text">${esc(d.text)}</blockquote>
+          ${uniformLine(d)
+            ? `<p class="rep-uniform"><strong>מדים:</strong> ${esc(uniformLine(d))}</p>`
+            : ''}
+          ${d.text ? `<blockquote class="rep-text">${esc(d.text)}</blockquote>` : ''}
 
           <fieldset class="rep-states">
             <legend class="field-label">סטטוס טיפול</legend>
@@ -9198,6 +9395,7 @@ function renderReportsTab() {
     .join('');
 
   return `
+    ${uniformPanel(shortageReports())}
     <section class="panel">
       <h2 class="panel-title">בקשות ודיווחי חוסר</h2>
       <p class="panel-sub">בקשות שחיילים שלחו בעצמם דרך <span class="code-inline">#report</span>. לא קשור למאגר הרישומים. סמנו ✓ אחרי הטיפול.</p>

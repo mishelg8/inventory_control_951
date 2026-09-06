@@ -8,7 +8,7 @@
 // whitelisted. Without this, a crafted quantity like "<img …>" flows into
 // innerHTML in the admin console — where the private key lives.
 
-import { ITEMS, MISSION_ITEMS, DEPTS, DIETS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
+import { ITEMS, MISSION_ITEMS, UNIFORMS, DEPTS, DIETS, LIC_KINDS, REGISTERS, VEH_KIT, FUEL_KINDS, kindLocs, LIFECYCLE, ARM_BAD_LOCS, NAMED_LOCS, ARM_ACTIONS, AMMO_ACTIONS } from './catalog.js';
 import { rndId } from './crypto.js';
 
 const asText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -216,6 +216,23 @@ function cleanReport(raw) {
           : {}),
       })).filter((it) => it.id)
       : [],
+    /* Personal kit asked for by size, on a shortage report.
+
+       Each item may only carry a size its own list offers — a trouser size of
+       ג is not a size the store has, and a value the form cannot produce is
+       one that arrived some other way. Shoes are a number, bounded to four
+       characters, because that is what a shoe size is. */
+    uniform: (() => {
+      const src = (raw && raw.uniform) || {};
+      const out = {};
+      for (const u of UNIFORMS) {
+        const v = asText(src[u.id], 8).trim();
+        if (!v) continue;
+        if (u.free) { if (/^[0-9]{1,4}$/.test(v)) out[u.id] = v; }
+        else if (u.sizes.includes(v)) out[u.id] = v;
+      }
+      return out;
+    })(),
     // mission-only: which shift or task this was filed for. Free text.
     shift: asText(raw.shift, 60),
     /* Which defined mission this was filed against, if any. The name is kept

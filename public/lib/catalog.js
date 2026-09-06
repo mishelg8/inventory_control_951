@@ -394,6 +394,25 @@ const DIETS = [
   { id: 'vegan',      name: 'טבעוני' },
 ];
 
+/* Personal kit, on the shortage form.
+
+   A soldier asking for a shirt is asking for a size, and "חסרה לי חולצה"
+   written into the free-text box is a request the storeman has to go back and
+   ask about. The sizes are the letters the shelves are labelled with.
+
+   Shirts and trousers run the same five sizes. Trousers were listed with four
+   — ג was left out on the understanding that it could not be issued — and the
+   store says otherwise, so a soldier who needs that size can now ask for it
+   instead of writing it into the free-text box. Shoes are a number rather
+   than a letter, so they are typed instead of picked. */
+const UNIFORMS = [
+  { id: 'shirt', name: 'חולצה', sizes: ['ק', 'ב', 'ג', 'מ', 'ממ'] },
+  { id: 'trousers', name: 'מכנס', sizes: ['ק', 'ב', 'ג', 'מ', 'ממ'] },
+  { id: 'shoes', name: 'נעליים', free: true, ph: '42' },
+];
+
+const uniformName = (id) => (UNIFORMS.find((u) => u.id === id) || {}).name || id;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const EXPIRING_SOON_DAYS = 60;
@@ -425,6 +444,8 @@ export {
   REGISTERS,
   SERIAL_FIELDS,
   SVG_OPEN,
+  UNIFORMS,
+  uniformName,
   VEH_KIT,
   canLoan,
   deptName,
