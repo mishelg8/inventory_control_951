@@ -7009,9 +7009,31 @@ const depApprove = (id) =>
     if (!rec || !isDeposit(rec) || rec.status === 'done') return;
     if (!S.inv) { toast('נתוני המלאי עדיין נטענים', true); return; }
     const d = rec.data;
-    // Every number on the slip has to be free — the weapon and each accessory
-    // — and the deposit itself is excluded so it does not collide with itself.
+
+    /* An item the armoury has met before is coming home, not arriving.
+
+       The unit's אקילה is issued to whoever needs it, so it already has a row
+       in the register under the name of whoever it belongs to. When it comes
+       back on somebody else's deposit slip, staging a second row would put the
+       same serial in the register twice — and the uniqueness check, doing its
+       job, refused the whole deposit instead. A soldier standing at the
+       counter with a rifle and an אקילה could not hand either of them in.
+
+       So a serial already in this register is matched to its existing row and
+       that row is brought home. The owner on it is left alone: whose it is on
+       the books did not change because somebody else carried it for a week. */
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    const homecoming = new Map();
+    for (const [f] of SERIAL_FIELDS) {
+      const v = norm(d[f]);
+      if (!v) continue;
+      const hit = (S.inv.armon || []).find((x) => norm(x.serial) === v);
+      if (hit) homecoming.set(f, hit);
+    }
+
+    // Anything the register has never seen still has to be a free number.
     for (const [f, label] of SERIAL_FIELDS) {
+      if (homecoming.has(f)) continue;
       // His own record holding this weapon is the reason he is depositing it.
       const clash = serialTaken(d[f], rec.id, d.pn, d.name);
       if (clash) { toast(`${label}: ${clash}`, true); return; }
@@ -7023,19 +7045,38 @@ const depApprove = (id) =>
     const now = Date.now();
     const note = `אפסון עצמי · מ״א ${d.pn}`;
     const added = [];
-    const stage = (kind, name, serial) => {
+    const home = [];
+    const stage = (kind, name, serial, field) => {
+      const back = homecoming.get(field);
+      if (back) {
+        // Already on the books: it is being put back on the shelf, and that is
+        // a movement rather than a new line in the register.
+        home.push({ was: back.loc, held: back.mission || '', item: back });
+        return;
+      }
       // A deposit already knows exactly whose it is — the slip carries the
       // personal number — so this one never had to be matched on a name.
       added.push({ id: rndId(), kind, name, serial, owner: d.name, ownerPn: d.pn,
                    loc: 'armon', note, addedAt: now });
     };
-    stage('weapon', 'נשק אישי', d.weapon);
+    stage('weapon', 'נשק אישי', d.weapon, 'weapon');
     // The soldier's own device files as אקילה, not as the unit's אמר״ל. The
     // payload key is still `amral` — that is what was sealed into every record
     // already written — but what lands in the register is the personal kind,
     // and the personal kind is not lent to anybody.
-    if (d.amral) stage('akila', 'אקילה', d.amral);
-    if (d.scope) stage('dscope', 'כוונת יום', d.scope);
+    if (d.amral) stage('akila', 'אקילה', d.amral, 'amral');
+    if (d.scope) stage('dscope', 'כוונת יום', d.scope, 'scope');
+
+    /* The rows that already existed are moved rather than added, and the
+       snapshot above is what puts them back if the save fails. */
+    const restore = home.map((h) => ({ ...h.item }));
+    for (const h of home) {
+      h.item.loc = 'armon';
+      h.item.mission = '';
+      h.item.holderPn = '';
+      h.item.since = null;
+      h.item.due = '';
+    }
 
     S.inv.armon = [...prevArmon, ...added];
     S.inv.armonLog = [
@@ -7043,6 +7084,10 @@ const depApprove = (id) =>
         t: now, action: 'add', kind: x.kind, name: x.name,
         serial: x.serial, owner: x.owner, dest: '', note,
       })),
+      // Nothing here for the rows coming home: `logMoves` sees the location
+      // change when the register is saved and writes the movement itself, with
+      // where it came from and how long it was out. Writing one here as well
+      // put the same return in the log twice.
       ...prevLog,
     ].slice(0, 5000);
 
@@ -7051,6 +7096,12 @@ const depApprove = (id) =>
     } catch (e) {
       S.inv.armon = prevArmon;                 // register untouched if the save failed
       S.inv.armonLog = prevLog;
+      // The moved rows are the same objects the snapshot points at, so their
+      // fields have to be put back one by one rather than by swapping arrays.
+      for (const was of restore) {
+        const it = (S.inv.armon || []).find((x) => x.id === was.id);
+        if (it) Object.assign(it, was);
+      }
       renderConsole();
       throw e;
     }
@@ -7067,7 +7118,15 @@ const depApprove = (id) =>
     }
     const w = await waNotify(d.phone, waDepositMsg(d), null,
       tplUpdate(d, 'הנשק שאפסנת נקלט בארמון ורשום שם על שמך'));
-    toast(`אפסון אושר — ${added.length} פריטים נקלטו לארמון${waNote(w)}`);
+    /* Two different things can happen on one slip, and the message says which.
+       An item the register had never seen is taken in; one it already knew is
+       put back on the shelf. Reporting only the first made an approval that
+       returned an אמר״ל look like it had done nothing. */
+    const parts = [
+      added.length ? `${added.length} ${added.length === 1 ? 'פריט נקלט' : 'פריטים נקלטו'}` : '',
+      home.length ? `${home.length} ${home.length === 1 ? 'הוחזר' : 'הוחזרו'} למלאי` : '',
+    ].filter(Boolean);
+    toast(`אפסון אושר — ${parts.join(' · ')}${waNote(w)}`);
   });
 
 // `where` splits the register into what is physically on the shelf and what has
@@ -7207,6 +7266,50 @@ function loanPanel(reg) {
     </section>`;
 }
 
+/* Handing a deposited weapon back, in one press.
+
+   A soldier deposits his rifle before going home; the register takes it in
+   under his name. When he comes back, giving it to him meant opening the row,
+   changing the location, typing his name into the box beside it and saving —
+   four steps to undo one, and three chances to leave a rifle reading as still
+   in the armoury while it is on somebody's shoulder.
+
+   Everything the press needs is already on the row. The deposit wrote down
+   whose it is, so there is nobody to ask and nothing to type; the button says
+   the name so that the one thing worth checking is on screen before the press
+   rather than after it.
+
+   Offered on personal kit only — the kinds the lending form refuses, because
+   they belong to one soldier rather than being borrowed from the store — and
+   only while the item is actually in the armoury with an owner to return it
+   to. */
+function armGiveBack(reg, x, i) {
+  if (!reg.deposits || x.loc !== reg.home) return '';
+  if (canLoan(reg, x.kind)) return '';          // store kit; the loan form has it
+  const owner = String(x.owner || '').trim();
+  if (owner.length < 2) return '';
+
+  return askBtn(`give:${x.id}`, 'arm-giveback',
+    '↩ זיכוי', `להחזיר את ${x.name} (${x.serial}) ל${owner}?`,
+    { data: { reg: reg.id, i }, yes: 'כן, נמסר', cls: 'btn primary small' });
+}
+
+/* The other half. The register already knows how to write the movement — the
+   save compares against the baseline and logs it — so this only has to say
+   where the thing went and to whom. */
+function armGiveBackDo(reg, i) {
+  const it = (S.inv[reg.key] || [])[i];
+  if (!it) return;
+  S.askDel = '';
+  const owner = String(it.owner || '').trim();
+  if (owner.length < 2) { toast('אין בעלים רשום לפריט', true); return; }
+  it.loc = 'soldier';
+  it.mission = owner;
+  it.holderPn = it.ownerPn || '';
+  invSave();                    // logMoves writes the move and starts the clock
+  toast(`${it.name} נמסר ל${owner}`);
+}
+
 function renderRegisterTab(reg) {
   const all = (S.inv && S.inv[reg.key]) || [];
   const log = (S.inv && S.inv[reg.logKey]) || [];
@@ -7279,6 +7382,7 @@ function renderRegisterTab(reg) {
           <button class="btn danger small mt-xs" data-act="arm-remove" data-reg="${reg.id}" data-i="${i}">אישור הסרה</button>` : ''}
       </td>
       <td class="nowrap">
+        ${armGiveBack(reg, x, i)}
         ${ed
           ? `<button class="btn primary small" data-act="arm-e-done" data-reg="${reg.id}">סיום עריכה</button>`
           : `<button class="linkbtn" data-act="arm-edit" data-id="${esc(x.id)}" title="תיקון פרטי הפריט">✎ עריכה</button>`}
@@ -14335,6 +14439,7 @@ function dispatch(act, el) {
       S.page = {}; renderConsole(); break;
     case 'arm-remove': armRemove(regOf(el), +el.dataset.i); break;
     case 'arm-return': armReturn(regOf(el), +el.dataset.i); break;
+    case 'arm-giveback': armGiveBackDo(regOf(el), +el.dataset.i); break;
     case 'arm-edit':   S.armEdit = el.dataset.id; renderConsole(); break;
     case 'arm-e-done': {
       // A serial corrected into one that already exists is the collision this
