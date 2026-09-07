@@ -7158,7 +7158,16 @@ const renderAlphaRegTab = () => renderRegisterTab(REGISTERS.alpha);
    somebody took it, and it is owed. Only that kind gets a clock, a due date
    and a return button. */
 
-const loansOf = (reg) => ((S.inv && S.inv[reg.key]) || []).filter((x) => LOAN_LOCS.has(x.loc));
+/* What is genuinely owed back.
+
+   Personal kit is not lent: a soldier's own rifle, אקילה or day sight belongs
+   to him and reaches the armoury through the deposit flow, never through the
+   lending form. A row of his that says "אצל חייל" — set by hand, or left
+   behind by an older version — is a statement about where the thing is, not a
+   debt to the armoury, and listing it here put a ↩ החזרה button beside a
+   rifle nobody was waiting for. */
+const loansOf = (reg) => ((S.inv && S.inv[reg.key]) || [])
+  .filter((x) => LOAN_LOCS.has(x.loc) && canLoan(reg, x.kind));
 
 const daysOut = (x) => (x.since ? Math.max(0, Math.round((Date.now() - x.since) / DAY_MS)) : null);
 
@@ -7294,20 +7303,37 @@ function armGiveBack(reg, x, i) {
     { data: { reg: reg.id, i }, yes: 'כן, נמסר', cls: 'btn primary small' });
 }
 
-/* The other half. The register already knows how to write the movement — the
-   save compares against the baseline and logs it — so this only has to say
-   where the thing went and to whom. */
+/* The other half — and the register lets go of the item entirely.
+
+   The first version only moved it: location "אצל חייל", the owner's name
+   beside it. That is what the register does when it lends something, and so
+   the rifle turned up under "השאלות פתוחות" with a ↩ החזרה button, as though
+   the armoury were waiting to get it back.
+
+   It is not. The soldier's own rifle went home with him, and the armoury has
+   no further claim on it until he deposits it again — at which point the
+   deposit writes a fresh row, exactly as it did the first time. A register
+   that keeps a line for every weapon it has ever handed back is a register
+   whose "out" column stops meaning anything.
+
+   So this is a removal to a destination, which the register already models,
+   and the log keeps the history the row no longer has to carry. */
 function armGiveBackDo(reg, i) {
   const it = (S.inv[reg.key] || [])[i];
   if (!it) return;
   S.askDel = '';
   const owner = String(it.owner || '').trim();
   if (owner.length < 2) { toast('אין בעלים רשום לפריט', true); return; }
-  it.loc = 'soldier';
-  it.mission = owner;
-  it.holderPn = it.ownerPn || '';
-  invSave();                    // logMoves writes the move and starts the clock
-  toast(`${it.name} נמסר ל${owner}`);
+
+  S.inv[reg.key] = S.inv[reg.key].filter((_, n) => n !== i);
+  logPush(reg.logKey, {
+    t: Date.now(), action: 'remove', kind: it.kind, name: it.name,
+    serial: it.serial, owner: it.owner, dest: 'soldier',
+    note: `זיכוי — נמסר ל${owner}`,
+  });
+  delete S.armDraft[it.id];
+  invSave();
+  toast(`${it.name} נמסר ל${owner} וירד מרישום ${reg.place}`);
 }
 
 function renderRegisterTab(reg) {
