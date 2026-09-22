@@ -142,3 +142,63 @@ test('a mission with one handover a day gets the whole day', () => {
   assert.equal(slotEnd(times, at1700) - at1700, 24 * 60 * MIN,
     'the next handover is tomorrow, so the shift is a day long');
 });
+
+/* The switch that stops the per-report messages.
+ *
+ * Two things are being checked, and the second is the one that matters:
+ * that turning the reports off does not also turn off the alert that says a
+ * shift never reported at all. They answer different questions — "here is
+ * what came in" and "nothing came in" — and a supervisor who stops wanting
+ * the first has not stopped wanting the second.
+ */
+const { runDigest, offSwitch } = await import(
+  pathToFileURL(join(root, 'watcher/src/index.js')).href
+);
+
+// Enough of D1 to answer runDigest, and to record what it wrote.
+const fakeDb = (rows) => {
+  const ran = [];
+  return {
+    ran,
+    prepare(sql) {
+      const st = {
+        args: [],
+        bind(...a) { st.args = a; return st; },
+        all: async () => ({ results: /shift_beats/.test(sql) ? rows : [] }),
+        run: async () => { ran.push([sql, st.args]); return {}; },
+      };
+      return st;
+    },
+  };
+};
+
+const beat = { rid: 1, mission_id: 'm1', mission_name: 'נחל שכם', who: 'עומר', at: Date.now() };
+
+test('off stops the per-report messages, and closes what was waiting', async () => {
+  const db = fakeDb([beat]);
+  let sent = 0;
+  const env = {
+    DB: db,
+    SEND_MISSION_REPORTS: 'off',
+    SUPERVISOR_TO: '972526444573',
+    WHATSAPP_ACCESS_TOKEN: 'x',
+    WHATSAPP_PHONE_NUMBER_ID: '1',
+    fetch: () => { sent += 1; },
+  };
+  const out = await runDigest(env);
+  assert.equal(out.told, 0);
+  assert.equal(sent, 0);
+  // The backlog is retired, so switching back on does not replay it.
+  assert.ok(db.ran.some(([sql]) => /notified = 1 WHERE notified = 0/.test(sql)));
+});
+
+test('an unset switch leaves the reports running', () => {
+  assert.equal(offSwitch(undefined), false);
+  assert.equal(offSwitch(''), false);
+  assert.equal(offSwitch('on'), false);
+  // A typo must not be read as "stop sending".
+  assert.equal(offSwitch('offf'), false);
+  for (const v of ['off', 'OFF', ' off ', '0', 'false', 'no']) {
+    assert.equal(offSwitch(v), true, v);
+  }
+});

@@ -234,6 +234,15 @@ const RLM = '\u200F';
    A date that will not parse does NOT stop the messages. A typo in a setting
    should not silently take down a safety net; it is logged loudly instead and
    the system keeps working, which is the failure worth having. */
+/* A var set from the dashboard is always a string, and the string "false" is
+   true. Anything a person would write to mean off is read as off; an unset
+   var — or a typo — leaves the messages running, because a switch nobody
+   meant to throw must not be the reason a supervisor stops hearing. */
+export function offSwitch(raw) {
+  const v = String(raw == null ? '' : raw).trim().toLowerCase();
+  return v === 'off' || v === '0' || v === 'false' || v === 'no';
+}
+
 export function pastStop(env, now = Date.now()) {
   const raw = String(env.STOP_AFTER || '').trim();
   if (!raw) return false;
@@ -336,6 +345,15 @@ export function digestText(rows, env = {}) {
    time rather than silently swallowing a shift's worth of reports. */
 export async function runDigest(env, now = Date.now()) {
   const db = env.DB;
+  /* The switch for the per-report messages, separate from the missed-handover
+     alerts. Off is off from this moment on, not retroactively: the reports
+     waiting to be sent are closed off, so switching this back on tells the
+     supervisor what happens next rather than replaying everything that
+     happened while it was quiet. */
+  if (offSwitch(env.SEND_MISSION_REPORTS)) {
+    await retireBacklog(db);
+    return { told: 0, why: 'digest off' };
+  }
   if (pastStop(env, now)) {
     await retireBacklog(db);
     return { told: 0, why: `stopped after ${env.STOP_AFTER}` };
@@ -481,9 +499,13 @@ export default {
     // Two independent jobs on one clock: what never arrived, and what did.
     // Either may be switched off by leaving its recipient unset, and one
     // failing must not stop the other.
+    // Each run says what it did. A watcher that goes quiet looks exactly like
+    // a watcher with nothing to say, and telling those two apart afterwards
+    // has cost more than one evening.
+    const say = (what) => (r) => console.log(`${what}: ${JSON.stringify(r)}`);
     ctx.waitUntil(Promise.allSettled([
-      runWatch(env).catch((e) => console.log(`watch.fail: ${e.message}`)),
-      runDigest(env).catch((e) => console.log(`digest.fail: ${e.message}`)),
+      runWatch(env).then(say('watch')).catch((e) => console.log(`watch.fail: ${e.message}`)),
+      runDigest(env).then(say('digest')).catch((e) => console.log(`digest.fail: ${e.message}`)),
     ]));
   },
 

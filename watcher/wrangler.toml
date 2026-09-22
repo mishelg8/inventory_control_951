@@ -49,6 +49,17 @@ WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
 # only a template will go.
 ALERT_TEXT = "❌ לא התקבל דוח משמרת\n*{mission}* · {date} · חילופים {time}"
 
+# The per-report message to the supervisor: one WhatsApp for every mission
+# report filed, listing what was there and what was missing.
+#
+# "off" (also 0/false/no) stops them. Nothing else changes: the missed-handover
+# alert — the one that says a shift did not report at all — keeps going out,
+# because these are two different questions and one switch each.
+#
+# Reports filed while this is off are marked as dealt with, so turning it back
+# on ("on") starts from that moment instead of replaying the quiet weeks.
+SEND_MISSION_REPORTS = "off"
+
 # The last day this sends anything. From the 31st it goes quiet on its own —
 # both the digests and the missed-handover alerts. Clear it to run indefinitely.
 STOP_AFTER = "2026-10-30"
