@@ -430,6 +430,11 @@ export async function runWatch(env, now = Date.now()) {
   const early = (Number(env.ALERT_EARLY_MIN) || 60) * MIN;
 
   const sent = [];
+  /* Switched off, nothing is looked at and — as with a missing token — no slot
+     is claimed on the way past. Switching it back on then answers for the
+     handovers still inside the window rather than starting from a set of slots
+     quietly marked as dealt with while nobody was listening. */
+  if (offSwitch(env.SEND_SHIFT_ALERTS)) return { sent, why: 'alerts off' };
   if (pastStop(env, now)) return { sent, why: `stopped after ${env.STOP_AFTER}` };
   /* Nothing is looked at, and nothing is claimed, until there is something to
      send with. A missing token is not one failed message — it is every message

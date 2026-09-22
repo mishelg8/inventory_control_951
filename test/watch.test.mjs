@@ -151,7 +151,7 @@ test('a mission with one handover a day gets the whole day', () => {
  * what came in" and "nothing came in" — and a supervisor who stops wanting
  * the first has not stopped wanting the second.
  */
-const { runDigest, offSwitch } = await import(
+const { runDigest, runWatch, offSwitch } = await import(
   pathToFileURL(join(root, 'watcher/src/index.js')).href
 );
 
@@ -201,4 +201,65 @@ test('an unset switch leaves the reports running', () => {
   for (const v of ['off', 'OFF', ' off ', '0', 'false', 'no']) {
     assert.equal(offSwitch(v), true, v);
   }
+});
+
+/* Enough of D1 to answer runWatch: the mission list, the alerts already on
+   record (none) and the reports filed (none). */
+const missionDb = (missions) => {
+  const ran = [];
+  return {
+    ran,
+    prepare(sql) {
+      const st = {
+        args: [],
+        bind(...a) { st.args = a; return st; },
+        all: async () => ({ results: /pub_pick/.test(sql) ? missions : [] }),
+        first: async () => null,
+        run: async () => { ran.push([sql, st.args]); return { meta: { changes: 1 } }; },
+      };
+      return st;
+    },
+  };
+};
+
+test('off stops the missed-shift alert, and claims no handover while quiet', async (t) => {
+  /* A handover that really is overdue: 05:00 Israel, looked at from 06:00,
+     with no report filed and no alert on record. Switched on, this run sends
+     and claims the slot — which is the thing the switch has to prevent. */
+  const mission = { id: 'm1', label: 'נחל שכם', data: JSON.stringify({ times: ['05:00'] }) };
+  const at06 = il('2026-08-20T06:00:00+03:00');
+  let sent = 0;
+
+  /* The Worker sends through the global fetch. Stubbed, so that no test ever
+     reaches Meta, and so "it sent" is something observed here rather than
+     assumed. */
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    sent += 1;
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.test' }] }) };
+  };
+  t.after(() => { globalThis.fetch = realFetch; });
+
+  const env = {
+    ALERT_TO: '972526444573',
+    WHATSAPP_ACCESS_TOKEN: 'x',
+    WHATSAPP_PHONE_NUMBER_ID: '1',
+  };
+
+  // First with it on, so the test is known to be watching something real.
+  const onDb = missionDb([mission]);
+  const on = await runWatch({ ...env, DB: onDb, SEND_SHIFT_ALERTS: 'on' }, at06);
+  assert.equal(on.sent.length, 1);
+  assert.equal(sent, 1);
+  assert.ok(onDb.ran.some(([sql]) => /INSERT OR IGNORE INTO shift_alerts/.test(sql)));
+
+  // Then the same moment with it off.
+  const offDb = missionDb([mission]);
+  sent = 0;
+  const off = await runWatch({ ...env, DB: offDb, SEND_SHIFT_ALERTS: 'off' }, at06);
+  assert.deepEqual(off.sent, []);
+  assert.equal(sent, 0);
+  /* The point of the test: a slot claimed while the messages were off would
+     never be alerted once they came back. Nothing may be written. */
+  assert.deepEqual(offDb.ran, []);
 });

@@ -49,16 +49,26 @@ WHATSAPP_PHONE_NUMBER_ID = "1216224748249995"
 # only a template will go.
 ALERT_TEXT = "❌ לא התקבל דוח משמרת\n*{mission}* · {date} · חילופים {time}"
 
-# The per-report message to the supervisor: one WhatsApp for every mission
-# report filed, listing what was there and what was missing.
+# The two WhatsApp messages this Worker sends. Both are off: the office does
+# not want either any more. "off" (also 0/false/no) stops them; "on" — or
+# anything else, including an empty value — sends.
 #
-# "off" (also 0/false/no) stops them. Nothing else changes: the missed-handover
-# alert — the one that says a shift did not report at all — keeps going out,
-# because these are two different questions and one switch each.
-#
-# Reports filed while this is off are marked as dealt with, so turning it back
-# on ("on") starts from that moment instead of replaying the quiet weeks.
+# Off is a switch, not a deletion. The schedule, the recipients and the
+# wording all stay where they are, so turning either back on is this one word
+# in the dashboard and nothing else.
+
+# One message per mission report filed, listing what was there and what was
+# missing. Reports filed while this is off are marked as dealt with, so
+# switching it on brings the next report rather than a replay of the quiet
+# weeks.
 SEND_MISSION_REPORTS = "off"
+
+# The other question: the alert that a shift did not report at all.
+#
+# This one claims nothing while it is off. Switching it on still answers for
+# the handovers inside the window above, rather than finding them quietly
+# marked as dealt with by the runs nobody was listening to.
+SEND_SHIFT_ALERTS = "off"
 
 # The last day this sends anything. From the 31st it goes quiet on its own —
 # both the digests and the missed-handover alerts. Clear it to run indefinitely.
