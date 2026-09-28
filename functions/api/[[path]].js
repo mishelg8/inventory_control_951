@@ -375,6 +375,51 @@ const releaseSerials = (db, kind, ownerId) =>
   db.prepare('DELETE FROM serial_tags WHERE owner_kind = ?1 AND owner_id = ?2')
     .bind(kind, ownerId).run().catch(() => {});
 
+/* A deposit slip's hold on its numbers — a different question, its own book.
+
+   The ledger above answers "whose weapon is this", and a deposit is not an
+   answer to it: the rifle being on the depositor's own record is the whole
+   reason she is standing at the counter with it. Asked there, the ledger
+   called her rifle a duplicate of itself and refused the deposit.
+
+   What IS worth refusing is the same number on two open slips — a weapon
+   cannot be handed in twice — and that is all this asks.
+
+   Whether the number is someone ELSE'S rifle is settled at intake, in the
+   console, where the register and the records are decrypted and the answer
+   can name the holder instead of guessing from a mask. */
+async function claimDeposit(db, tags, reportId, now) {
+  if (!Array.isArray(tags)) return null;
+  const clean = tags
+    .filter((t) => t && isHex(t.tag, HEX32) && SERIAL_FIELDS.includes(t.field))
+    .slice(0, SERIAL_FIELDS.length);
+  if (clean.length !== (tags || []).length) return { bad: true };
+
+  for (const t of clean) {
+    const held = await db.prepare('SELECT report_id FROM deposit_claims WHERE tag = ?1')
+      .bind(t.tag).first();
+    if (held && held.report_id !== reportId) return { field: t.field };
+  }
+  await db.prepare('DELETE FROM deposit_claims WHERE report_id = ?1').bind(reportId).run();
+  for (const t of clean) {
+    try {
+      await db.prepare(
+        'INSERT INTO deposit_claims (tag, field, report_id, created_at) VALUES (?1, ?2, ?3, ?4)'
+      ).bind(t.tag, t.field, reportId, now).run();
+    } catch {
+      return { field: t.field };   // two slips in the same instant; the index decides
+    }
+  }
+  return null;
+}
+
+/* Taken in, handed back, or thrown away — either way the slip is finished and
+   the numbers are free. Without this the first deposit of a weapon was also
+   its last: nothing ever let go. */
+const releaseDeposit = (db, reportId) =>
+  db.prepare('DELETE FROM deposit_claims WHERE report_id = ?1')
+    .bind(reportId).run().catch(() => {});
+
 // Which data sources each console screen actually reads. The tab list a user
 // is given is turned into this set, and the endpoint guard below enforces it —
 // screens that share a source cannot be separated any finer than the source.
@@ -660,6 +705,18 @@ export async function onRequest(context) {
       }
       const tag = url.searchParams.get('tag') || '';
       if (!isHex(tag, HEX32)) return err(400, 'בקשה לא תקינה');
+      /* Which book to look in depends on what the form is asking.
+         A registration asks "is this rifle already somebody's?"; a deposit
+         asks only "is it already on an open slip?" — its being on the
+         depositor's own record is the reason for the deposit, not an
+         objection to it, and the submit path scopes it the same way. */
+      if (url.searchParams.get('for') === 'deposit') {
+        const open = await db
+          .prepare('SELECT field FROM deposit_claims WHERE tag = ?1')
+          .bind(tag)
+          .first();
+        return json(open ? { taken: true, field: open.field, state: 'deposit' } : { taken: false });
+      }
       const row = await db
         .prepare('SELECT field, state FROM serial_tags WHERE tag = ?1')
         .bind(tag)
@@ -746,13 +803,14 @@ export async function onRequest(context) {
       }
       const dupId = await db.prepare('SELECT id FROM reports WHERE id = ?1').bind(id).first();
       if (dupId) return err(409, 'מזהה כפול — נסו שוב');
-      // A weapon deposit carries the same numbers a sign-out does, so it
-      // claims them the same way. Reports with no numbers send no tags.
-      const clash = await claimSerials(db, b.tags, 'report', id, 'deposit', now);
+      // A weapon deposit carries the same numbers a sign-out does, but it is
+      // not a claim on them — only an open slip blocks another open slip.
+      // Reports with no numbers send no tags.
+      const clash = await claimDeposit(db, b.tags, id, now);
       if (clash) {
         if (clash.bad) return err(400, 'בקשה לא תקינה');
-        return err(409, `${FIELD_HE[clash.field]} כבר קיים במערכת (${STATE_HE[clash.state] || clash.state}). ` +
-          'בדקו שהקלדתם נכון, ואם המספר באמת שלכם פנו למנהל הציוד.');
+        return err(409, `כבר קיימת בקשת אפסון פתוחה על ${FIELD_HE[clash.field]} הזה, וממתינה לקליטה בארמון. ` +
+          'אם טעיתם בהקלדה תקנו את המספר; אחרת אין צורך לאפסן שוב.');
       }
       await db
         .prepare(
@@ -1262,6 +1320,10 @@ export async function onRequest(context) {
             .bind(b.status, now, id)
             .run();
           if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
+          // A finished slip lets go of its numbers. For a deposit that is the
+          // moment the armoury takes the weapon in: from here the register
+          // holds it, and the same rifle may be deposited again next month.
+          if (b.status === 'done') await releaseDeposit(db, id);
           return json({ ok: true });
         }
 
@@ -1271,7 +1333,7 @@ export async function onRequest(context) {
             .bind(now, id)
             .run();
           if (!r.meta.changes) return err(404, 'הדיווח לא נמצא');
-          await releaseSerials(db, 'report', id);     // the numbers are free again
+          await releaseDeposit(db, id);               // the numbers are free again
           await audit(db, now, session, 'delete-report', id, null);
           return json({ ok: true });
         }
@@ -2110,6 +2172,7 @@ export async function onRequest(context) {
           db.prepare('DELETE FROM vault_parts'),
           db.prepare('DELETE FROM pub_pick'),
           db.prepare('DELETE FROM serial_tags'),
+          db.prepare('DELETE FROM deposit_claims'),
           db.prepare('DELETE FROM tickets'),
           db.prepare('DELETE FROM sessions'),
           db.prepare('DELETE FROM throttle'),

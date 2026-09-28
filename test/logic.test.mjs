@@ -23,8 +23,12 @@ const api = read('functions/api/[[path]].js');
 // app has no build step and no module system, so this is how a pure helper
 // gets tested without loading a browser.
 function lift(src, name, deps = '') {
-  const start = src.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} not found`);
+  const word = src.indexOf(`function ${name}(`);
+  assert.notEqual(word, -1, `${name} not found`);
+  // An async function starts six characters earlier. Slicing from the word
+  // alone lifts the body without its keyword, and the first await inside it
+  // fails to parse — with a message that says nothing about the real cause.
+  const start = src.slice(word - 6, word) === 'async ' ? word - 6 : word;
   let depth = 0, i = src.indexOf('{', start), end = -1;
   for (; i < src.length; i++) {
     if (src[i] === '{') depth++;
@@ -746,4 +750,121 @@ test('ammunition can be lent everywhere the registers can lend', () => {
     assert.ok(d.noWho, `${d.id} is neither a loan nor a consumption`);
     assert.ok(!NAMED_LOCS[d.id], `${d.id} cannot be both consumed and held`);
   }
+});
+
+/* ── Depositing a weapon more than once ────────────────────────────────
+   The ledger that stops two soldiers signing for one rifle was also asked to
+   police deposits, and gave the wrong answer twice: it called a soldier's own
+   rifle a duplicate of itself, and it never let a finished slip go, so a
+   weapon could be deposited once and never again. Both are fixed by the
+   deposit slips keeping their own book — these tests hold that line. */
+
+// A tiny stand-in for D1: one table, the statements this code actually runs.
+function fakeDb() {
+  const rows = [];                       // deposit_claims
+  const tags = [];                       // serial_tags, for the record ledger
+  const run = (sql, args) => {
+    if (/DELETE FROM deposit_claims WHERE report_id/.test(sql)) {
+      for (let i = rows.length - 1; i >= 0; i--) if (rows[i].report_id === args[0]) rows.splice(i, 1);
+      return { meta: { changes: 1 } };
+    }
+    if (/INSERT INTO deposit_claims/.test(sql)) {
+      if (rows.some((r) => r.tag === args[0])) throw new Error('UNIQUE');
+      rows.push({ tag: args[0], field: args[1], report_id: args[2], created_at: args[3] });
+      return { meta: { changes: 1 } };
+    }
+    throw new Error(`unexpected sql: ${sql}`);
+  };
+  const first = (sql, args) => {
+    if (/SELECT report_id FROM deposit_claims WHERE tag/.test(sql)) {
+      return rows.find((r) => r.tag === args[0]) || null;
+    }
+    throw new Error(`unexpected sql: ${sql}`);
+  };
+  return {
+    rows,
+    tags,
+    prepare(sql) {
+      let args = [];
+      const stmt = {
+        bind: (...a) => { args = a; return stmt; },
+        run: async () => run(sql, args),
+        first: async () => first(sql, args),
+      };
+      return stmt;
+    },
+  };
+}
+
+const TAG_A = 'a'.repeat(32);
+const TAG_B = 'b'.repeat(32);
+
+const liftDeposit = () => lift(api, 'claimDeposit', `
+  const SERIAL_FIELDS = ['weapon', 'amral', 'scope'];
+  const HEX32 = 32;
+  const isHex = (v, n) => typeof v === 'string' && v.length === n && /^[0-9a-f]+$/.test(v);
+`);
+
+test('a deposit no longer collides with the depositor own record', async () => {
+  const claimDeposit = liftDeposit();
+  const db = fakeDb();
+  // Her rifle is on her record — the record ledger is a different book, and
+  // this one has never heard of the number.
+  db.tags.push({ tag: TAG_A, owner_kind: 'record', state: 'approved' });
+  const clash = await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-1', 1);
+  assert.equal(clash, null, 'her own rifle is why she is at the counter');
+  assert.equal(db.rows.length, 1);
+});
+
+test('a second open slip for the same weapon is refused', async () => {
+  const claimDeposit = liftDeposit();
+  const db = fakeDb();
+  await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-1', 1);
+  const clash = await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-2', 2);
+  assert.deepEqual(clash, { field: 'weapon' }, 'one weapon cannot be handed in twice');
+});
+
+test('re-filing the same slip does not collide with itself', async () => {
+  const claimDeposit = liftDeposit();
+  const db = fakeDb();
+  await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-1', 1);
+  const again = await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-1', 2);
+  assert.equal(again, null);
+  assert.equal(db.rows.length, 1, 'the slip holds its numbers once, not twice');
+});
+
+test('a released slip frees the weapon for the next deposit', async () => {
+  const claimDeposit = liftDeposit();
+  const db = fakeDb();
+  await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }, { tag: TAG_B, field: 'scope' }], 'rep-1', 1);
+  // What the intake does when it closes the slip: DELETE ... WHERE report_id.
+  await db.prepare('DELETE FROM deposit_claims WHERE report_id = ?1').bind('rep-1').run();
+  assert.equal(db.rows.length, 0, 'taking the weapon in lets go of every number on the slip');
+  const clash = await claimDeposit(db, [{ tag: TAG_A, field: 'weapon' }], 'rep-2', 3);
+  assert.equal(clash, null, 'the same rifle may be deposited again next month');
+});
+
+test('a malformed tag list is refused rather than half-claimed', async () => {
+  const claimDeposit = liftDeposit();
+  const db = fakeDb();
+  const bad = await claimDeposit(db, [{ tag: 'nope', field: 'weapon' }], 'rep-1', 1);
+  assert.deepEqual(bad, { bad: true });
+  assert.equal(db.rows.length, 0);
+});
+
+test('the intake releases the deposit hold, and only when it is done', () => {
+  // The status handler is the only place a deposit is finished without being
+  // deleted; if it stops releasing, weapons become undepositable again.
+  const patch = api.slice(api.indexOf("UPDATE reports SET status = ?1"));
+  const head = patch.slice(0, 700);
+  assert.match(head, /if \(b\.status === 'done'\) await releaseDeposit\(db, id\)/);
+});
+
+test('the deposit form asks the deposit question, not the registration one', () => {
+  // Three fields on the deposit form, each scoped; the check passes the scope
+  // through to the endpoint, which reads the deposit book for it.
+  assert.equal((app.match(/data-act="ser-chk" data-f="\w+" data-for="deposit"/g) || []).length, 3);
+  assert.match(app, /checkSerial\(el\.dataset\.f, el\.value\.trim\(\), label, el\.dataset\.for/);
+  assert.match(app, /scope === 'deposit' \? '&for=deposit' : ''/);
+  assert.match(api, /url\.searchParams\.get\('for'\) === 'deposit'/);
 });

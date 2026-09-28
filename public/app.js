@@ -947,6 +947,13 @@ function setFooterNav(route) {
 
 function renderRoute() {
   setBanner(S.route);
+  /* Serial answers belong to the form that asked. Registration and deposit
+     ask different questions of the same three fields, so an answer carried
+     between them is not just stale, it is an answer to something else — and
+     since the submit gate reads these, a registration's "already taken" was
+     enough to lock the deposit form the soldier walked over to next. */
+  S.serialWarn = {};
+  S.serialSeen = {};
   // The console needs a wide column for tables; soldier pages stay narrow.
   // The banner and the footer are separate elements from the content, so the
   // width has to be said somewhere they can all hear it — otherwise the emblem
@@ -2280,19 +2287,22 @@ function renderDeposit() {
           <div class="grid2">
             <label class="field">
               <span class="field-label">מספר נשק <span class="req" aria-hidden="true">*</span></span>
-              <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" autocomplete="off" maxlength="20"
+              <input class="input num" name="weapon" data-act="ser-chk" data-f="weapon" data-for="deposit"
+                     autocomplete="off" maxlength="20"
                      value="${esc(v.weapon)}" placeholder="7145732" required>
               ${serialWarnBox('weapon')}
             </label>
             <label class="field">
               <span class="field-label">מק״ט אקילה <span class="opt-tag">רק אם קיים</span></span>
-              <input class="input num" name="amral" data-act="ser-chk" data-f="amral" autocomplete="off" maxlength="20"
+              <input class="input num" name="amral" data-act="ser-chk" data-f="amral" data-for="deposit"
+                     autocomplete="off" maxlength="20"
                      value="${esc(v.amral)}">
               ${serialWarnBox('amral')}
             </label>
             <label class="field">
               <span class="field-label">מק״ט כוונת יום <span class="opt-tag">רק אם קיים</span></span>
-              <input class="input num" name="scope" data-act="ser-chk" data-f="scope" autocomplete="off" maxlength="20"
+              <input class="input num" name="scope" data-act="ser-chk" data-f="scope" data-for="deposit"
+                     autocomplete="off" maxlength="20"
                      value="${esc(v.scope)}">
               ${serialWarnBox('scope')}
             </label>
@@ -2323,7 +2333,13 @@ const SERIAL_STATE_HE = {
   deposit: 'הופקד בארמון וממתין לקליטה', armoury: 'רשום בארמון',
 };
 
-async function checkSerial(field, value, label) {
+/* The deposit form asks a narrower question than the registration form, and
+   has to, because the answer the wide one gives is wrong here: the rifle is
+   on the depositor's own record, which is why she is standing at the counter
+   holding it. Told "already in the system", she cannot deposit her own
+   weapon — and once she managed it, never again, because the slip held the
+   number for good. All this form refuses now is a second open slip. */
+async function checkSerial(field, value, label, scope = 'record') {
   const v = normSerial(value);
   if (!S.config || !S.config.idSalt) return;
   if (S.serialSeen[field] === v) return;              // already answered for this value
@@ -2331,12 +2347,15 @@ async function checkSerial(field, value, label) {
   if (!v) { S.serialWarn = { ...S.serialWarn, [field]: '' }; paintSerialWarnings(); return; }
   try {
     const tag = await deriveSerialTag(value, S.config.idSalt);
-    const r = await api(`/serial?tag=${tag}`);
+    const r = await api(`/serial?tag=${tag}${scope === 'deposit' ? '&for=deposit' : ''}`);
     S.serialWarn = {
       ...S.serialWarn,
       [field]: r.taken
-        ? `⛔ ${label} ${value} כבר קיים במערכת — ${SERIAL_STATE_HE[r.state] || r.state}. ` +
-          'בדקו שלא טעיתם בהקלדה; אם המספר באמת שלכם, פנו למנהל הציוד.'
+        ? (scope === 'deposit'
+          ? `⛔ כבר קיימת בקשת אפסון פתוחה על ${label} ${value}, שממתינה לקליטה בארמון. ` +
+            'אם טעיתם בהקלדה תקנו את המספר; אחרת אין צורך לאפסן שוב.'
+          : `⛔ ${label} ${value} כבר קיים במערכת — ${SERIAL_STATE_HE[r.state] || r.state}. ` +
+            'בדקו שלא טעיתם בהקלדה; אם המספר באמת שלכם, פנו למנהל הציוד.')
         : '',
     };
   } catch {
@@ -13966,7 +13985,7 @@ $app.addEventListener('focusout', (e) => {
   const el = e.target.closest('[data-act="ser-chk"]');
   if (!el || !$app.contains(el)) return;
   const label = (SERIAL_FIELDS.find(([f]) => f === el.dataset.f) || [, ''])[1];
-  checkSerial(el.dataset.f, el.value.trim(), label);
+  checkSerial(el.dataset.f, el.value.trim(), label, el.dataset.for || 'record');
 });
 
 // Checkboxes and file pickers report via 'change', not 'input'.
@@ -14575,7 +14594,15 @@ function dispatch(act, el) {
     case 'bulk-del': bulkDelete(); break;
     case 'rep-again': S.repSent = false; S.rep = null; renderReport(); break;
     // armoury deposits
-    case 'dep-again': S.depSent = false; S.dep = null; renderDeposit(); break;
+    // A second slip is a new question, and the one just filed is the reason
+    // the answer may have changed: that weapon is now on an open deposit.
+    // Keeping the previous "free" answer would leave the second slip silent
+    // until the server refused it.
+    case 'dep-again':
+      S.depSent = false; S.dep = null;
+      S.serialWarn = {}; S.serialSeen = {};
+      renderDeposit();
+      break;
     case 'dep-filter': S.depFilter = el.dataset.f; S.page = {}; renderConsole(); break;
     case 'rf-filter': S.rfFilter = el.dataset.f; renderConsole(); break;
     case 'dep-approve': depApprove(el.dataset.id); break;
